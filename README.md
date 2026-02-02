@@ -55,11 +55,15 @@
 
 **👉 [Go to Introduction →](./00_Introduction/)**
 
+<div align="center">
+
 | Lesson | Content | Time |
-|:---|:---|:---|
+|:---:|:---:|:---:|
 | Intro-01 | Network & VPN Configuration | 15-30 min |
 | Intro-02 | Cursor AI IDE Setup & Subscription | 20-30 min |
 | Intro-03 | Git Installation & GitHub Configuration | 20-30 min |
+
+</div>
 
 ✅ After completing Introduction, you should have:
 - VPN configured (ip138.com shows overseas IP)
@@ -68,12 +72,16 @@
 
 ### Step 2: Follow Weekly Schedule
 
+<div align="center">
+
 | Week | Topic | Link |
-|:---|:---|:---|
+|:---:|:---:|:---:|
 | Week 1 | AI Programming Fundamentals | [Start →](./Week1_AI_Programming_Fundamentals/) |
 | Week 2 | Cursor AI IDE Deep Dive | [Start →](./Week2_Cursor_Deep_Dive/) |
 | Week 3 | Claude Code Engineering | [Start →](./Week3_Claude_Code_Engineering/) |
 | Week 4 | Enterprise Practice | [Start →](./Week4_Enterprise_Practice/) |
+
+</div>
 
 ---
 
@@ -85,11 +93,15 @@
 
 **Three Phases of AI-Driven Development:**
 
+<div align="center">
+
 | Phase | Focus | Key Activities |
-|:---|:---|:---|
+|:---:|:---:|:---:|
 | **Phase 1: Define** | Requirements | Market research → Core idea → Requirements analysis → Figma prototype |
 | **Phase 2: Develop** | AI-Assisted Coding | AI frontend generation → DB design → API definition → Code Review |
 | **Phase 3: Deliver** | Deployment | API testing → CI pipeline → Containerization → Production release |
+
+</div>
 
 ---
 
@@ -103,13 +115,17 @@
 
 **Week 1 Deliverable**: A web-based data analysis assistant with query, aggregation, and visualization capabilities.
 
+<div align="center">
+
 | Tech Stack | Details |
-|:---|:---|
+|:---:|:---:|
 | Tool | Cursor |
 | Model | Claude Sonnet 4.5 / GPT-5.2 Codex |
 | Frontend | React |
 | Backend | FastAPI + SQLite |
 | Key Features | Text-to-SQL, Echarts visualization, Streaming response |
+
+</div>
 
 ---
 
@@ -121,13 +137,17 @@
 
 **Week 2 Deliverable**: A high-fidelity, interactive frontend-backend data flow loop.
 
+<div align="center">
+
 | Tech Stack | Details |
-|:---|:---|
+|:---:|:---:|
 | Tool | Cursor |
 | Model | Claude Sonnet 4.5 / GPT-5.2 Codex |
 | Frontend | React |
 | Backend | FastAPI |
 | Key Features | GateWay bidirectional communication, Dual-way audio stream, Agent Skills integration |
+
+</div>
 
 ---
 
@@ -139,13 +159,17 @@
 
 **Week 3 Deliverable**: An end-to-end private knowledge base system with data cleaning and vectorization.
 
+<div align="center">
+
 | Tech Stack | Details |
-|:---|:---|
+|:---:|:---:|
 | Tool | Claude Code CLI |
 | Model | Claude Sonnet 4.5 / Opus 4.5 |
 | Frontend | React (Tailwind) |
 | Backend | LangChain Agent + FastAPI |
 | Key Features | PDF/Excel/Image parsing, OCR integration, RAG source tracing |
+
+</div>
 
 ---
 
@@ -157,25 +181,33 @@
 
 **Week 4 Deliverable**: A production-ready, deployable commercial-grade source code system.
 
+<div align="center">
+
 | Tech Stack | Details |
-|:---|:---|
+|:---:|:---:|
 | Tool | Claude Code CLI |
 | Model | Claude Sonnet 4.5 / Opus 4.5 |
 | Frontend | React (Tailwind) |
 | Backend | LangChain Agent + FastAPI + Pytest + Git + Docker |
 | Key Features | Human-in-the-loop interface, Automated rule-based review pipeline, Docker deployment |
 
+</div>
+
 ---
 
 ## 📋 Course Overview
 
+<div align="center">
+
 | Phase | Topic | Lessons | Project |
-|:---|:---|:---|:---|
+|:---:|:---:|:---:|:---:|
 | **Intro** | Environment Setup | 3 | - |
 | **Week 1** | AI Programming Fundamentals | 2 | Smart Data Assistant |
 | **Week 2** | Cursor AI IDE Deep Dive | 2 | ClawdBot |
 | **Week 3** | Claude Code Engineering | 2 | Multimodal RAG System |
 | **Week 4** | Enterprise Practice | 1 | Document Review Agent |
+
+</div>
 
 ---
 

@@ -55,11 +55,15 @@
 
 **👉 [进入导学 →](./00_Introduction/)**
 
+<div align="center">
+
 | 课程 | 内容 | 预计用时 |
-|:---|:---|:---|
+|:---:|:---:|:---:|
 | Intro-01 | 网络环境配置与 VPN 准备 | 15-30 分钟 |
 | Intro-02 | Cursor AI IDE 安装与订阅 | 20-30 分钟 |
 | Intro-03 | Git 安装与 GitHub 配置 | 20-30 分钟 |
+
+</div>
 
 ✅ 完成导学后，你应该具备：
 - VPN 配置完成（ip138.com 显示海外 IP）
@@ -68,12 +72,16 @@
 
 ### 第二步：按周学习
 
+<div align="center">
+
 | 周次 | 主题 | 链接 |
-|:---|:---|:---|
+|:---:|:---:|:---:|
 | Week 1 | AI编程范式与快速上手 | [开始学习 →](./Week1_AI_Programming_Fundamentals/) |
 | Week 2 | Cursor AI IDE深入实践 | [开始学习 →](./Week2_Cursor_Deep_Dive/) |
 | Week 3 | Claude Code工程实战 | [开始学习 →](./Week3_Claude_Code_Engineering/) |
 | Week 4 | 企业级进阶实战 | [开始学习 →](./Week4_Enterprise_Practice/) |
+
+</div>
 
 ---
 
@@ -85,11 +93,15 @@
 
 **AI 驱动开发的三个阶段：**
 
+<div align="center">
+
 | 阶段 | 重点 | 关键活动 |
-|:---|:---|:---|
+|:---:|:---:|:---:|
 | **Phase 1：定义** | 需求 | 市场/竞品调研 → 核心灵感 → 需求梳理 → Figma 原型 |
 | **Phase 2：研发** | AI 辅助编码 | AI 前端生成 → DB 架构设计 → API 定义 → Code Review |
 | **Phase 3：交付** | 部署 | 接口测试 → CI 流水线 → 容器化 → 生产上线 |
+
+</div>
 
 ---
 
@@ -103,13 +115,17 @@
 
 **Week 1 交付物**：一个可运行的 Web 数据分析助手（查询/聚合/可视化）
 
+<div align="center">
+
 | 技术栈 | 详情 |
-|:---|:---|
+|:---:|:---:|
 | 工具 | Cursor |
 | 模型 | Claude Sonnet 4.5 / GPT-5.2 Codex |
 | 前端 | React |
 | 后端 | FastAPI + SQLite |
 | 核心功能 | Text-to-SQL 精准转换、Echarts 动态图表、前后端流式响应 |
+
+</div>
 
 ---
 
@@ -121,13 +137,17 @@
 
 **Week 2 交付物**：一个高保真、可交互的完整的前后端数据流闭环
 
+<div align="center">
+
 | 技术栈 | 详情 |
-|:---|:---|
+|:---:|:---:|
 | 工具 | Cursor |
 | 模型 | Claude Sonnet 4.5 / GPT-5.2 Codex |
 | 前端 | React |
 | 后端 | FastAPI |
 | 核心功能 | GateWay 双向网关通信、低延迟双向音频流、Agent Skills 协议接入 |
+
+</div>
 
 ---
 
@@ -139,13 +159,17 @@
 
 **Week 3 交付物**：一个端到端可用的私有知识库系统（含数据清洗与向量化）
 
+<div align="center">
+
 | 技术栈 | 详情 |
-|:---|:---|
+|:---:|:---:|
 | 工具 | Claude Code CLI |
 | 模型 | Claude Sonnet 4.5 / Opus 4.5 |
 | 前端 | React (Tailwind) |
 | 后端 | LangChain Agent + FastAPI |
 | 核心功能 | 非结构化数据 (PDF/Excel/图片) 解析、最强 OCR 模型接入、RAG 精准溯源引用 |
+
+</div>
 
 ---
 
@@ -157,25 +181,33 @@
 
 **Week 4 交付物**：一个可直接部署上线的商业级源码系统
 
+<div align="center">
+
 | 技术栈 | 详情 |
-|:---|:---|
+|:---:|:---:|
 | 工具 | Claude Code CLI |
 | 模型 | Claude Sonnet 4.5 / Opus 4.5 |
 | 前端 | React (Tailwind) |
 | 后端 | LangChain Agent + FastAPI + Pytest + Git + Docker |
 | 核心功能 | 人机协作 (Human-in-the-loop) 界面、自动化规则文档审核流水线、可落地的 Docker 部署环境 |
 
+</div>
+
 ---
 
 ## 📋 课程概览
 
+<div align="center">
+
 | 阶段 | 主题 | 课时 | 项目实战 |
-|:---|:---|:---|:---|
+|:---:|:---:|:---:|:---:|
 | **导学** | 环境配置与工具准备 | 3 | - |
 | **Week 1** | AI编程范式与快速上手 | 2 | 智能数据分析助理 |
 | **Week 2** | Cursor AI IDE深入实践 | 2 | ClawdBot |
 | **Week 3** | Claude Code工程实战 | 2 | 多模态RAG知识库 |
 | **Week 4** | 企业级进阶实战 | 1 | 智能文档审核Agent |
+
+</div>
 
 ---
 
