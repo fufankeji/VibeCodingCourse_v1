@@ -1,8 +1,8 @@
-<p align="right">
+# 00_Introduction: Environment Setup
+
+<p align="center">
   <a href="./README.md">English</a> | <a href="./README_CN.md">中文</a>
 </p>
-
-# 00_Introduction: Environment Setup
 
 > **"Vibe Coding: AI Full-Stack Development Bootcamp"** - Prerequisites
 

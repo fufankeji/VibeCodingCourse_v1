@@ -1,8 +1,8 @@
-<p align="right">
+# 导学：环境配置与工具准备
+
+<p align="center">
   <a href="./README.md">English</a> | <a href="./README_CN.md">中文</a>
 </p>
-
-# 导学：环境配置与工具准备
 
 > **《Vibe Coding AI全栈开发实战》** 课程前置准备
 
