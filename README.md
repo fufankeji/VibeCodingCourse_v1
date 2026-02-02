@@ -1,0 +1,226 @@
+<p align="right">
+  <a href="./README.md">English</a> | <a href="./README_CN.md">中文</a>
+</p>
+
+<div align="center">
+  <img src="./images/course_banner.png" width="400" alt="Vibe Coding AI Full-Stack Development Bootcamp">
+</div>
+
+<h1 align="center">Vibe Coding: AI Full-Stack Development Bootcamp</h1>
+
+<p align="center">
+  <b>2026 · AI Programming Pioneer Training Camp</b><br>
+  Master Cursor & Claude Code from scratch | Become an AI-era "one-person army"
+</p>
+
+---
+
+## 🎯 How to Learn This Course
+
+> ⚠️ **Important**: Complete the **Introduction** section before starting Week 1!
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        LEARNING PATH                            │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│   ┌──────────────┐                                              │
+│   │  START HERE  │                                              │
+│   └──────┬───────┘                                              │
+│          ▼                                                      │
+│   ┌──────────────────────────────────────┐                      │
+│   │  📚 Introduction (Required First!)   │  ← VPN + Cursor + Git│
+│   └──────────────────┬───────────────────┘                      │
+│                      ▼                                          │
+│   ┌──────────────────────────────────────┐                      │
+│   │  Week 1: AI Programming Fundamentals │  ← Project 1         │
+│   └──────────────────┬───────────────────┘                      │
+│                      ▼                                          │
+│   ┌──────────────────────────────────────┐                      │
+│   │  Week 2: Cursor AI IDE Deep Dive     │  ← Project 2         │
+│   └──────────────────┬───────────────────┘                      │
+│                      ▼                                          │
+│   ┌──────────────────────────────────────┐                      │
+│   │  Week 3: Claude Code Engineering     │  ← Project 3         │
+│   └──────────────────┬───────────────────┘                      │
+│                      ▼                                          │
+│   ┌──────────────────────────────────────┐                      │
+│   │  Week 4: Enterprise Practice         │  ← Project 4         │
+│   └──────────────────────────────────────┘                      │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Step 1: Complete Introduction (Environment Setup)
+
+**👉 [Go to Introduction →](./00_Introduction/)**
+
+| Lesson | Content | Time |
+|:---|:---|:---|
+| Intro-01 | Network & VPN Configuration | 15-30 min |
+| Intro-02 | Cursor AI IDE Setup & Subscription | 20-30 min |
+| Intro-03 | Git Installation & GitHub Configuration | 20-30 min |
+
+✅ After completing Introduction, you should have:
+- VPN configured (ip138.com shows overseas IP)
+- Cursor installed and logged in
+- Git installed with GitHub Token configured
+
+### Step 2: Follow Weekly Schedule
+
+| Week | Topic | Link |
+|:---|:---|:---|
+| Week 1 | AI Programming Fundamentals | [Start →](./Week1_AI_Programming_Fundamentals/) |
+| Week 2 | Cursor AI IDE Deep Dive | [Start →](./Week2_Cursor_Deep_Dive/) |
+| Week 3 | Claude Code Engineering | [Start →](./Week3_Claude_Code_Engineering/) |
+| Week 4 | Enterprise Practice | [Start →](./Week4_Enterprise_Practice/) |
+
+---
+
+## 🚀 The Vibe Coding Development Paradigm
+
+<div align="center">
+  <img src="./images/vibe_coding_paradigm.png" width="95%" alt="Vibe Coding Development Paradigm">
+</div>
+
+**Three Phases of AI-Driven Development:**
+
+| Phase | Focus | Key Activities |
+|:---|:---|:---|
+| **Phase 1: Define** | Requirements | Market research → Core idea → Requirements analysis → Figma prototype |
+| **Phase 2: Develop** | AI-Assisted Coding | AI frontend generation → DB design → API definition → Code Review |
+| **Phase 3: Deliver** | Deployment | API testing → CI pipeline → Containerization → Production release |
+
+---
+
+## 🏗️ Four Industrial-Grade Projects
+
+### Project 1: Smart Data Analysis Assistant
+
+<div align="center">
+  <img src="./images/project_01_data_assistant.png" width="90%" alt="Project 1: Smart Data Analysis Assistant">
+</div>
+
+**Week 1 Deliverable**: A web-based data analysis assistant with query, aggregation, and visualization capabilities.
+
+| Tech Stack | Details |
+|:---|:---|
+| Tool | Cursor |
+| Model | Claude Sonnet 4.5 / GPT-5.2 Codex |
+| Frontend | React |
+| Backend | FastAPI + SQLite |
+| Key Features | Text-to-SQL, Echarts visualization, Streaming response |
+
+---
+
+### Project 2: ClawdBot - Multimodal Agent
+
+<div align="center">
+  <img src="./images/project_02_doubao_clone.png" width="90%" alt="Project 2: ClawdBot Development">
+</div>
+
+**Week 2 Deliverable**: A high-fidelity, interactive frontend-backend data flow loop.
+
+| Tech Stack | Details |
+|:---|:---|
+| Tool | Cursor |
+| Model | Claude Sonnet 4.5 / GPT-5.2 Codex |
+| Frontend | React |
+| Backend | FastAPI |
+| Key Features | GateWay bidirectional communication, Dual-way audio stream, Agent Skills integration |
+
+---
+
+### Project 3: Multimodal RAG Knowledge Base
+
+<div align="center">
+  <img src="./images/project_03_multimodal_rag.png" width="90%" alt="Project 3: Multimodal RAG Knowledge Base">
+</div>
+
+**Week 3 Deliverable**: An end-to-end private knowledge base system with data cleaning and vectorization.
+
+| Tech Stack | Details |
+|:---|:---|
+| Tool | Claude Code CLI |
+| Model | Claude Sonnet 4.5 / Opus 4.5 |
+| Frontend | React (Tailwind) |
+| Backend | LangChain Agent + FastAPI |
+| Key Features | PDF/Excel/Image parsing, OCR integration, RAG source tracing |
+
+---
+
+### Project 4: Document Review Agent
+
+<div align="center">
+  <img src="./images/project_04_doc_review_agent.png" width="90%" alt="Project 4: Document Review Agent">
+</div>
+
+**Week 4 Deliverable**: A production-ready, deployable commercial-grade source code system.
+
+| Tech Stack | Details |
+|:---|:---|
+| Tool | Claude Code CLI |
+| Model | Claude Sonnet 4.5 / Opus 4.5 |
+| Frontend | React (Tailwind) |
+| Backend | LangChain Agent + FastAPI + Pytest + Git + Docker |
+| Key Features | Human-in-the-loop interface, Automated rule-based review pipeline, Docker deployment |
+
+---
+
+## 📋 Course Overview
+
+| Phase | Topic | Lessons | Project |
+|:---|:---|:---|:---|
+| **Intro** | Environment Setup | 3 | - |
+| **Week 1** | AI Programming Fundamentals | 2 | Smart Data Assistant |
+| **Week 2** | Cursor AI IDE Deep Dive | 2 | ClawdBot |
+| **Week 3** | Claude Code Engineering | 2 | Multimodal RAG System |
+| **Week 4** | Enterprise Practice | 1 | Document Review Agent |
+
+---
+
+## ✅ What You'll Learn
+
+- Vibe Coding vs Traditional Development: the essential differences
+- Complete Cursor & Claude Code hands-on practice
+- High-performance AI programming techniques
+- Prompt engineering and context optimization
+- Agent Skills and MCP tool integration
+- Four industrial-grade project experiences
+
+---
+
+## 📦 Prerequisites
+
+- Basic computer operation skills
+- Learning enthusiasm and patience
+- **No programming experience required** (we start from zero)
+
+---
+
+## 🚀 Get Started Now!
+
+```bash
+# 1. Clone this repository
+git clone https://github.com/YOUR_USERNAME/VibeCodingCourse.git
+
+# 2. Start with Introduction
+cd VibeCodingCourse/00_Introduction
+```
+
+**👉 [Begin Your Journey: Introduction →](./00_Introduction/)**
+
+---
+
+## License
+
+MIT License
+
+---
+
+<p align="center">
+  <b>Vibe Coding: AI Full-Stack Development Bootcamp</b><br>
+  Reshape programming competitiveness in the AI era<br>
+  <br>
+  <b>Instructor: Teacher Muyu (木羽老师)</b>
+</p>
