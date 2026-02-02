@@ -107,91 +107,72 @@
 
 ## 🏗️ 四大工业级项目实战
 
+<table>
+<tr>
+<td width="50%" align="center">
+
 ### 项目一：智能数据分析助理
 
-<div align="center">
-  <img src="./images/project_01_data_assistant.png" width="90%" alt="项目一：智能数据分析助理">
-</div>
+<img src="./images/project_01_data_assistant.png" width="100%" alt="项目一：智能数据分析助理">
 
-**Week 1 交付物**：一个可运行的 Web 数据分析助手（查询/聚合/可视化）
+**Week 1 交付物**
 
-<div align="center">
+Web 数据分析助手（查询/聚合/可视化）
 
-| 技术栈 | 详情 |
-|:---:|:---:|
-| 工具 | Cursor |
-| 模型 | Claude Sonnet 4.5 / GPT-5.2 Codex |
-| 前端 | React |
-| 后端 | FastAPI + SQLite |
-| 核心功能 | Text-to-SQL 精准转换、Echarts 动态图表、前后端流式响应 |
+`Cursor` · `React` · `FastAPI` · `SQLite`
 
-</div>
+Text-to-SQL · Echarts 动态图表 · 流式响应
 
----
+</td>
+<td width="50%" align="center">
 
-### 项目二：ClawdBot 开发（多模态 Agent）
+### 项目二：ClawdBot（多模态 Agent）
 
-<div align="center">
-  <img src="./images/project_02_doubao_clone.png" width="90%" alt="项目二：ClawdBot开发">
-</div>
+<img src="./images/project_02_doubao_clone.png" width="100%" alt="项目二：ClawdBot开发">
 
-**Week 2 交付物**：一个高保真、可交互的完整的前后端数据流闭环
+**Week 2 交付物**
 
-<div align="center">
+高保真、可交互的前后端数据流闭环
 
-| 技术栈 | 详情 |
-|:---:|:---:|
-| 工具 | Cursor |
-| 模型 | Claude Sonnet 4.5 / GPT-5.2 Codex |
-| 前端 | React |
-| 后端 | FastAPI |
-| 核心功能 | GateWay 双向网关通信、低延迟双向音频流、Agent Skills 协议接入 |
+`Cursor` · `React` · `FastAPI`
 
-</div>
+GateWay 双向通信 · 双向音频流 · Agent Skills
 
----
+</td>
+</tr>
+<tr>
+<td width="50%" align="center">
 
 ### 项目三：多模态 RAG 知识库
 
-<div align="center">
-  <img src="./images/project_03_multimodal_rag.png" width="90%" alt="项目三：多模态RAG知识库">
-</div>
+<img src="./images/project_03_multimodal_rag.png" width="100%" alt="项目三：多模态RAG知识库">
 
-**Week 3 交付物**：一个端到端可用的私有知识库系统（含数据清洗与向量化）
+**Week 3 交付物**
 
-<div align="center">
+端到端私有知识库系统（数据清洗与向量化）
 
-| 技术栈 | 详情 |
-|:---:|:---:|
-| 工具 | Claude Code CLI |
-| 模型 | Claude Sonnet 4.5 / Opus 4.5 |
-| 前端 | React (Tailwind) |
-| 后端 | LangChain Agent + FastAPI |
-| 核心功能 | 非结构化数据 (PDF/Excel/图片) 解析、最强 OCR 模型接入、RAG 精准溯源引用 |
+`Claude Code` · `React` · `LangChain` · `FastAPI`
 
-</div>
+PDF/Excel/图片解析 · OCR · RAG 溯源引用
 
----
+</td>
+<td width="50%" align="center">
 
 ### 项目四：智能文档审核 Agent
 
-<div align="center">
-  <img src="./images/project_04_doc_review_agent.png" width="90%" alt="项目四：智能文档审核Agent">
-</div>
+<img src="./images/project_04_doc_review_agent.png" width="100%" alt="项目四：智能文档审核Agent">
 
-**Week 4 交付物**：一个可直接部署上线的商业级源码系统
+**Week 4 交付物**
 
-<div align="center">
+可直接部署上线的商业级源码系统
 
-| 技术栈 | 详情 |
-|:---:|:---:|
-| 工具 | Claude Code CLI |
-| 模型 | Claude Sonnet 4.5 / Opus 4.5 |
-| 前端 | React (Tailwind) |
-| 后端 | LangChain Agent + FastAPI + Pytest + Git + Docker |
-| 核心功能 | 人机协作 (Human-in-the-loop) 界面、自动化规则文档审核流水线、可落地的 Docker 部署环境 |
+`Claude Code` · `React` · `LangChain` · `Docker`
 
-</div>
+Human-in-the-loop · 自动化审核流水线 · Docker 部署
+
+</td>
+</tr>
+</table>
 
 ---
 

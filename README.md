@@ -107,91 +107,72 @@
 
 ## 🏗️ Four Industrial-Grade Projects
 
+<table>
+<tr>
+<td width="50%" align="center">
+
 ### Project 1: Smart Data Analysis Assistant
 
-<div align="center">
-  <img src="./images/project_01_data_assistant.png" width="90%" alt="Project 1: Smart Data Analysis Assistant">
-</div>
+<img src="./images/project_01_data_assistant.png" width="100%" alt="Project 1: Smart Data Analysis Assistant">
 
-**Week 1 Deliverable**: A web-based data analysis assistant with query, aggregation, and visualization capabilities.
+**Week 1 Deliverable**
 
-<div align="center">
+Web data analysis assistant (query/aggregation/visualization)
 
-| Tech Stack | Details |
-|:---:|:---:|
-| Tool | Cursor |
-| Model | Claude Sonnet 4.5 / GPT-5.2 Codex |
-| Frontend | React |
-| Backend | FastAPI + SQLite |
-| Key Features | Text-to-SQL, Echarts visualization, Streaming response |
+`Cursor` · `React` · `FastAPI` · `SQLite`
 
-</div>
+Text-to-SQL · Echarts · Streaming Response
 
----
+</td>
+<td width="50%" align="center">
 
-### Project 2: ClawdBot - Multimodal Agent
+### Project 2: ClawdBot (Multimodal Agent)
 
-<div align="center">
-  <img src="./images/project_02_doubao_clone.png" width="90%" alt="Project 2: ClawdBot Development">
-</div>
+<img src="./images/project_02_doubao_clone.png" width="100%" alt="Project 2: ClawdBot Development">
 
-**Week 2 Deliverable**: A high-fidelity, interactive frontend-backend data flow loop.
+**Week 2 Deliverable**
 
-<div align="center">
+High-fidelity interactive frontend-backend data flow loop
 
-| Tech Stack | Details |
-|:---:|:---:|
-| Tool | Cursor |
-| Model | Claude Sonnet 4.5 / GPT-5.2 Codex |
-| Frontend | React |
-| Backend | FastAPI |
-| Key Features | GateWay bidirectional communication, Dual-way audio stream, Agent Skills integration |
+`Cursor` · `React` · `FastAPI`
 
-</div>
+GateWay Communication · Audio Stream · Agent Skills
 
----
+</td>
+</tr>
+<tr>
+<td width="50%" align="center">
 
 ### Project 3: Multimodal RAG Knowledge Base
 
-<div align="center">
-  <img src="./images/project_03_multimodal_rag.png" width="90%" alt="Project 3: Multimodal RAG Knowledge Base">
-</div>
+<img src="./images/project_03_multimodal_rag.png" width="100%" alt="Project 3: Multimodal RAG Knowledge Base">
 
-**Week 3 Deliverable**: An end-to-end private knowledge base system with data cleaning and vectorization.
+**Week 3 Deliverable**
 
-<div align="center">
+End-to-end private knowledge base (data cleaning & vectorization)
 
-| Tech Stack | Details |
-|:---:|:---:|
-| Tool | Claude Code CLI |
-| Model | Claude Sonnet 4.5 / Opus 4.5 |
-| Frontend | React (Tailwind) |
-| Backend | LangChain Agent + FastAPI |
-| Key Features | PDF/Excel/Image parsing, OCR integration, RAG source tracing |
+`Claude Code` · `React` · `LangChain` · `FastAPI`
 
-</div>
+PDF/Excel/Image Parsing · OCR · RAG Source Tracing
 
----
+</td>
+<td width="50%" align="center">
 
 ### Project 4: Document Review Agent
 
-<div align="center">
-  <img src="./images/project_04_doc_review_agent.png" width="90%" alt="Project 4: Document Review Agent">
-</div>
+<img src="./images/project_04_doc_review_agent.png" width="100%" alt="Project 4: Document Review Agent">
 
-**Week 4 Deliverable**: A production-ready, deployable commercial-grade source code system.
+**Week 4 Deliverable**
 
-<div align="center">
+Production-ready commercial-grade deployable system
 
-| Tech Stack | Details |
-|:---:|:---:|
-| Tool | Claude Code CLI |
-| Model | Claude Sonnet 4.5 / Opus 4.5 |
-| Frontend | React (Tailwind) |
-| Backend | LangChain Agent + FastAPI + Pytest + Git + Docker |
-| Key Features | Human-in-the-loop interface, Automated rule-based review pipeline, Docker deployment |
+`Claude Code` · `React` · `LangChain` · `Docker`
 
-</div>
+Human-in-the-loop · Automated Review Pipeline · Docker
+
+</td>
+</tr>
+</table>
 
 ---
 
