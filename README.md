@@ -1,9 +1,8 @@
-<p align="right">
-  <a href="./README.md">English</a> | <a href="./README_CN.md">中文</a>
-</p>
-
 <div align="center">
   <img src="./images/course_banner.png" width="400" alt="Vibe Coding AI Full-Stack Development Bootcamp">
+  <p>
+    <a href="./README.md">English</a> | <a href="./README_CN.md">中文</a>
+  </p>
 </div>
 
 <h1 align="center">Vibe Coding: AI Full-Stack Development Bootcamp</h1>
