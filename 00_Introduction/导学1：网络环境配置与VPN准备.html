@@ -1,0 +1,868 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>导学1：网络环境配置与VPN准备</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Source+Sans+Pro:wght@400;600;700&family=Source+Code+Pro:wght@400;500&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            font-family: 'Noto Sans SC', 'Source Sans Pro', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #faf8f5;
+            color: #3d3d3d;
+            line-height: 1.7;
+            font-size: 15px;
+            position: relative;
+            min-height: 100vh;
+        }
+
+        /* Animated background */
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: 
+                radial-gradient(ellipse 80% 50% at 20% 40%, rgba(212, 165, 116, 0.15) 0%, transparent 50%),
+                radial-gradient(ellipse 60% 40% at 80% 20%, rgba(180, 140, 100, 0.1) 0%, transparent 50%),
+                radial-gradient(ellipse 50% 60% at 70% 80%, rgba(200, 160, 120, 0.12) 0%, transparent 50%);
+            animation: bgFloat 20s ease-in-out infinite;
+            z-index: -1;
+            pointer-events: none;
+        }
+
+        @keyframes bgFloat {
+            0%, 100% {
+                transform: translate(0, 0) scale(1);
+                opacity: 1;
+            }
+            25% {
+                transform: translate(20px, -30px) scale(1.05);
+                opacity: 0.8;
+            }
+            50% {
+                transform: translate(-10px, 20px) scale(0.98);
+                opacity: 1;
+            }
+            75% {
+                transform: translate(-20px, -10px) scale(1.02);
+                opacity: 0.9;
+            }
+        }
+
+        /* Floating particles */
+        .particles {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: -1;
+            overflow: hidden;
+        }
+
+        .particle {
+            position: absolute;
+            width: 4px;
+            height: 4px;
+            background: rgba(212, 165, 116, 0.3);
+            border-radius: 50%;
+            animation: float 15s infinite ease-in-out;
+        }
+
+        .particle:nth-child(1) { left: 10%; animation-delay: 0s; animation-duration: 20s; }
+        .particle:nth-child(2) { left: 20%; animation-delay: 2s; animation-duration: 18s; }
+        .particle:nth-child(3) { left: 30%; animation-delay: 4s; animation-duration: 22s; }
+        .particle:nth-child(4) { left: 40%; animation-delay: 1s; animation-duration: 16s; }
+        .particle:nth-child(5) { left: 50%; animation-delay: 3s; animation-duration: 24s; }
+        .particle:nth-child(6) { left: 60%; animation-delay: 5s; animation-duration: 19s; }
+        .particle:nth-child(7) { left: 70%; animation-delay: 2s; animation-duration: 21s; }
+        .particle:nth-child(8) { left: 80%; animation-delay: 4s; animation-duration: 17s; }
+        .particle:nth-child(9) { left: 90%; animation-delay: 1s; animation-duration: 23s; }
+
+        @keyframes float {
+            0%, 100% {
+                transform: translateY(100vh) scale(0);
+                opacity: 0;
+            }
+            10% {
+                opacity: 1;
+                transform: translateY(90vh) scale(1);
+            }
+            90% {
+                opacity: 1;
+                transform: translateY(10vh) scale(1);
+            }
+            100% {
+                transform: translateY(0vh) scale(0);
+                opacity: 0;
+            }
+        }
+
+        .notebook {
+            max-width: 960px;
+            margin: 0 auto;
+            background: #ffffff;
+            min-height: 100vh;
+            box-shadow: 0 0 40px rgba(0,0,0,0.06);
+        }
+
+        /* Header */
+        .notebook-header {
+            background: linear-gradient(135deg, #e8d5b7 0%, #f0e6d3 50%, #d4a574 100%);
+            color: #5c4a32;
+            padding: 40px 40px;
+            text-align: center;
+        }
+
+        .notebook-header h1 {
+            font-size: 1.8rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .notebook-header .subtitle {
+            opacity: 0.9;
+            font-size: 0.95rem;
+        }
+
+        /* Cell */
+        .cell {
+            border-bottom: 1px solid #e8e8e8;
+            padding: 20px 40px;
+        }
+
+        .cell:last-child {
+            border-bottom: none;
+        }
+
+        /* Markdown content */
+        .cell h1 {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: #333;
+            margin: 10px 0 20px;
+            text-align: center;
+        }
+
+        .cell h2 {
+            font-size: 1.4rem;
+            font-weight: 700;
+            color: #333;
+            margin: 30px 0 15px;
+            padding-bottom: 8px;
+            border-bottom: 2px solid #667eea;
+        }
+
+        .cell h3 {
+            font-size: 1.15rem;
+            font-weight: 600;
+            color: #555;
+            margin: 25px 0 12px;
+        }
+
+        .cell p {
+            margin: 12px 0;
+            text-align: justify;
+            text-indent: 2em;
+        }
+
+        .cell p.no-indent {
+            text-indent: 0;
+        }
+
+        .cell ul, .cell ol {
+            margin: 12px 0 12px 2em;
+            padding-left: 20px;
+        }
+
+        .cell li {
+            margin: 6px 0;
+        }
+
+        .cell strong {
+            font-weight: 600;
+            color: #333;
+        }
+
+        /* Highlight text */
+        .highlight {
+            color: #d63031;
+            font-weight: 500;
+        }
+
+        /* Links */
+        .cell a {
+            color: #667eea;
+            text-decoration: none;
+        }
+
+        .cell a:hover {
+            text-decoration: underline;
+        }
+
+        /* Code */
+        .cell code {
+            font-family: 'Source Code Pro', Consolas, Monaco, monospace;
+            background: #f1f3f5;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 0.9em;
+            color: #e83e8c;
+        }
+
+        .cell .code-block {
+            position: relative;
+            margin: 16px 0;
+        }
+
+        .cell pre {
+            background: #282c34;
+            color: #abb2bf;
+            padding: 16px 20px;
+            border-radius: 6px;
+            overflow-x: auto;
+            margin: 0;
+            font-family: 'Source Code Pro', Consolas, Monaco, monospace;
+            font-size: 0.9em;
+            line-height: 1.5;
+        }
+
+        .cell pre code {
+            background: none;
+            padding: 0;
+            color: inherit;
+        }
+
+        .copy-btn {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background: rgba(255,255,255,0.1);
+            border: none;
+            color: #888;
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: 'Source Sans Pro', sans-serif;
+        }
+
+        .copy-btn:hover {
+            background: rgba(255,255,255,0.2);
+            color: #fff;
+        }
+
+        .copy-btn.copied {
+            background: #27ae60;
+            color: white;
+        }
+
+        /* Images */
+        .cell .img-container {
+            text-align: center;
+            margin: 20px 0;
+        }
+
+        .cell img {
+            max-width: 80%;
+            border-radius: 8px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            cursor: zoom-in;
+            transition: transform 0.2s ease;
+        }
+
+        .cell img:hover {
+            transform: scale(1.02);
+        }
+
+        /* Modal for image zoom */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.9);
+            cursor: zoom-out;
+        }
+
+        .modal.active {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal img {
+            max-width: 90%;
+            max-height: 90%;
+            border-radius: 8px;
+            box-shadow: 0 0 30px rgba(0,0,0,0.5);
+        }
+
+        .modal-close {
+            position: absolute;
+            top: 20px;
+            right: 30px;
+            color: white;
+            font-size: 40px;
+            font-weight: 300;
+            cursor: pointer;
+            transition: color 0.2s;
+        }
+
+        .modal-close:hover {
+            color: #d4a574;
+        }
+
+        /* Tables */
+        .cell table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px auto;
+            font-size: 0.95em;
+        }
+
+        .cell th, .cell td {
+            padding: 12px 16px;
+            border: 1px solid #ddd;
+            text-align: center;
+        }
+
+        .cell th {
+            background: #667eea;
+            color: white;
+            font-weight: 600;
+        }
+
+        .cell td:last-child {
+            text-align: left;
+        }
+
+        .cell tr:nth-child(even) {
+            background: #f8f9fa;
+        }
+
+        .cell tr:hover {
+            background: #e8f4f8;
+        }
+
+        /* Status icons */
+        .status-yes { color: #27ae60; }
+        .status-no { color: #e74c3c; }
+        .status-warn { color: #f39c12; }
+
+        /* Blockquote */
+        .cell blockquote {
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            padding: 15px 20px;
+            margin: 20px 0;
+            border-radius: 0 6px 6px 0;
+        }
+
+        .cell blockquote p {
+            text-indent: 0;
+            margin: 0;
+        }
+
+        /* Table title */
+        .table-title {
+            text-align: center;
+            font-weight: 600;
+            font-size: 1.05rem;
+            margin: 20px 0 10px;
+            color: #333;
+        }
+
+        /* Table of Contents */
+        .toc {
+            background: #faf8f5;
+            border-radius: 8px;
+            padding: 20px 30px;
+            margin: 0;
+            border: 1px solid #e8e0d5;
+        }
+
+        .toc-title {
+            font-weight: 600;
+            font-size: 1.1rem;
+            margin-bottom: 15px;
+            color: #5c4a32;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .toc-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .toc-list li {
+            margin: 8px 0;
+        }
+
+        .toc-list a {
+            color: #666;
+            text-decoration: none;
+            font-size: 0.95rem;
+            transition: all 0.2s;
+            display: block;
+            padding: 4px 0;
+        }
+
+        .toc-list a:hover {
+            color: #d4a574;
+            padding-left: 8px;
+        }
+
+        .toc-list .toc-h3 {
+            padding-left: 20px;
+            font-size: 0.9rem;
+        }
+
+        /* Footer */
+        .notebook-footer {
+            background: #f8f9fa;
+            padding: 30px 40px;
+            text-align: center;
+            border-top: 1px solid #e8e8e8;
+        }
+
+        .nav-links {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+
+        .nav-links a {
+            color: #667eea;
+            text-decoration: none;
+            padding: 10px 20px;
+            background: white;
+            border-radius: 6px;
+            border: 1px solid #ddd;
+            transition: all 0.2s;
+        }
+
+        .nav-links a:hover {
+            background: #667eea;
+            color: white;
+            border-color: #667eea;
+        }
+
+        .copyright {
+            color: #888;
+            font-size: 0.9rem;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .cell {
+                padding: 15px 20px;
+            }
+            .cell img {
+                max-width: 100%;
+            }
+            .notebook-header {
+                padding: 20px;
+            }
+            .nav-links {
+                flex-direction: column;
+                gap: 10px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Floating particles -->
+    <div class="particles">
+        <div class="particle"></div>
+        <div class="particle"></div>
+        <div class="particle"></div>
+        <div class="particle"></div>
+        <div class="particle"></div>
+        <div class="particle"></div>
+        <div class="particle"></div>
+        <div class="particle"></div>
+        <div class="particle"></div>
+    </div>
+
+    <div class="notebook">
+        <!-- Header -->
+        <header class="notebook-header">
+            <h1>《Vibe Coding AI全栈开发实战》</h1>
+            <p class="subtitle">开发环境配置前置准备 · 导学第一课</p>
+        </header>
+
+        <!-- Content -->
+        <main>
+            <!-- Intro -->
+            <div class="cell">
+                <h1>网络环境配置与 VPN 准备</h1>
+            </div>
+
+            <!-- Table of Contents -->
+            <div class="cell">
+                <div class="toc">
+                    <div class="toc-title">📑 目录</div>
+                    <ul class="toc-list">
+                        <li><a href="#section1">1. 为什么 Vibe Coding 环境需要 VPN？</a></li>
+                        <li><a href="#section1-1" class="toc-h3">1.1 GitHub 连接不稳定</a></li>
+                        <li><a href="#section1-2" class="toc-h3">1.2 Cursor Pro 的 AI 模型需要 VPN</a></li>
+                        <li><a href="#section1-3" class="toc-h3">1.3 其他开发工具和资源</a></li>
+                        <li><a href="#section1-4" class="toc-h3">1.4 网络需求场景对比</a></li>
+                        <li><a href="#section2">2. 网络环境检测：验证你的 VPN 是否正常工作</a></li>
+                        <li><a href="#section2-1" class="toc-h3">2.1 测试一：IP 地区检测（关键！）</a></li>
+                        <li><a href="#section2-2" class="toc-h3">2.2 测试二：GitHub 连通性测试</a></li>
+                        <li><a href="#section3">3. VPN 推荐：ViewTurbo——开发者友好型 VPN</a></li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="cell">
+                <p>本期教程我们聚焦的是 <strong>Vibe Coding 环境配置的第一步——网络环境准备</strong>。在正式安装 Cursor、Git 和配置 GitHub 之前，我们需要先确保网络环境能够支撑后续的所有操作。这一步看似简单，却是很多人在环境配置过程中遇到问题的根源。</p>
+                <p>为什么要把网络环境单独拿出来讲？因为 Vibe Coding 的核心工具链——Cursor、GitHub、AI 模型服务——都依赖稳定的国际网络连接。<span class="highlight">如果网络环境不通畅，后续的每一步都可能卡壳：Git clone 超时、Cursor 登录失败、Claude 模型无法调用……</span>所以，我们先把这个「地基」打好。</p>
+                <p>接下来的内容会按这样的主线展开：首先理解为什么 Vibe Coding 环境需要 VPN，然后检测你现有的网络环境是否满足要求，最后为没有 VPN 的同学推荐一个开发者友好的解决方案。完成这一课后，大家就可以带着「网络通畅」的信心进入 Cursor 和 Git 的安装配置了。</p>
+            </div>
+
+            <!-- Section 1 -->
+            <div class="cell">
+                <h2 id="section1">1. 为什么 Vibe Coding 环境需要 VPN？</h2>
+            </div>
+
+            <div class="cell">
+                <p>在开始配置任何开发工具之前，我们需要先正视一个现实问题：<strong>国内网络环境对 Vibe Coding 工作流的支持是不完整的</strong>。这不是危言耸听，而是实际开发中每天都会遇到的痛点。让我们逐一分析这些场景。</p>
+            </div>
+
+            <div class="cell">
+                <h3 id="section1-1">1.1 GitHub 连接不稳定</h3>
+            </div>
+
+            <div class="cell">
+                <p>GitHub 是全球最大的代码托管平台，也是 Vibe Coding 工作流中不可或缺的一环。无论是克隆开源项目、提交代码、还是与 Cursor Agent 协作进行版本管理，都需要与 GitHub 进行通信。</p>
+                <p>然而，国内直连 GitHub 的体验可以用「随缘」来形容：</p>
+                <ul>
+                    <li><code>git clone</code> 速度极慢，几 KB/s 的下载速度是常态</li>
+                    <li>连接频繁中断，大型仓库根本无法完整克隆</li>
+                    <li><code>git push</code> 经常超时失败，需要反复重试</li>
+                    <li>GitHub 网页有时无法正常加载</li>
+                </ul>
+                <p><span class="highlight">这种不稳定性会严重影响开发效率，甚至让某些操作完全无法进行。</span></p>
+            </div>
+
+            <div class="cell">
+                <h3 id="section1-2">1.2 Cursor Pro 的 AI 模型需要 VPN</h3>
+            </div>
+
+            <div class="cell">
+                <p>Cursor 作为 AI-native IDE，其核心竞争力在于内置的 AI 编程能力。订阅 Cursor Pro 后，你可以使用 Claude Opus4.5、GPT-5.2 等顶级 AI 模型进行代码生成、重构和问答。</p>
+                <p>但这里有一个关键点：<span class="highlight">这些 AI 模型的服务器都部署在海外，国内网络无法直接访问。</span>具体表现为：</p>
+                <ul>
+                    <li>按下 <code>Ctrl+I</code> 打开 Agent 面板后，请求长时间无响应</li>
+                    <li>Tab 补全功能时灵时不灵</li>
+                    <li>模型切换为 Claude 后完全无法使用</li>
+                    <li>出现 "Network Error" 或 "Request Timeout" 等错误</li>
+                </ul>
+                <p>虽然 Cursor 支持通过自定义 API Key 接入国内模型（如 DeepSeek、Qwen），但如果你想使用 Cursor Pro 订阅自带的 Claude 模型额度，VPN 是必需的。</p>
+            </div>
+
+            <div class="cell">
+                <h3 id="section1-3">1.3 其他开发工具和资源</h3>
+            </div>
+
+            <div class="cell">
+                <p>除了 GitHub 和 AI 模型，Vibe Coding 工作流中还有很多环节会受到网络环境影响：</p>
+                <ul>
+                    <li><strong>npm/pip 包安装</strong>：部分包的下载源在海外，速度受限</li>
+                    <li><strong>Docker 镜像拉取</strong>：Docker Hub 访问不稳定</li>
+                    <li><strong>技术文档查阅</strong>：很多官方文档托管在海外服务器</li>
+                    <li><strong>AI 服务 API</strong>：OpenAI、Anthropic、Google 等 AI 服务的 API 端点</li>
+                </ul>
+                <p>一个稳定的 VPN 可以一劳永逸地解决这些问题，让你专注于编码本身，而不是与网络环境做斗争。</p>
+            </div>
+
+            <div class="cell">
+                <h3 id="section1-4">1.4 网络需求场景对比</h3>
+            </div>
+
+            <div class="cell">
+                <p>为了让大家更清晰地了解哪些场景需要 VPN，我们整理了以下对比表：</p>
+                <p class="table-title">Vibe Coding 工具链网络需求对比</p>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>工具/服务</th>
+                            <th>国内直连</th>
+                            <th>需要 VPN</th>
+                            <th>说明</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Cursor 下载安装</td>
+                            <td class="status-yes">✅</td>
+                            <td class="status-no">❌</td>
+                            <td>官网可正常访问</td>
+                        </tr>
+                        <tr>
+                            <td>Cursor 账户登录</td>
+                            <td class="status-warn">⚠️</td>
+                            <td class="status-yes">✅</td>
+                            <td>登录服务偶尔不稳定</td>
+                        </tr>
+                        <tr>
+                            <td>Cursor Pro Claude 模型</td>
+                            <td class="status-no">❌</td>
+                            <td class="status-yes">✅</td>
+                            <td>必须使用 VPN</td>
+                        </tr>
+                        <tr>
+                            <td>Cursor 自定义国内模型</td>
+                            <td class="status-yes">✅</td>
+                            <td class="status-no">❌</td>
+                            <td>DeepSeek/Qwen 等可直连</td>
+                        </tr>
+                        <tr>
+                            <td>Git 下载安装</td>
+                            <td class="status-yes">✅</td>
+                            <td class="status-no">❌</td>
+                            <td>官网可正常访问</td>
+                        </tr>
+                        <tr>
+                            <td>GitHub 网页访问</td>
+                            <td class="status-warn">⚠️</td>
+                            <td class="status-yes">✅</td>
+                            <td>速度慢且不稳定</td>
+                        </tr>
+                        <tr>
+                            <td>GitHub Clone/Push</td>
+                            <td class="status-warn">⚠️</td>
+                            <td class="status-yes">✅</td>
+                            <td>经常超时失败</td>
+                        </tr>
+                        <tr>
+                            <td>npm/pip 安装包</td>
+                            <td class="status-warn">⚠️</td>
+                            <td class="status-yes">✅</td>
+                            <td>部分包下载慢</td>
+                        </tr>
+                        <tr>
+                            <td>Docker Hub</td>
+                            <td class="status-warn">⚠️</td>
+                            <td class="status-yes">✅</td>
+                            <td>镜像拉取受限</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <p>表中 <span class="status-yes">✅</span> 表示可行，<span class="status-warn">⚠️</span> 表示不稳定，<span class="status-no">❌</span> 表示不可用。可以看到，<span class="highlight">Vibe Coding 的核心工作流高度依赖稳定的国际网络连接</span>。</p>
+            </div>
+
+            <div class="cell">
+                <p>理解了为什么需要 VPN 后，接下来我们进入实操环节：如何检测你现有的网络环境是否满足 Vibe Coding 的要求？如果你已经有 VPN，如何验证它是否工作正常？</p>
+            </div>
+
+            <!-- Section 2 -->
+            <div class="cell">
+                <h2 id="section2">2. 网络环境检测：验证你的 VPN 是否正常工作</h2>
+            </div>
+
+            <div class="cell">
+                <p>这一章面向<strong>已经有 VPN</strong> 的同学。如果你还没有 VPN，可以跳到下一章查看推荐方案。</p>
+                <p>很多同学可能已经有了 VPN，但不确定它是否能满足 Vibe Coding 的需求。接下来我们通过几个简单的测试，验证你的网络环境是否「达标」。<span class="highlight">如果所有测试都通过，你就可以直接进入 Cursor 和 Git 的安装配置了。</span></p>
+            </div>
+
+            <div class="cell">
+                <h3 id="section2-1">2.1 测试一：IP 地区检测（关键！）</h3>
+            </div>
+
+            <div class="cell">
+                <p>在进行任何服务连通性测试之前，<span class="highlight">必须先确认你的 VPN 出口 IP 是否在海外地区</span>。这一步非常关键——如果你的 IP 仍然显示为中国地区，即使能访问某些服务，也可能面临账号被封禁的风险。</p>
+                
+                <p class="no-indent"><strong>步骤一：打开 VPN 并连接</strong></p>
+                <p>确保你的 VPN 客户端已经连接成功，状态显示为「已连接」。建议选择<strong>美国、日本、新加坡</strong>等节点。</p>
+                
+                <p class="no-indent"><strong>步骤二：访问 IP 检测网站</strong></p>
+                <p>打开浏览器，访问 <a href="https://www.ip138.com" target="_blank">https://www.ip138.com</a></p>
+                
+                <div class="img-container">
+                    <img src="https://muyu20241105.oss-cn-beijing.aliyuncs.com/images/202602021320642.png" alt="IP检测截图">
+                </div>
+                
+                <p class="no-indent"><strong>成功判据：</strong></p>
+                <ul>
+                    <li>显示的 IP 归属地为<strong>美国、日本、新加坡</strong>等海外地区</li>
+                    <li><span class="highlight">如果显示「中国」，说明 VPN 未生效或节点有问题，必须切换节点后重新测试</span></li>
+                </ul>
+                
+                <p class="no-indent"><strong>步骤三：确认地区后继续</strong></p>
+                <p>只有当 IP 归属地显示为海外地区后，才能继续后面的测试。</p>
+                
+                <blockquote>
+                    <p><strong>为什么这一步这么重要？</strong> OpenAI、Anthropic 等 AI 服务会检测用户 IP 地区。如果使用中国 IP 访问这些服务，轻则无法使用，重则账号被永久封禁。Cursor Pro 订阅的模型调用同样受此影响。</p>
+                </blockquote>
+            </div>
+
+            <div class="cell">
+                <h3 id="section2-2">2.2 测试二：GitHub 连通性测试</h3>
+            </div>
+
+            <div class="cell">
+                <p>GitHub 是 Vibe Coding 工作流的核心枢纽，确保它能正常访问。</p>
+                
+                <p class="no-indent"><strong>步骤一：浏览器访问 GitHub</strong></p>
+                <p>打开浏览器，访问 <a href="https://github.com" target="_blank">https://github.com</a>，观察页面加载速度。</p>
+                
+                <p class="no-indent"><strong>成功判据：</strong></p>
+                <ul>
+                    <li>页面在 3 秒内完全加载</li>
+                    <li>图片、头像等资源正常显示</li>
+                    <li>可以正常浏览仓库内容</li>
+                </ul>
+                
+                <div class="img-container">
+                    <img src="https://muyu20241105.oss-cn-beijing.aliyuncs.com/images/202602021321946.png" alt="GitHub截图">
+                </div>
+                
+                <p class="no-indent"><strong>步骤二：命令行 Ping 测试</strong></p>
+                <p>打开终端（Windows 用 PowerShell，macOS/Linux 用 Terminal），执行：</p>
+                <div class="code-block">
+                    <button class="copy-btn" onclick="copyCode(this)">复制</button>
+                    <pre><code>ping github.com</code></pre>
+                </div>
+                
+                <p class="no-indent"><strong>成功判据：</strong></p>
+                <ul>
+                    <li>有响应（不是 "Request timed out"）</li>
+                    <li>延迟在 300ms 以内为佳</li>
+                </ul>
+                
+                <blockquote>
+                    <p>注意：部分 VPN 可能会屏蔽 ICMP 协议导致 ping 不通，但实际访问正常。如果 ping 不通但浏览器能正常访问，以浏览器为准。</p>
+                </blockquote>
+            </div>
+
+            <div class="cell">
+                <p>完成了网络检测后，如果你发现现有的 VPN 不够稳定，或者你还没有 VPN，下一章我们将推荐一个专为开发者设计的解决方案。</p>
+            </div>
+
+            <!-- Section 3 -->
+            <div class="cell">
+                <h2 id="section3">3. VPN 推荐：ViewTurbo——开发者友好型 VPN</h2>
+            </div>
+
+            <div class="cell">
+                <p>如果你还没有 VPN，或者现有的 VPN 不够稳定，这一章将推荐一个专门针对开发者场景优化的方案：<strong>ViewTurbo</strong>。</p>
+                <p>为什么推荐 ViewTurbo 而不是其他 VPN？因为它不是一个通用的「科学上网」工具，而是<span class="highlight">专门为工程团队打造的终端代理与仓库加速方案</span>。这意味着它在 GitHub、npm、Docker 等开发场景上做了专门的优化。</p>
+            </div>
+
+            <div class="cell">
+                <p>ViewTurbo 提供了完整的配置教程，这里只给出快速上手的核心步骤，详细配置请参考官网帮助文档。</p>
+                
+                <p class="no-indent"><strong>步骤一：访问官网注册账户</strong></p>
+                <p>访问 ViewTurbo 官网：<a href="https://web.vtpro.xyz/zh" target="_blank">https://web.vtpro.xyz/zh</a></p>
+                <p>点击「注册」创建账户。注册即可获得免费体验流量。</p>
+                
+                <div class="img-container">
+                    <img src="https://muyu20241105.oss-cn-beijing.aliyuncs.com/images/202602021323776.png" alt="ViewTurbo官网">
+                </div>
+                
+                <p class="no-indent"><strong>步骤二：下载客户端</strong></p>
+                <p>登录后，点击「下载」，选择适合你系统的版本：</p>
+                <ul>
+                    <li>Windows 用户：下载 Windows 客户端</li>
+                    <li>macOS 用户：下载 macOS 客户端</li>
+                    <li>Linux 用户：参考官网的 Linux 配置指南</li>
+                </ul>
+                
+                <p class="no-indent"><strong>步骤三：安装并登录</strong></p>
+                <p>安装客户端后，使用注册的账户登录。</p>
+                
+                <p class="no-indent"><strong>步骤四：连接并测试</strong></p>
+                <p>选择一个节点，点击连接。连接成功后，按照本章第 2 节的方法进行测试，确认 GitHub 和 AI 服务可正常访问。</p>
+                
+                <div class="img-container">
+                    <img src="https://muyu20241105.oss-cn-beijing.aliyuncs.com/images/202602021323071.png" alt="ViewTurbo客户端">
+                </div>
+                
+                <blockquote>
+                    <p>提示：ViewTurbo 官网提供了详细的帮助文档，包括终端代理配置、分流规则设置等进阶内容。建议在完成基础配置后，根据自己的需求进一步优化。</p>
+                </blockquote>
+            </div>
+        </main>
+
+        <!-- Footer -->
+        <footer class="notebook-footer">
+            <p class="copyright">《Vibe Coding AI全栈开发实战》· 木羽老师</p>
+        </footer>
+    </div>
+    <!-- Image Modal -->
+    <div class="modal" id="imageModal">
+        <span class="modal-close" onclick="closeModal()">&times;</span>
+        <img id="modalImage" src="" alt="">
+    </div>
+
+    <script>
+        // Image click to zoom
+        document.querySelectorAll('.cell img').forEach(img => {
+            img.addEventListener('click', function() {
+                const modal = document.getElementById('imageModal');
+                const modalImg = document.getElementById('modalImage');
+                modal.classList.add('active');
+                modalImg.src = this.src;
+            });
+        });
+
+        // Close modal
+        function closeModal() {
+            document.getElementById('imageModal').classList.remove('active');
+        }
+
+        // Click outside to close
+        document.getElementById('imageModal').addEventListener('click', function(e) {
+            if (e.target === this) {
+                closeModal();
+            }
+        });
+
+        // ESC key to close
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                closeModal();
+            }
+        });
+
+        // Copy code function
+        function copyCode(btn) {
+            const code = btn.nextElementSibling.querySelector('code').innerText;
+            navigator.clipboard.writeText(code).then(() => {
+                btn.textContent = '已复制 ✓';
+                btn.classList.add('copied');
+                setTimeout(() => {
+                    btn.textContent = '复制';
+                    btn.classList.remove('copied');
+                }, 2000);
+            });
+        }
+    </script>
+</body>
+</html>

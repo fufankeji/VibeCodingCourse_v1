@@ -1,0 +1,914 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>导学2：Cursor安装部署与订阅指南</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Source+Sans+Pro:wght@400;600;700&family=Source+Code+Pro:wght@400;500&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            font-family: 'Noto Sans SC', 'Source Sans Pro', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #faf8f5;
+            color: #3d3d3d;
+            line-height: 1.7;
+            font-size: 15px;
+            position: relative;
+            min-height: 100vh;
+        }
+
+        /* Animated background */
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: 
+                radial-gradient(ellipse 80% 50% at 20% 40%, rgba(212, 165, 116, 0.15) 0%, transparent 50%),
+                radial-gradient(ellipse 60% 40% at 80% 20%, rgba(180, 140, 100, 0.1) 0%, transparent 50%),
+                radial-gradient(ellipse 50% 60% at 70% 80%, rgba(200, 160, 120, 0.12) 0%, transparent 50%);
+            animation: bgFloat 20s ease-in-out infinite;
+            z-index: -1;
+            pointer-events: none;
+        }
+
+        @keyframes bgFloat {
+            0%, 100% {
+                transform: translate(0, 0) scale(1);
+                opacity: 1;
+            }
+            25% {
+                transform: translate(20px, -30px) scale(1.05);
+                opacity: 0.8;
+            }
+            50% {
+                transform: translate(-10px, 20px) scale(0.98);
+                opacity: 1;
+            }
+            75% {
+                transform: translate(-20px, -10px) scale(1.02);
+                opacity: 0.9;
+            }
+        }
+
+        /* Floating particles */
+        .particles {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: -1;
+            overflow: hidden;
+        }
+
+        .particle {
+            position: absolute;
+            width: 4px;
+            height: 4px;
+            background: rgba(212, 165, 116, 0.3);
+            border-radius: 50%;
+            animation: float 15s infinite ease-in-out;
+        }
+
+        .particle:nth-child(1) { left: 10%; animation-delay: 0s; animation-duration: 20s; }
+        .particle:nth-child(2) { left: 20%; animation-delay: 2s; animation-duration: 18s; }
+        .particle:nth-child(3) { left: 30%; animation-delay: 4s; animation-duration: 22s; }
+        .particle:nth-child(4) { left: 40%; animation-delay: 1s; animation-duration: 16s; }
+        .particle:nth-child(5) { left: 50%; animation-delay: 3s; animation-duration: 24s; }
+        .particle:nth-child(6) { left: 60%; animation-delay: 5s; animation-duration: 19s; }
+        .particle:nth-child(7) { left: 70%; animation-delay: 2s; animation-duration: 21s; }
+        .particle:nth-child(8) { left: 80%; animation-delay: 4s; animation-duration: 17s; }
+        .particle:nth-child(9) { left: 90%; animation-delay: 1s; animation-duration: 23s; }
+
+        @keyframes float {
+            0%, 100% {
+                transform: translateY(100vh) scale(0);
+                opacity: 0;
+            }
+            10% {
+                opacity: 1;
+                transform: translateY(90vh) scale(1);
+            }
+            90% {
+                opacity: 1;
+                transform: translateY(10vh) scale(1);
+            }
+            100% {
+                transform: translateY(0vh) scale(0);
+                opacity: 0;
+            }
+        }
+
+        .notebook {
+            max-width: 960px;
+            margin: 0 auto;
+            background: #ffffff;
+            min-height: 100vh;
+            box-shadow: 0 0 40px rgba(0,0,0,0.06);
+        }
+
+        /* Header */
+        .notebook-header {
+            background: linear-gradient(135deg, #e8d5b7 0%, #f0e6d3 50%, #d4a574 100%);
+            color: #5c4a32;
+            padding: 40px 40px;
+            text-align: center;
+        }
+
+        .notebook-header h1 {
+            font-size: 1.8rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .notebook-header .subtitle {
+            opacity: 0.9;
+            font-size: 0.95rem;
+        }
+
+        /* Cell */
+        .cell {
+            border-bottom: 1px solid #e8e8e8;
+            padding: 20px 40px;
+        }
+
+        .cell:last-child {
+            border-bottom: none;
+        }
+
+        /* Markdown content */
+        .cell h1 {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: #333;
+            margin: 10px 0 20px;
+            text-align: center;
+        }
+
+        .cell h2 {
+            font-size: 1.4rem;
+            font-weight: 700;
+            color: #333;
+            margin: 30px 0 15px;
+            padding-bottom: 8px;
+            border-bottom: 2px solid #667eea;
+        }
+
+        .cell h3 {
+            font-size: 1.15rem;
+            font-weight: 600;
+            color: #555;
+            margin: 25px 0 12px;
+        }
+
+        .cell p {
+            margin: 12px 0;
+            text-align: justify;
+            text-indent: 2em;
+        }
+
+        .cell p.no-indent {
+            text-indent: 0;
+        }
+
+        .cell ul, .cell ol {
+            margin: 12px 0 12px 2em;
+            padding-left: 20px;
+        }
+
+        .cell li {
+            margin: 6px 0;
+        }
+
+        .cell strong {
+            font-weight: 600;
+            color: #333;
+        }
+
+        /* Highlight text */
+        .highlight {
+            color: #d63031;
+            font-weight: 500;
+        }
+
+        /* Links */
+        .cell a {
+            color: #667eea;
+            text-decoration: none;
+        }
+
+        .cell a:hover {
+            text-decoration: underline;
+        }
+
+        /* Code */
+        .cell code {
+            font-family: 'Source Code Pro', Consolas, Monaco, monospace;
+            background: #f1f3f5;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 0.9em;
+            color: #e83e8c;
+        }
+
+        .cell .code-block {
+            position: relative;
+            margin: 16px 0;
+        }
+
+        .cell pre {
+            background: #282c34;
+            color: #abb2bf;
+            padding: 16px 20px;
+            border-radius: 6px;
+            overflow-x: auto;
+            margin: 0;
+            font-family: 'Source Code Pro', Consolas, Monaco, monospace;
+            font-size: 0.9em;
+            line-height: 1.5;
+        }
+
+        .cell pre code {
+            background: none;
+            padding: 0;
+            color: inherit;
+        }
+
+        .copy-btn {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background: rgba(255,255,255,0.1);
+            border: none;
+            color: #888;
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: 'Source Sans Pro', sans-serif;
+        }
+
+        .copy-btn:hover {
+            background: rgba(255,255,255,0.2);
+            color: #fff;
+        }
+
+        .copy-btn.copied {
+            background: #27ae60;
+            color: white;
+        }
+
+        /* Images */
+        .cell .img-container {
+            text-align: center;
+            margin: 20px 0;
+        }
+
+        .cell img {
+            max-width: 80%;
+            border-radius: 8px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            cursor: zoom-in;
+            transition: transform 0.2s ease;
+        }
+
+        .cell img:hover {
+            transform: scale(1.02);
+        }
+
+        /* Modal for image zoom */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.9);
+            cursor: zoom-out;
+        }
+
+        .modal.active {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal img {
+            max-width: 90%;
+            max-height: 90%;
+            border-radius: 8px;
+            box-shadow: 0 0 30px rgba(0,0,0,0.5);
+        }
+
+        .modal-close {
+            position: absolute;
+            top: 20px;
+            right: 30px;
+            color: white;
+            font-size: 40px;
+            font-weight: 300;
+            cursor: pointer;
+            transition: color 0.2s;
+        }
+
+        .modal-close:hover {
+            color: #d4a574;
+        }
+
+        /* Tables */
+        .cell table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px auto;
+            font-size: 0.95em;
+        }
+
+        .cell th, .cell td {
+            padding: 12px 16px;
+            border: 1px solid #ddd;
+            text-align: center;
+        }
+
+        .cell th {
+            background: #667eea;
+            color: white;
+            font-weight: 600;
+        }
+
+        .cell td:last-child {
+            text-align: left;
+        }
+
+        .cell tr:nth-child(even) {
+            background: #f8f9fa;
+        }
+
+        .cell tr:hover {
+            background: #e8f4f8;
+        }
+
+        /* Blockquote */
+        .cell blockquote {
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            padding: 15px 20px;
+            margin: 20px 0;
+            border-radius: 0 6px 6px 0;
+        }
+
+        .cell blockquote p {
+            text-indent: 0;
+            margin: 0;
+        }
+
+        /* Table title */
+        .table-title {
+            text-align: center;
+            font-weight: 600;
+            font-size: 1.05rem;
+            margin: 20px 0 10px;
+            color: #333;
+        }
+
+        /* Table of Contents */
+        .toc {
+            background: #faf8f5;
+            border-radius: 8px;
+            padding: 20px 30px;
+            margin: 0;
+            border: 1px solid #e8e0d5;
+        }
+
+        .toc-title {
+            font-weight: 600;
+            font-size: 1.1rem;
+            margin-bottom: 15px;
+            color: #5c4a32;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .toc-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .toc-list li {
+            margin: 8px 0;
+        }
+
+        .toc-list a {
+            color: #666;
+            text-decoration: none;
+            font-size: 0.95rem;
+            transition: all 0.2s;
+            display: block;
+            padding: 4px 0;
+        }
+
+        .toc-list a:hover {
+            color: #d4a574;
+            padding-left: 8px;
+        }
+
+        .toc-list .toc-h3 {
+            padding-left: 20px;
+            font-size: 0.9rem;
+        }
+
+        /* Footer */
+        .notebook-footer {
+            background: #f8f9fa;
+            padding: 30px 40px;
+            text-align: center;
+            border-top: 1px solid #e8e8e8;
+        }
+
+        .copyright {
+            color: #888;
+            font-size: 0.9rem;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .cell {
+                padding: 15px 20px;
+            }
+            .cell img {
+                max-width: 100%;
+            }
+            .notebook-header {
+                padding: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Floating particles -->
+    <div class="particles">
+        <div class="particle"></div>
+        <div class="particle"></div>
+        <div class="particle"></div>
+        <div class="particle"></div>
+        <div class="particle"></div>
+        <div class="particle"></div>
+        <div class="particle"></div>
+        <div class="particle"></div>
+        <div class="particle"></div>
+    </div>
+
+    <div class="notebook">
+        <!-- Header -->
+        <header class="notebook-header">
+            <h1>《Vibe Coding AI全栈开发实战》</h1>
+            <p class="subtitle">开发环境配置前置准备 · 导学第二课</p>
+        </header>
+
+        <!-- Content -->
+        <main>
+            <!-- Intro -->
+            <div class="cell">
+                <h1>Cursor 安装部署与订阅指南</h1>
+            </div>
+
+            <!-- Table of Contents -->
+            <div class="cell">
+                <div class="toc">
+                    <div class="toc-title">📑 目录</div>
+                    <ul class="toc-list">
+                        <li><a href="#section1">1. Cursor 的定位与核心价值</a></li>
+                        <li><a href="#section1-1" class="toc-h3">1.1 Cursor 的官方定义：AI-native IDE</a></li>
+                        <li><a href="#section1-2" class="toc-h3">1.2 Cursor 相对传统编辑器的独特之处</a></li>
+                        <li><a href="#section2">2. 全平台安装部署与账号体系</a></li>
+                        <li><a href="#section2-1" class="toc-h3">2.1 官方唯一下载入口</a></li>
+                        <li><a href="#section2-2" class="toc-h3">2.2 Windows 安装步骤</a></li>
+                        <li><a href="#section2-3" class="toc-h3">2.3 macOS 安装步骤</a></li>
+                        <li><a href="#section2-4" class="toc-h3">2.4 Linux 安装</a></li>
+                        <li><a href="#section2-5" class="toc-h3">2.5 Cursor 定价模型与账号体系</a></li>
+                        <li><a href="#section3">3. 订阅与功能验证</a></li>
+                        <li><a href="#section3-1" class="toc-h3">3.1 官方订阅流程</a></li>
+                        <li><a href="#section3-2" class="toc-h3">3.2 应用测试</a></li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="cell">
+                <p>今天我们聚焦的是 <code>Cursor</code> 这款近年来增长最快的 <strong>AI 原生集成开发环境（AI-native IDE）</strong>。在传统开发工具还停留在"编辑器 + Copilot 插件"阶段时，Cursor 已经把 AI 深度嵌入到了开发流程的底层——从代码理解、补全、重构到多步 Agent 执行，整个 IDE 的核心逻辑都围绕 AI 重新设计。这也是它被称为"下一代 IDE"的关键原因，而不仅仅是"VS Code 的又一个竞品"。</p>
+                <p>Cursor 最值得关注的价值并不是"写代码更快"，而是它通过 <code>Agent Mode</code>、<code>Maximum Context Window</code> 和 <code>Unlimited Tab Completion</code> 这些机制，正在重新定义工程师如何与代码仓库协作。<span class="highlight">尤其在真实项目中，这种"AI 参与研发流程"的能力，将远超传统编辑器的外挂式辅助。</span>好消息是，Cursor 官方支付体系现已支持中国用户直接订阅——支持人民币结算、银联卡支付，账单地址可直接选择中国，这让国内开发者的上手门槛大大降低。</p>
+                <p>为了把 Cursor 真正讲清楚，接下来我们会沿着一条完整的教学主线展开：首先建立 Cursor 的定位与核心价值认知，理解它与传统编辑器的本质差异；然后进入 Windows/macOS/Linux 的官方安装部署流程，同时拆解 Free/Pro/Business 的账号体系与配额差异；最后完成官方订阅流程并通过功能测试，确保大家可以真正跑通一条"安装 → 订阅 → 可用"的闭环路径。</p>
+            </div>
+
+            <div class="cell">
+                <div class="img-container">
+                    <img src="https://muyu20241105.oss-cn-beijing.aliyuncs.com/images/202602012150050.png" alt="Cursor封面图">
+                </div>
+            </div>
+
+            <!-- Section 1 -->
+            <div class="cell">
+                <h2 id="section1">1. Cursor 的定位与核心价值</h2>
+            </div>
+
+            <div class="cell">
+                <p>在正式进入安装之前，我们必须先解决一个关键问题：Cursor 到底是什么？它为什么在工程实践中会被认为是"AI IDE"，而不仅仅是"VS Code + AI 功能"？这一章的作用，就是帮助我们建立 Cursor 的宏观定位，并理解它相对于传统编辑器的本质差异。只有真正理解了这个差异，后续的安装、订阅和配置才有明确的目标感——我们不是在"装一个软件"，而是在搭建一个全新的 AI 协作研发环境。</p>
+                <p>本章将从两个维度展开：首先明确 Cursor 的官方定义与设计哲学，然后通过与传统编辑器的对比，把 AI 集成层级的差异讲透。</p>
+            </div>
+
+            <div class="cell">
+                <h3 id="section1-1">1.1 Cursor 的官方定义：AI-native IDE</h3>
+            </div>
+
+            <div class="cell">
+                <p>Cursor 在官网的定位非常直接：它不是在编辑器里加一个聊天窗口，而是 <strong>Built to make you extraordinarily productive</strong>——"为 AI 编程而生的开发环境"。这句话的关键在于"原生"二字：AI 不是 Cursor 的附加功能，而是 Cursor 的核心能力。</p>
+                <p>这意味着 Cursor 的设计出发点不是"辅助写代码"，而是"AI 参与开发流程"。具体来说，Cursor 的 AI 能力覆盖了以下几个维度：</p>
+                <ul>
+                    <li><strong>代码理解</strong>：不是单文件级别的语法分析，而是全项目级的语义理解</li>
+                    <li><strong>上下文检索</strong>：通过 <code>Maximum Context Window</code> 让 AI 看到更完整的项目结构</li>
+                    <li><strong>多文件修改</strong>：支持 Agent 自动执行跨文件的重构与生成任务</li>
+                    <li><strong>任务自动执行</strong>：通过 <code>Agent Mode</code> 让 AI 成为真正的"执行者"而不仅仅是"建议者"</li>
+                </ul>
+                <p><span class="highlight">这是 Cursor 与所有"编辑器 + AI 插件"方案的本质区别：AI 不是在旁边给建议，而是直接参与到研发流程的执行链路中。</span></p>
+            </div>
+
+            <div class="cell">
+                <h3 id="section1-2">1.2 Cursor 相对传统编辑器的独特之处</h3>
+            </div>
+
+            <div class="cell">
+                <p>当我们对比 <code>VS Code + Copilot</code> 与 Cursor 时，可以发现差异集中在 AI 的集成层级上：传统编辑器是外挂式增强，而 Cursor 是 IDE 内核级 AI 工作流。为了把这个差异讲清楚，我们用一张对比表来呈现：</p>
+                <p class="table-title">AI 集成方式的本质差异对比</p>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>对比维度</th>
+                            <th>VS Code + Copilot</th>
+                            <th>Cursor</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>AI 集成方式</td>
+                            <td>插件化外挂</td>
+                            <td>IDE 原生内置</td>
+                        </tr>
+                        <tr>
+                            <td>上下文理解</td>
+                            <td>单文件级别</td>
+                            <td>全项目级 Maximum Context Window</td>
+                        </tr>
+                        <tr>
+                            <td>自动修改代码</td>
+                            <td>仅建议，需手动确认</td>
+                            <td>支持 Agent 多步自动修改</td>
+                        </tr>
+                        <tr>
+                            <td>补全能力</td>
+                            <td>单点补全</td>
+                            <td>Unlimited Tab Completion</td>
+                        </tr>
+                        <tr>
+                            <td>多模型支持</td>
+                            <td>相对固定（GPT 系列）</td>
+                            <td>支持 OpenAI/Claude/Gemini 等</td>
+                        </tr>
+                        <tr>
+                            <td>任务执行</td>
+                            <td>无 Agent 能力</td>
+                            <td>支持 Agent Mode 多步执行</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="cell">
+                <p>从表中可以清晰看到，Cursor 的核心优势在于它提供了 <strong>Maximum Context Windows</strong> 与 <strong>Agent Mode</strong>。前者意味着 AI 可以"看到"更大范围的项目代码，理解模块之间的依赖关系；后者意味着 AI 可以在项目级别执行复杂任务，而不仅仅是回答一个片段问题。</p>
+                <p>举个具体的例子：如果我们需要在一个 FastAPI 项目中新增一个 CRUD 模块，传统 Copilot 只能在你打开的单个文件里给补全建议；而 Cursor 的 Agent 可以自动识别项目结构，创建 router、schema、service 等多个文件，并保持它们之间的引用关系正确。</p>
+                <div class="img-container">
+                    <img src="https://muyu20241105.oss-cn-beijing.aliyuncs.com/images/202602012200735.png" alt="Cursor Agent示例">
+                </div>
+            </div>
+
+            <div class="cell">
+                <blockquote>
+                    <p><strong>小结</strong>：Cursor 的价值不在于"补全更快"，而在于它把 AI 从"旁观者"变成了"参与者"。理解了这一点，我们才能在后续的安装和配置中知道自己在追求什么——不是装一个工具，而是搭建一个 AI 协作的研发环境。接下来，我们就进入具体的安装部署流程。</p>
+                </blockquote>
+            </div>
+
+            <!-- Section 2 -->
+            <div class="cell">
+                <h2 id="section2">2. 全平台安装部署与账号体系</h2>
+            </div>
+
+            <div class="cell">
+                <p>上一章我们理解了 Cursor 的定位与核心价值，知道了它为什么值得我们花时间去学习和配置。那么这一章我们就进入最关键的落地环节：如何在不同操作系统上完成 Cursor 的官方安装，以及如何理解它的账号体系与定价模型。</p>
+                <p>这一章的目标是让学员能够明确三个问题：官方下载入口在哪里？不同操作系统的安装有哪些差异和坑？Free/Pro/Business 版本的配额差异到底在哪里？我们会先完成安装部署，再拆解定价体系，为下一章的国内充值做好认知准备。</p>
+            </div>
+
+            <div class="cell">
+                <h3 id="section2-1">2.1 官方唯一下载入口</h3>
+            </div>
+
+            <div class="cell">
+                <p>Cursor 的官方下载入口只有一个，即官网 Download 页面：<a href="https://cursor.com/download" target="_blank">https://cursor.com/download</a>，支持 Windows、macOS 与 Linux 全平台版本。</p>
+                <p><span class="highlight">任何第三方镜像都不建议作为主渠道</span>，因为 Cursor 的更新频率非常高，第三方镜像可能存在版本滞后或安全风险。课程中必须强调以官网为准。</p>
+                <div class="img-container">
+                    <img src="https://muyu20241105.oss-cn-beijing.aliyuncs.com/images/202602012201795.png" alt="Cursor下载页面">
+                </div>
+                <p>此教程使用的是目前最新的 Cursor 2.4 版本。</p>
+            </div>
+
+            <div class="cell">
+                <h3 id="section2-2">2.2 Windows 安装步骤（完整闭环）</h3>
+            </div>
+
+            <div class="cell">
+                <p>Windows 是国内使用最广泛的桌面环境，因此我们必须把步骤拆到"零基础可执行"的程度。</p>
+                
+                <p class="no-indent"><strong>步骤一：下载安装包</strong></p>
+                <p>进入 Cursor 官方下载页后，我们会看到 Windows 下提供两类版本：<code>System Installer</code> 与 <code>User Installer</code>。两者的区别在于：</p>
+                <ul>
+                    <li><strong>System Installer</strong>：安装到系统目录，需要管理员权限，适合多用户共享的机器</li>
+                    <li><strong>User Installer</strong>：安装到当前用户目录，无需管理员权限，适合个人开发机</li>
+                </ul>
+                <p>一般个人用户直接选择 <strong>User Installer</strong> 即可。</p>
+                <div class="img-container">
+                    <img src="https://muyu20241105.oss-cn-beijing.aliyuncs.com/images/202602012205047.png" alt="Windows下载选项">
+                </div>
+                <p>下载完成后，你将获得一个 <code>.exe</code> 安装文件。</p>
+                <div class="img-container">
+                    <img src="https://muyu20241105.oss-cn-beijing.aliyuncs.com/images/202602012208854.png" alt="安装文件">
+                </div>
+                
+                <p class="no-indent"><strong>步骤二：执行安装并验证环境</strong></p>
+                <p>双击安装包后，保持默认路径安装即可。安装完成后启动 Cursor，<span class="highlight">首次启动时 Windows Defender 可能提示网络访问权限，必须允许</span>，否则 AI 服务无法连接到 Cursor 的云端 API。</p>
+                <p class="no-indent"><strong>成功判据</strong>：Cursor 可以正常打开编辑器界面。</p>
+                <div class="img-container">
+                    <img src="https://muyu20241105.oss-cn-beijing.aliyuncs.com/images/202602012210304.png" alt="Cursor界面">
+                </div>
+            </div>
+
+            <div class="cell">
+                <h3 id="section2-3">2.3 macOS 安装步骤</h3>
+            </div>
+
+            <div class="cell">
+                <p>macOS 环境下 Cursor 提供 ARM64（Apple Silicon）与 x64（Intel）版本，下载时必须匹配芯片架构。如果你不确定自己的 Mac 是什么芯片，可以点击左上角苹果图标 → "关于本机"查看。</p>
+                
+                <p class="no-indent"><strong>步骤一：下载 DMG 包</strong></p>
+                <p>选择 <code>Mac Universal</code>（同时支持两种架构）或对应架构版本下载。Universal 版本体积稍大，但兼容性最好。</p>
+                
+                <p class="no-indent"><strong>步骤二：拖拽安装</strong></p>
+                <p>打开 DMG 后将 Cursor 图标拖入 Applications 文件夹即可。</p>
+                
+                <p class="no-indent"><strong>步骤三：处理安全验证</strong></p>
+                <p>首次运行可能提示"无法打开，因为无法验证开发者"。解决方法：系统设置 → 隐私与安全性 → 点击"仍要打开"。</p>
+                <p class="no-indent"><strong>成功判据</strong>：Cursor 正常启动，无安全警告弹窗。</p>
+            </div>
+
+            <div class="cell">
+                <h3 id="section2-4">2.4 Linux 安装（Deb/RPM/AppImage）</h3>
+            </div>
+
+            <div class="cell">
+                <p>在 Linux 环境下 Cursor 提供 <code>.deb</code>、<code>.rpm</code> 与 <code>AppImage</code> 三种格式，分别适配不同的发行版：</p>
+                <ul>
+                    <li><strong>.deb</strong>：适用于 Debian/Ubuntu 系列</li>
+                    <li><strong>.rpm</strong>：适用于 Fedora/CentOS/RHEL 系列</li>
+                    <li><strong>AppImage</strong>：通用格式，无需安装，直接运行</li>
+                </ul>
+                <p>下面我们以 Ubuntu 为例演示 <code>.deb</code> 包的安装流程：</p>
+                <div class="code-block">
+                    <button class="copy-btn" onclick="copyCode(this)">复制</button>
+                    <pre><code># Debian/Ubuntu 系统安装 Cursor
+# 假设已下载 cursor.deb 到当前目录
+
+# 步骤 1：使用 dpkg 安装 deb 包
+sudo dpkg -i cursor.deb
+
+# 步骤 2：修复可能缺失的依赖
+sudo apt-get install -f -y</code></pre>
+                </div>
+                <p>上面这段命令做了两件事：首先通过 <code>dpkg</code> 直接安装 deb 包，然后通过 <code>apt-get install -f</code> 自动修复可能缺失的依赖库。执行后如果依赖完整，Cursor 将出现在应用列表中，启动即可。</p>
+                <p class="no-indent"><strong>成功判据</strong>：在终端输入 <code>cursor</code> 或从应用菜单启动，能正常打开编辑器界面。</p>
+            </div>
+
+            <div class="cell">
+                <h3 id="section2-5">2.5 Cursor 定价模型与账号体系</h3>
+            </div>
+
+            <div class="cell">
+                <p>当 Cursor 安装完成后，大家会立刻遇到第二个核心问题：免费版到底能用到什么程度？Pro 的价值在哪里？Business 是否值得团队采购？我们需要系统拆解 Cursor 的定价与配额体系，才能做出合理的订阅决策。</p>
+                <p>Cursor 当前提供 <strong>Hobby（Free）、Pro、Pro+ 与 Ultra</strong> 四档个人方案，其中 Pro 是最主流的订阅层级。下面这张表列出了各版本的核心权益差异：</p>
+                <p class="table-title">Cursor 各版本核心权益差异</p>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>版本</th>
+                            <th>美元价格</th>
+                            <th>人民币价格</th>
+                            <th>Tab 补全</th>
+                            <th>Agent 能力</th>
+                            <th>适用场景</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Hobby Free</td>
+                            <td>免费</td>
+                            <td>免费</td>
+                            <td>Limited</td>
+                            <td>Limited Requests</td>
+                            <td>体验试用</td>
+                        </tr>
+                        <tr>
+                            <td>Pro 月付</td>
+                            <td>$20/月</td>
+                            <td>¥144.61/月</td>
+                            <td>Unlimited</td>
+                            <td>Extended Limits</td>
+                            <td>个人开发者主力</td>
+                        </tr>
+                        <tr>
+                            <td>Pro+</td>
+                            <td>$60/月</td>
+                            <td>约¥433.82/月</td>
+                            <td>Unlimited</td>
+                            <td>3x Usage</td>
+                            <td>高频使用者</td>
+                        </tr>
+                        <tr>
+                            <td>Ultra</td>
+                            <td>$200/月</td>
+                            <td>约¥1442.59/月</td>
+                            <td>Unlimited</td>
+                            <td>20x Usage</td>
+                            <td>重度依赖 AI</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="cell">
+                <p>需要特别强调的是，<span class="highlight">Cursor Pro 已从过去的"请求次数计费"转向 Usage Credit 模型</span>。Pro 版本包含 $20 的 Agent API 使用额度，这意味着复杂任务（如多步 Agent 执行）会消耗更多 Credit，而简单补全消耗较少。</p>
+                <p>对于大多数个人开发者来说，<strong>Pro 版本是性价比最高的选择</strong>：Unlimited Tab Completion 可以满足日常编码需求，Extended Agent Limits 足够支撑中等复杂度的项目任务。订阅定价地址：<a href="https://cursor.com/cn/pricing" target="_blank">https://cursor.com/cn/pricing</a></p>
+                <div class="img-container">
+                    <img src="https://muyu20241105.oss-cn-beijing.aliyuncs.com/images/202602012213870.png" alt="Cursor定价页面">
+                </div>
+            </div>
+
+            <div class="cell">
+                <blockquote>
+                    <p><strong>小结</strong>：这一章我们完成了 Cursor 在 Windows/macOS/Linux 三大平台的安装部署，并拆解了 Free/Pro/Ultra 的定价与配额差异。好消息是，Cursor 官方现已支持中国用户直接订阅，支持人民币结算和银联卡。下一章，我们就来讲解具体的订阅流程与初始化配置。</p>
+                </blockquote>
+            </div>
+
+            <!-- Section 3 -->
+            <div class="cell">
+                <h2 id="section3">3. 订阅与功能验证：从支付到可用的完整闭环</h2>
+            </div>
+
+            <div class="cell">
+                <p>上一章我们完成了安装并理解了定价体系，知道 Pro 是最值得订阅的版本。好消息是，<span class="highlight">Cursor 官方现已支持中国用户直接订阅</span>——支持人民币（CNY）结算、银联/VISA/MasterCard/JCB 等多种卡片，账单地址可直接选择中国。这意味着国内开发者不再需要绕道海外支付渠道，订阅流程已经非常顺畅。</p>
+                <p>这一章我们会先讲解官方订阅的具体操作流程，然后通过功能测试确认 AI 服务已激活。跑完这一章，你将拥有一个"真正可用"的 Cursor Pro 环境。</p>
+            </div>
+
+            <div class="cell">
+                <h3 id="section3-1">3.1 官方订阅流程（推荐）</h3>
+            </div>
+
+            <div class="cell">
+                <p>Cursor 官方支付页面现已支持中国用户直接订阅，提供两种货币结算方式：</p>
+                
+                <p class="no-indent"><strong>CNY 人民币结算：</strong></p>
+                <ul>
+                    <li><strong>银联卡</strong>（UnionPay）</li>
+                    <li><strong>VISA / MasterCard / JCB / American Express</strong> 信用卡或借记卡</li>
+                    <li>价格：Pro 月付 <strong>¥144.61/月</strong>，年付 <strong>¥115.69/月</strong>（节省 ¥347）</li>
+                </ul>
+                
+                <p class="no-indent"><strong>USD 美元结算：</strong></p>
+                <ul>
+                    <li><strong>支付宝</strong>（Alipay）✅</li>
+                    <li><strong>银行卡</strong>（银联/VISA/MasterCard 等）</li>
+                    <li>价格：Pro 月付 <strong>$20/月</strong>，年付 <strong>$16/月</strong>（节省 $48）</li>
+                </ul>
+                
+                <p><span class="highlight">小技巧：如果你更习惯用支付宝，可以切换到 USD 模式使用支付宝支付。</span></p>
+                <p>订阅步骤非常简单：</p>
+                
+                <p class="no-indent"><strong>步骤一：进入订阅页面</strong></p>
+                <p>打开 Cursor → 点击左下角账户图标 → 选择 <code>Upgrade Plan</code>，或直接访问 <a href="https://cursor.com/settings" target="_blank">cursor.com/settings</a>。</p>
+                <div class="img-container">
+                    <img src="https://muyu20241105.oss-cn-beijing.aliyuncs.com/images/202602012215758.png" alt="升级入口">
+                </div>
+                
+                <p class="no-indent"><strong>步骤二：选择货币与订阅方案</strong></p>
+                <p>在订阅页面左上角可以切换 <strong>CNY/USD</strong> 货币显示，根据你的支付偏好选择。</p>
+                <div class="img-container">
+                    <img src="https://muyu20241105.oss-cn-beijing.aliyuncs.com/images/202602012227373.png" alt="货币选择">
+                </div>
+                
+                <p class="no-indent"><strong>步骤三：填写支付信息</strong></p>
+                <p>在支付页面填写银行卡信息，账单地址可以直接选择"中国"，填写真实的省市区和邮编即可。</p>
+                <p class="no-indent"><strong>成功判据</strong>：支付完成后，账号状态显示 <code>Pro</code>，编辑器中 Tab 补全和 Agent 功能解锁。</p>
+            </div>
+
+            <div class="cell">
+                <h3 id="section3-2">3.2 应用测试</h3>
+            </div>
+
+            <div class="cell">
+                <p>按 <code>Ctrl+I</code>（macOS 为 <code>Cmd+I</code>）打开 Agent 面板，输入一个真实任务，例如：</p>
+                <div class="code-block">
+                    <button class="copy-btn" onclick="copyCode(this)">复制</button>
+                    <pre><code>你好，进行测试</code></pre>
+                </div>
+                <p>如果能看到 Agent 正在"思考"和"执行"，说明 Agent Mode 已正常工作。</p>
+                <div class="img-container">
+                    <img src="https://muyu20241105.oss-cn-beijing.aliyuncs.com/images/202602012238610.png" alt="Agent测试">
+                </div>
+            </div>
+
+            <div class="cell">
+                <blockquote>
+                    <p><strong>小结</strong>：到这里，我们已经跑通了 Cursor 从"安装部署 → 理解定价 → 官方订阅 → 功能验证"的完整路径。Cursor 的价值并不在于"写代码更快"，而在于它通过 <code>Agent Mode</code> 与 <code>Maximum Context Window</code> 把 AI 变成了研发流程的真正参与者。</p>
+                </blockquote>
+            </div>
+        </main>
+
+        <!-- Footer -->
+        <footer class="notebook-footer">
+            <p class="copyright">《Vibe Coding AI全栈开发实战》· 木羽老师</p>
+        </footer>
+    </div>
+    
+    <!-- Image Modal -->
+    <div class="modal" id="imageModal">
+        <span class="modal-close" onclick="closeModal()">&times;</span>
+        <img id="modalImage" src="" alt="">
+    </div>
+
+    <script>
+        // Image click to zoom
+        document.querySelectorAll('.cell img').forEach(img => {
+            img.addEventListener('click', function() {
+                const modal = document.getElementById('imageModal');
+                const modalImg = document.getElementById('modalImage');
+                modal.classList.add('active');
+                modalImg.src = this.src;
+            });
+        });
+
+        // Close modal
+        function closeModal() {
+            document.getElementById('imageModal').classList.remove('active');
+        }
+
+        // Click outside to close
+        document.getElementById('imageModal').addEventListener('click', function(e) {
+            if (e.target === this) {
+                closeModal();
+            }
+        });
+
+        // ESC key to close
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                closeModal();
+            }
+        });
+
+        // Copy code function
+        function copyCode(btn) {
+            const code = btn.nextElementSibling.querySelector('code').innerText;
+            navigator.clipboard.writeText(code).then(() => {
+                btn.textContent = '已复制 ✓';
+                btn.classList.add('copied');
+                setTimeout(() => {
+                    btn.textContent = '复制';
+                    btn.classList.remove('copied');
+                }, 2000);
+            });
+        }
+    </script>
+</body>
+</html>

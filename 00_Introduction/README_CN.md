@@ -69,9 +69,9 @@ Vibe Coding 的核心工具链——Cursor、GitHub、AI 模型服务——都�
 
 | 编号 | 主题 | 说明 |
 |:---|:---|:---|
-| [Intro-01](./Lesson01_Network_and_VPN/) | 网络与VPN | 网络环境检测与 VPN 配置，确保 GitHub 和 AI 服务可访问 |
-| [Intro-02](./Lesson02_Cursor_Setup/) | Cursor 配置 | Cursor AI IDE 安装、账户注册与 Pro 订阅 |
-| [Intro-03](./Lesson03_Git_and_GitHub/) | Git 与 GitHub | Git 安装配置、GitHub 账户注册与 Token 配置 |
+| [Intro-01](./导学1：网络环境配置与VPN准备.html) | 网络与VPN | 网络环境检测与 VPN 配置，确保 GitHub 和 AI 服务可访问 |
+| [Intro-02](./导学2：Cursor安装部署与订阅.html) | Cursor 配置 | Cursor AI IDE 安装、账户注册与 Pro 订阅 |
+| [Intro-03](./导学3：Git安装与GitHub配置.html) | Git 与 GitHub | Git 安装配置、GitHub 账户注册与 Token 配置 |
 
 ---
 

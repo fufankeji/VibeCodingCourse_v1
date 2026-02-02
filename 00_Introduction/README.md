@@ -69,9 +69,9 @@ Three key steps:
 
 | # | Topic | Description |
 |:---|:---|:---|
-| [Intro-01](./Lesson01_Network_and_VPN/) | Network & VPN | Network environment detection and VPN configuration |
-| [Intro-02](./Lesson02_Cursor_Setup/) | Cursor Setup | Cursor AI IDE installation, registration, and Pro subscription |
-| [Intro-03](./Lesson03_Git_and_GitHub/) | Git & GitHub | Git installation, GitHub account, and Token configuration |
+| [Intro-01](./导学1：网络环境配置与VPN准备.html) | Network & VPN | Network environment detection and VPN configuration |
+| [Intro-02](./导学2：Cursor安装部署与订阅.html) | Cursor Setup | Cursor AI IDE installation, registration, and Pro subscription |
+| [Intro-03](./导学3：Git安装与GitHub配置.html) | Git & GitHub | Git installation, GitHub account, and Token configuration |
 
 ---
 

@@ -30,9 +30,9 @@
 
 | 课程 | 内容 | 预计用时 |
 |:---:|:---:|:---:|
-| Intro-01 | 网络环境配置与 VPN 准备 | 15-30 分钟 |
-| Intro-02 | Cursor AI IDE 安装与订阅 | 20-30 分钟 |
-| Intro-03 | Git 安装与 GitHub 配置 | 20-30 分钟 |
+| [Intro-01](./00_Introduction/导学1：网络环境配置与VPN准备.html) | 网络环境配置与 VPN 准备 | 15-30 分钟 |
+| [Intro-02](./00_Introduction/导学2：Cursor安装部署与订阅.html) | Cursor AI IDE 安装与订阅 | 20-30 分钟 |
+| [Intro-03](./00_Introduction/导学3：Git安装与GitHub配置.html) | Git 安装与 GitHub 配置 | 20-30 分钟 |
 
 </div>
 
@@ -163,6 +163,17 @@ cd VibeCodingCourse/00_Introduction
 ## License
 
 MIT License
+
+---
+
+## 📬 联系我们
+
+对课程感兴趣？扫码添加助教老师，获取更多学习资源和答疑支持：
+
+<div align="center">
+  <img src="./images/course.png" width="200" alt="助教老师二维码">
+  <p><b>扫码添加助教老师</b></p>
+</div>
 
 ---
 

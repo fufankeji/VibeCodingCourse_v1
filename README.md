@@ -30,9 +30,9 @@
 
 | Lesson | Content | Time |
 |:---:|:---:|:---:|
-| Intro-01 | Network & VPN Configuration | 15-30 min |
-| Intro-02 | Cursor AI IDE Setup & Subscription | 20-30 min |
-| Intro-03 | Git Installation & GitHub Configuration | 20-30 min |
+| [Intro-01](./00_Introduction/导学1：网络环境配置与VPN准备.html) | Network & VPN Configuration | 15-30 min |
+| [Intro-02](./00_Introduction/导学2：Cursor安装部署与订阅.html) | Cursor AI IDE Setup & Subscription | 20-30 min |
+| [Intro-03](./00_Introduction/导学3：Git安装与GitHub配置.html) | Git Installation & GitHub Configuration | 20-30 min |
 
 </div>
 
@@ -163,6 +163,17 @@ cd VibeCodingCourse/00_Introduction
 ## License
 
 MIT License
+
+---
+
+## 📬 Contact Us
+
+Interested in the course? Scan to connect with our teaching assistant for more resources and support:
+
+<div align="center">
+  <img src="./images/course.png" width="200" alt="Teaching Assistant QR Code">
+  <p><b>Scan to Add Teaching Assistant</b></p>
+</div>
 
 ---
 
