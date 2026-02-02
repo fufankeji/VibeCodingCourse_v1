@@ -110,66 +110,30 @@
 <table>
 <tr>
 <td width="50%" align="center">
-
-### Project 1: Smart Data Analysis Assistant
-
-<img src="./images/project_01_data_assistant.png" width="100%" alt="Project 1: Smart Data Analysis Assistant">
-
-**Week 1 Deliverable**
-
-Web data analysis assistant (query/aggregation/visualization)
-
-`Cursor` · `React` · `FastAPI` · `SQLite`
-
-Text-to-SQL · Echarts · Streaming Response
-
+<h3>Project 1: Smart Data Analysis Assistant</h3>
+<img src="./images/project_01_data_assistant.png" width="100%">
+<p><b>Week 1</b> · Text-to-SQL Data Analysis</p>
+<p><code>Cursor</code> <code>React</code> <code>FastAPI</code> <code>SQLite</code></p>
 </td>
 <td width="50%" align="center">
-
-### Project 2: ClawdBot (Multimodal Agent)
-
-<img src="./images/project_02_doubao_clone.png" width="100%" alt="Project 2: ClawdBot Development">
-
-**Week 2 Deliverable**
-
-High-fidelity interactive frontend-backend data flow loop
-
-`Cursor` · `React` · `FastAPI`
-
-GateWay Communication · Audio Stream · Agent Skills
-
+<h3>Project 2: ClawdBot Multimodal Agent</h3>
+<img src="./images/project_02_doubao_clone.png" width="100%">
+<p><b>Week 2</b> · Frontend-Backend Data Flow</p>
+<p><code>Cursor</code> <code>React</code> <code>FastAPI</code> <code>WebSocket</code></p>
 </td>
 </tr>
 <tr>
 <td width="50%" align="center">
-
-### Project 3: Multimodal RAG Knowledge Base
-
-<img src="./images/project_03_multimodal_rag.png" width="100%" alt="Project 3: Multimodal RAG Knowledge Base">
-
-**Week 3 Deliverable**
-
-End-to-end private knowledge base (data cleaning & vectorization)
-
-`Claude Code` · `React` · `LangChain` · `FastAPI`
-
-PDF/Excel/Image Parsing · OCR · RAG Source Tracing
-
+<h3>Project 3: Multimodal RAG Knowledge Base</h3>
+<img src="./images/project_03_multimodal_rag.png" width="100%">
+<p><b>Week 3</b> · End-to-End Private Knowledge Base</p>
+<p><code>Claude Code</code> <code>React</code> <code>LangChain</code> <code>FastAPI</code></p>
 </td>
 <td width="50%" align="center">
-
-### Project 4: Document Review Agent
-
-<img src="./images/project_04_doc_review_agent.png" width="100%" alt="Project 4: Document Review Agent">
-
-**Week 4 Deliverable**
-
-Production-ready commercial-grade deployable system
-
-`Claude Code` · `React` · `LangChain` · `Docker`
-
-Human-in-the-loop · Automated Review Pipeline · Docker
-
+<h3>Project 4: Document Review Agent</h3>
+<img src="./images/project_04_doc_review_agent.png" width="100%">
+<p><b>Week 4</b> · Production-Ready Deployable System</p>
+<p><code>Claude Code</code> <code>React</code> <code>LangChain</code> <code>Docker</code></p>
 </td>
 </tr>
 </table>

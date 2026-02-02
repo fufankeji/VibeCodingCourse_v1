@@ -110,66 +110,30 @@
 <table>
 <tr>
 <td width="50%" align="center">
-
-### 项目一：智能数据分析助理
-
-<img src="./images/project_01_data_assistant.png" width="100%" alt="项目一：智能数据分析助理">
-
-**Week 1 交付物**
-
-Web 数据分析助手（查询/聚合/可视化）
-
-`Cursor` · `React` · `FastAPI` · `SQLite`
-
-Text-to-SQL · Echarts 动态图表 · 流式响应
-
+<h3>项目一：智能数据分析助理</h3>
+<img src="./images/project_01_data_assistant.png" width="100%">
+<p><b>Week 1</b> · Text-to-SQL 数据分析助手</p>
+<p><code>Cursor</code> <code>React</code> <code>FastAPI</code> <code>SQLite</code></p>
 </td>
 <td width="50%" align="center">
-
-### 项目二：ClawdBot（多模态 Agent）
-
-<img src="./images/project_02_doubao_clone.png" width="100%" alt="项目二：ClawdBot开发">
-
-**Week 2 交付物**
-
-高保真、可交互的前后端数据流闭环
-
-`Cursor` · `React` · `FastAPI`
-
-GateWay 双向通信 · 双向音频流 · Agent Skills
-
+<h3>项目二：ClawdBot 多模态 Agent</h3>
+<img src="./images/project_02_doubao_clone.png" width="100%">
+<p><b>Week 2</b> · 前后端数据流闭环</p>
+<p><code>Cursor</code> <code>React</code> <code>FastAPI</code> <code>WebSocket</code></p>
 </td>
 </tr>
 <tr>
 <td width="50%" align="center">
-
-### 项目三：多模态 RAG 知识库
-
-<img src="./images/project_03_multimodal_rag.png" width="100%" alt="项目三：多模态RAG知识库">
-
-**Week 3 交付物**
-
-端到端私有知识库系统（数据清洗与向量化）
-
-`Claude Code` · `React` · `LangChain` · `FastAPI`
-
-PDF/Excel/图片解析 · OCR · RAG 溯源引用
-
+<h3>项目三：多模态 RAG 知识库</h3>
+<img src="./images/project_03_multimodal_rag.png" width="100%">
+<p><b>Week 3</b> · 端到端私有知识库系统</p>
+<p><code>Claude Code</code> <code>React</code> <code>LangChain</code> <code>FastAPI</code></p>
 </td>
 <td width="50%" align="center">
-
-### 项目四：智能文档审核 Agent
-
-<img src="./images/project_04_doc_review_agent.png" width="100%" alt="项目四：智能文档审核Agent">
-
-**Week 4 交付物**
-
-可直接部署上线的商业级源码系统
-
-`Claude Code` · `React` · `LangChain` · `Docker`
-
-Human-in-the-loop · 自动化审核流水线 · Docker 部署
-
+<h3>项目四：智能文档审核 Agent</h3>
+<img src="./images/project_04_doc_review_agent.png" width="100%">
+<p><b>Week 4</b> · 商业级可部署系统</p>
+<p><code>Claude Code</code> <code>React</code> <code>LangChain</code> <code>Docker</code></p>
 </td>
 </tr>
 </table>
