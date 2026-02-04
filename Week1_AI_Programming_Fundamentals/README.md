@@ -1,5 +1,11 @@
 # Week 1: AI Programming Fundamentals
 
+<div align="center">
+
+English | [中文](./README_CN.md)
+
+</div>
+
 ## Objectives
 
 Establish AI programming habits, complete LLM API integration, build a runnable intelligent application.
