@@ -1,0 +1,7 @@
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+openai==1.12.0
+sqlalchemy==2.0.25
+python-dotenv==1.0.0
+sse-starlette==2.0.0
+aiosqlite==0.19.0

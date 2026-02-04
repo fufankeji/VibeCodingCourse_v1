@@ -1,0 +1,9 @@
+{
+  "dependencies": {
+    "highlight.js": "^11.11.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.1.18",
+    "@tailwindcss/vite": "^4.1.18"
+  }
+}
