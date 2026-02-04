@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Todo List - 待办清单</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="app-container">
+        <header class="header">
+            <div class="date-display">
+                <span class="day" id="currentDay"></span>
+                <span class="date" id="currentDate"></span>
+            </div>
+            <h1 class="title">待办清单</h1>
+            <div class="stats">
+                <span class="stat-item">
+                    <span class="stat-number" id="totalTasks">0</span>
+                    <span class="stat-label">总任务</span>
+                </span>
+                <span class="stat-divider"></span>
+                <span class="stat-item">
+                    <span class="stat-number" id="completedTasks">0</span>
+                    <span class="stat-label">已完成</span>
+                </span>
+            </div>
+        </header>
+
+        <main class="main-content">
+            <form class="add-form" id="addForm">
+                <input 
+                    type="text" 
+                    class="task-input" 
+                    id="taskInput" 
+                    placeholder="添加新任务..." 
+                    autocomplete="off"
+                    maxlength="100"
+                >
+                <button type="submit" class="add-btn">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="12" y1="5" x2="12" y2="19"></line>
+                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                    </svg>
+                </button>
+            </form>
+
+            <div class="filter-tabs">
+                <button class="filter-btn active" data-filter="all">全部</button>
+                <button class="filter-btn" data-filter="active">进行中</button>
+                <button class="filter-btn" data-filter="completed">已完成</button>
+            </div>
+
+            <ul class="task-list" id="taskList">
+                <!-- Tasks will be rendered here -->
+            </ul>
+
+            <div class="empty-state" id="emptyState">
+                <div class="empty-icon">📋</div>
+                <p class="empty-text">暂无任务</p>
+                <p class="empty-hint">添加你的第一个任务开始吧</p>
+            </div>
+        </main>
+
+        <footer class="footer">
+            <button class="clear-btn" id="clearCompleted">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="3 6 5 6 21 6"></polyline>
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                </svg>
+                清除已完成
+            </button>
+        </footer>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
