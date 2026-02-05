@@ -12,8 +12,15 @@ Establish AI programming habits, complete LLM API integration, build a runnable 
 
 ## Lessons
 
-- **Lesson 01**: Development Workflow and Environment Setup
-- **Lesson 02**: LLM API Integration and Smart Data Assistant
+- **[Lesson 01](./Lesson01_Dev_Workflow_and_Environment/Courseware/README.md)**: Development Workflow and Environment Setup
+  - Vibe Coding AI Programming Paradigm
+  - Getting Started with Cursor
+  - ChatGPT Clone Hands-on Project
+
+- **[Lesson 02](./Lesson02_LLM_API_and_Data_Assistant/Courseware/README.md)**: LLM API Integration and Smart Data Assistant
+  - Four Cursor Q&A Modes Application
+  - MCP Server Integration and Configuration
+  - Intelligent Data Analysis Assistant Hands-on
 
 ## Learning Outcomes
 

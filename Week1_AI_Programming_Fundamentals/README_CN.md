@@ -12,8 +12,15 @@
 
 ## 课程安排
 
-- **Lesson 01**：开发工作流与环境配置
-- **Lesson 02**：LLM API 对接与智能数据助手
+- **[Lesson 01](./Lesson01_Dev_Workflow_and_Environment/Courseware/README_CN.md)**：开发工作流与环境配置
+  - Vibe Coding AI 编程范式
+  - Cursor 快速上手实践
+  - ChatGPT Clone 实战项目
+
+- **[Lesson 02](./Lesson02_LLM_API_and_Data_Assistant/Courseware/README_CN.md)**：LLM API 对接与智能数据助手
+  - Cursor 四种问答模型应用
+  - MCP Server 集成与配置
+  - 智能数据分析助理实战
 
 ## 学习成果
 
