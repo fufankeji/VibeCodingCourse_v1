@@ -183,7 +183,7 @@ async def _background_ocr(session_id: str, file_path: str, file_type: str) -> No
         text = await asyncio.get_event_loop().run_in_executor(
             None, ocr_service.extract_text, file_path
         )
-        await ocr_service.extract_fields(session_id, text, db)
+        await ocr_service.extract_fields(session_id, text, db, file_path=file_path)
     except Exception:
         pass  # Errors are logged inside ocr_service
     finally:

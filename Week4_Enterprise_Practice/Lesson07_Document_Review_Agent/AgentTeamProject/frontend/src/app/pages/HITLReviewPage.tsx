@@ -631,18 +631,21 @@ function RightPane({ item, conditionA, evidenceRef, sessionId }: {
 
   const primaryEvidence = item.risk_evidence.find((e) => e.is_primary);
   void primaryEvidence; // used for future full-text pane integration
+  const reasoning = parseReasoning(item.ai_reasoning);
+  const isRagIssue = item.source_type === 'hybrid';
 
   return (
     <div className="p-5 space-y-4">
-      {/* 未开发 Banner */}
-      <div className="bg-yellow-50 border border-yellow-300 rounded-xl px-4 py-3 flex items-start gap-2">
-        <AlertTriangle className="w-4 h-4 text-yellow-600 shrink-0 mt-0.5" />
-        <div className="text-sm text-yellow-700">
-          <span style={{ fontWeight: 600 }}>⚠️ 未开发：合同原文全文接口</span>
-          <p className="text-xs text-yellow-600 mt-0.5">
-            api_spec-v1.0 中未提供 GET /sessions/{'{'}session_id{'}'}/contract-text 接口。
-            当前右栏仅展示 risk_evidence[] 证据片段，无法实现完整原文双栏对照视图。
-            建议后端开发此接口（联调优先级 P0）。
+      <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 flex items-start gap-2">
+        <Info className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+        <div className="text-sm text-emerald-700">
+          <span style={{ fontWeight: 600 }}>
+            {isRagIssue ? '水土保持方案 RAG 审查链路' : '水土保持方案首版审查链路'}
+          </span>
+          <p className="text-xs text-emerald-600 mt-0.5">
+            {isRagIssue
+              ? '当前结果由 MinerU 解析数据 + Chroma/SiliconFlow RAG 召回 + 水保规则裁决生成，证据片段携带页码、chunk 锚点与 bbox 节点信息。'
+              : '当前显示历史规则回灌 issue；配置 SiliconFlow 后可用回灌脚本刷新为 RAG 结果，证据片段已携带页码、chunk 锚点与 bbox 节点信息。'}
           </p>
         </div>
       </div>
@@ -706,7 +709,19 @@ function RightPane({ item, conditionA, evidenceRef, sessionId }: {
       {/* AI Reasoning */}
       <div className="bg-white rounded-xl border border-gray-200 p-4">
         <p className="text-sm text-gray-700 mb-2" style={{ fontWeight: 500 }}>AI 判断依据</p>
-        <p className="text-sm text-gray-600 leading-relaxed">{item.ai_reasoning}</p>
+        {reasoning ? (
+          <div className="space-y-2 text-sm text-gray-600">
+            <p>规则：{reasoning.rule_id} · {reasoning.rule_name}</p>
+            <p>实际情况：{reasoning.actual_value}</p>
+            <p>期望要求：{reasoning.expected_value}</p>
+            <p className="text-xs text-gray-400">
+              证据节点 {reasoning.evidence_nodes?.filter(Boolean).length ?? 0} 个 ·
+              bbox {reasoning.source_bbox_list?.length ?? 0} 个 · 状态 {reasoning.review_status}
+            </p>
+          </div>
+        ) : (
+          <p className="text-sm text-gray-600 leading-relaxed">{item.ai_reasoning}</p>
+        )}
         {item.suggested_revision && (
           <div className="mt-2 bg-blue-50 border border-blue-100 rounded p-2 text-xs text-blue-700">
             <span style={{ fontWeight: 500 }}>AI 修改建议：</span>{item.suggested_revision}
@@ -715,6 +730,15 @@ function RightPane({ item, conditionA, evidenceRef, sessionId }: {
       </div>
     </div>
   );
+}
+
+function parseReasoning(raw: string): any | null {
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 // ─── Confirmation Modal — R05: 不可 ESC/遮罩关闭 ──────────────────────────────

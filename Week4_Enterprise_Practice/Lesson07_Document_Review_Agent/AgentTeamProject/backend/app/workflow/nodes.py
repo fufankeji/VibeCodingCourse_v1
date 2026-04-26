@@ -15,22 +15,17 @@ import json
 import uuid
 from datetime import datetime
 from typing import Any
-from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.types import interrupt, Command
 
 from app.workflow.state import ContractReviewState
+from app.config import get_llm as get_configured_llm
 
 # ============================================================
 # LLM 初始化
 # ============================================================
 def get_llm():
-    return ChatOpenAI(
-        model="deepseek-chat",
-        api_key="sk-d10fbb1662294178bad56faf66dd60d7",
-        base_url="https://api.deepseek.com/v1",
-        temperature=0.1,
-    )
+    return get_configured_llm()
 
 RISK_SCAN_SYSTEM_PROMPT = """你是一个专业的合同法律风险审查 AI。
 你需要分析合同段落，识别潜在的法律风险。
@@ -65,6 +60,15 @@ def scanning_node(state: ContractReviewState) -> dict:
     输入：state.full_text, state.pages
     输出：state.review_items, state.high_risk_count, state.medium_risk_count, state.low_risk_count
     """
+    precomputed_items = state.get("review_items", [])
+    if precomputed_items:
+        return {
+            "review_items": precomputed_items,
+            "high_risk_count": sum(1 for item in precomputed_items if item.get("risk_level") == "HIGH"),
+            "medium_risk_count": sum(1 for item in precomputed_items if item.get("risk_level") == "MEDIUM"),
+            "low_risk_count": sum(1 for item in precomputed_items if item.get("risk_level") == "LOW"),
+        }
+
     llm = get_llm()
     full_text = state.get("full_text", "")
     session_id = state["session_id"]

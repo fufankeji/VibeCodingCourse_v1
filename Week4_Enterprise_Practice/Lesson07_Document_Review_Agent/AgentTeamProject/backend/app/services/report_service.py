@@ -19,18 +19,20 @@ from app.models.session import ReviewSession
 from app.schemas.report import ReviewReportResponse
 
 _DISCLAIMER = (
-    "本报告由 AI 辅助生成，仅供参考，不构成法律意见。"
-    "请在专业法律人员指导下使用，最终法律判断以人工审核为准。"
+    "本审查意见稿由智能辅助系统基于已解析文本、规则库和问题清单生成，"
+    "仅供水土保持方案技术审查参考，最终意见以人工复核和主管部门要求为准。"
 )
 
 _COVERAGE_STATEMENT = {
-    "scope": "本次审核基于上传文件的文本内容，采用规则引擎和 AI 推理相结合的方式。",
+    "scope": "本次审核基于 MinerU 解析文本、bbox 坐标块和水土保持方案审查规则集。",
+    "covered_clause_types": ["形式完整性", "项目概况", "工程占地", "土石方平衡", "表土保护", "弃渣去向", "监测与投资"],
+    "not_covered_clause_types": ["图片内容细审", "附图几何量测", "外部批复文件真实性核验"],
     "limitations": [
-        "扫描件 OCR 可能导致文字识别误差",
-        "附件及图片内容未纳入分析范围",
-        "特定行业专项法规可能未完全覆盖",
+        "解析结果依赖既有 MinerU 输出，扫描识别误差会影响命中结果",
+        "本版未做图片审查和附图空间关系量测",
+        "规则命中结果需要业务人员复核后形成正式意见",
     ],
-    "confidence_note": "置信度得分仅反映模型确定性，不代表法律效力评级",
+    "confidence_note": "置信度反映规则命中和证据召回确定性，不代表最终审查结论",
 }
 
 
@@ -157,6 +159,10 @@ def _compute_item_stats(items: list[ReviewItem]) -> dict:
 
     return {
         "total": total,
+        "approved": confirmed,
+        "edited": sum(1 for i in items if i.human_decision == "edit"),
+        "rejected": rejected + false_positive,
+        "auto_passed": low,
         "by_risk": {"HIGH": high, "MEDIUM": medium, "LOW": low},
         "by_decision": {
             "confirmed": confirmed,
@@ -176,17 +182,23 @@ def _build_summary(
     high_count = stats["by_risk"]["HIGH"]
     medium_count = stats["by_risk"]["MEDIUM"]
 
-    # Non-absolute risk conclusion
+    field_map = {field.field_name: field.field_value for field in fields}
+
     if high_count >= 3:
-        risk_conclusion = "合同存在多项高风险条款，建议在签署前进行专业法律审查"
+        risk_conclusion = "方案存在多项需重点复核的问题，建议按问题清单补充材料并复核相关章节。"
     elif high_count >= 1:
-        risk_conclusion = "合同存在高风险条款，建议重点关注并考虑修改"
+        risk_conclusion = "方案存在重点问题，建议优先核查高风险问题对应证据和规则依据。"
     elif medium_count >= 3:
-        risk_conclusion = "合同存在若干中等风险条款，建议结合实际情况评估"
+        risk_conclusion = "方案存在若干一般问题，建议结合材料完整性进行修订。"
     else:
-        risk_conclusion = "未发现明显高风险条款，建议仍由专业人员进行最终确认"
+        risk_conclusion = "首版规则未发现明显高风险问题，仍建议人工抽查关键字段与附图附表。"
 
     return {
+        "contract_parties": [field_map.get("construction_unit", "")],
+        "contract_amount": field_map.get("investment_estimate", ""),
+        "effective_date": "",
+        "overall_risk_level": "high" if high_count else "medium" if medium_count else "low",
+        "conclusion": risk_conclusion,
         "risk_conclusion": risk_conclusion,
         "total_issues": stats["total"],
         "high_risk_count": high_count,
@@ -194,6 +206,7 @@ def _build_summary(
         "low_risk_count": stats["by_risk"]["LOW"],
         "field_extraction_count": len(fields),
         "session_state": session.state,
+        "opinion_draft": _build_opinion_draft(items),
     }
 
 
@@ -207,6 +220,8 @@ def _serialize_item(item: ReviewItem) -> dict:
         "human_decision": item.human_decision,
         "human_note": item.human_note,
         "is_false_positive": item.is_false_positive,
+        "page_number": item.page_number,
+        "suggested_revision": item.suggested_revision,
     }
 
 
@@ -218,3 +233,23 @@ def _serialize_field(field: ExtractedField) -> dict:
         "confidence_score": field.confidence_score,
         "verification_status": field.verification_status,
     }
+
+
+def _build_opinion_draft(items: list[ReviewItem]) -> str:
+    pending = [item for item in items if item.human_decision == "pending"]
+    grouped: dict[str, list[ReviewItem]] = {}
+    for item in pending:
+        grouped.setdefault(item.risk_category or "其他问题", []).append(item)
+
+    lines = ["水土保持方案审查意见稿（智能辅助生成）", ""]
+    if not pending:
+        lines.append("经规则库辅助核查，当前问题均已处理。建议结合人工复核意见形成正式审查结论。")
+        return "\n".join(lines)
+
+    lines.append("经对方案文本、结构化字段和规则库命中结果进行核查，建议重点关注以下问题：")
+    for category, category_items in grouped.items():
+        lines.append(f"\n{category}：")
+        for index, item in enumerate(category_items[:5], start=1):
+            lines.append(f"{index}. {item.ai_finding} 建议：{item.suggested_revision or '请补充说明并复核。'}")
+    lines.append("\n以上意见需结合原文证据、附件附图及业务人员复核结果后定稿。")
+    return "\n".join(lines)

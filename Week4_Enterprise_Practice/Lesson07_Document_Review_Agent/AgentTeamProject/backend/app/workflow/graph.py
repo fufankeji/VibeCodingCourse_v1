@@ -81,7 +81,13 @@ def get_checkpointer():
     return _checkpointer
 
 
-def run_workflow_sync(session_id: str, contract_id: str, full_text: str, thread_id: str) -> dict:
+def run_workflow_sync(
+    session_id: str,
+    contract_id: str,
+    full_text: str,
+    thread_id: str,
+    precomputed_review_items: list[dict] | None = None,
+) -> dict:
     """
     同步运行工作流（从 scanning_node 开始）
 
@@ -105,7 +111,7 @@ def run_workflow_sync(session_id: str, contract_id: str, full_text: str, thread_
         "langgraph_thread_id": thread_id,
         "full_text": full_text,
         "pages": [],
-        "review_items": [],
+        "review_items": precomputed_review_items or [],
         "high_risk_count": 0,
         "medium_risk_count": 0,
         "low_risk_count": 0,

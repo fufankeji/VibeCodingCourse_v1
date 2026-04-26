@@ -1,8 +1,9 @@
 """
-Mock OCR Service — MVP phase.
+Document parsing service.
 
-Text extraction uses real PDF/DOCX parsing libraries where available.
-Field extraction uses DeepSeek LLM to identify structured contract fields.
+For the water-soil conservation MVP, this service consumes the prepared MinerU
+JSON and rule set in backend/data, persists extracted fields, and hands
+precomputed issues to the existing LangGraph/HITL flow.
 """
 
 import json
@@ -18,11 +19,26 @@ from app.models.extracted_field import ExtractedField
 from app.models.session import ReviewSession
 
 STRUCTURED_FIELDS = [
-    "party_a",
-    "party_b",
-    "contract_amount",
-    "effective_date",
-    "governing_law",
+    "project_name",
+    "construction_unit",
+    "construction_location",
+    "project_nature",
+    "key_prevention_or_control_area",
+    "disturbed_area",
+    "land_area",
+    "excavation_volume",
+    "fill_volume",
+    "borrow_volume",
+    "spoil_volume",
+    "topsoil_stripping",
+    "topsoil_preservation",
+    "topsoil_backfill",
+    "borrow_area",
+    "spoil_area",
+    "construction_road",
+    "prevention_measures",
+    "schedule_arrangement",
+    "investment_estimate",
 ]
 
 # Prompts
@@ -78,8 +94,8 @@ def _extract_docx_text(file_path: str) -> str:
         return ""
 
 
-async def extract_fields(session_id: str, text: str, db: Session) -> None:
-    """Use LLM to extract structured fields and persist to DB."""
+async def extract_fields(session_id: str, text: str, db: Session, file_path: str | None = None) -> None:
+    """Extract water-soil fields, persist them, and trigger review workflow."""
     # Update session state to scanning
     session: ReviewSession | None = db.query(ReviewSession).filter(ReviewSession.id == session_id).first()
     if not session:
@@ -96,28 +112,73 @@ async def extract_fields(session_id: str, text: str, db: Session) -> None:
         {"session_id": session_id, "state": "scanning"},
     )
 
-    # Attempt LLM extraction; fall back to empty values on failure
-    extracted: dict[str, str] = {}
+    pipeline: dict | None = None
     try:
-        extracted = await _llm_extract_fields(text)
-    except Exception:
-        extracted = {f: "" for f in STRUCTURED_FIELDS}
+        from app.services import water_review_service
+
+        contract_id = session.contract_id
+        artifact_dir = str(Path(file_path).parent / "water_review") if file_path else f"./storage/contracts/{contract_id}/water_review"
+        pipeline = water_review_service.run_pipeline(file_path or "", artifact_dir, session_id)
+        text = pipeline.get("full_text") or text
+        extracted_fields = pipeline.get("fields", [])
+    except Exception as exc:
+        error_message = str(exc)
+        session.state = "aborted"
+        session.updated_at = datetime.utcnow()
+        db.add(session)
+        db.add(
+            AuditLog(
+                session_id=session_id,
+                event_type="system_failure",
+                actor_id="system",
+                actor_type="system",
+                metadata_json=json.dumps(
+                    {
+                        "error": error_message,
+                        "error_code": "RAG_REVIEW_FAILED",
+                        "node_name": "water_review_rag_pipeline",
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        )
+        db.commit()
+        await sse_manager.publish(
+            session_id,
+            "system_failure",
+            {
+                "session_id": session_id,
+                "state": "aborted",
+                "error_code": "RAG_REVIEW_FAILED",
+                "message": error_message,
+                "node_name": "water_review_rag_pipeline",
+            },
+        )
+        return
+
+    db.query(ExtractedField).filter(ExtractedField.session_id == session_id).delete()
 
     # Persist each field
-    for field_name in STRUCTURED_FIELDS:
-        value = extracted.get(field_name, "")
-        confidence = random.randint(40, 99)
+    for data in extracted_fields:
+        field_name = data.get("field_name", "")
+        if field_name not in STRUCTURED_FIELDS:
+            continue
+        value = data.get("value", "")
+        confidence = int(data.get("confidence") or random.randint(40, 99))
         needs_verification = confidence < 60
+        source_span = data.get("source_span") or {}
 
         field = ExtractedField(
             session_id=session_id,
             field_name=field_name,
             field_value=value,
-            original_value=value,
+            original_value=data.get("normalized_value") or value,
             confidence_score=confidence,
             needs_human_verification=needs_verification,
             verification_status="unverified",
             source_evidence_text=_find_evidence(text, value),
+            source_char_offset_start=source_span.get("char_start", 0),
+            source_char_offset_end=source_span.get("char_end", 0),
         )
         db.add(field)
 
@@ -141,7 +202,12 @@ async def extract_fields(session_id: str, text: str, db: Session) -> None:
     )
 
     # Trigger LangGraph workflow if available
-    await _trigger_workflow(session_id, text, db)
+    await _trigger_workflow(
+        session_id,
+        text,
+        db,
+        precomputed_review_items=(pipeline or {}).get("review_items", []),
+    )
 
 
 async def _llm_extract_fields(text: str) -> dict[str, str]:
@@ -176,7 +242,12 @@ def _find_evidence(text: str, value: str) -> str:
     return text[start:end]
 
 
-async def _trigger_workflow(session_id: str, text: str, db: Session) -> None:
+async def _trigger_workflow(
+    session_id: str,
+    text: str,
+    db: Session,
+    precomputed_review_items: list[dict] | None = None,
+) -> None:
     """Trigger LangGraph review workflow after OCR completes."""
     try:
         from app.services.hitl_service import hitl_service
@@ -192,7 +263,13 @@ async def _trigger_workflow(session_id: str, text: str, db: Session) -> None:
         # 2. Running workflow in background thread
         # 3. Persisting review items to DB
         # 4. Pushing SSE events
-        hitl_service.trigger_workflow_for_session(session_id, thread_id, text, db)
+        hitl_service.trigger_workflow_for_session(
+            session_id,
+            thread_id,
+            text,
+            db,
+            precomputed_review_items=precomputed_review_items,
+        )
     except ImportError:
         # Workflow module not yet available; skip silently
         pass

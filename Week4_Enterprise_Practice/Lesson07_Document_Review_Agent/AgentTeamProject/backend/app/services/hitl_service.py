@@ -292,6 +292,7 @@ class HITLService:
         thread_id: str,
         full_text: str,
         db: Session,
+        precomputed_review_items: Optional[list[dict]] = None,
     ):
         """
         OCR 完成后，在后台线程启动 LangGraph 工作流。
@@ -316,7 +317,7 @@ class HITLService:
         # 在后台线程运行工作流（传 contract_id = session_id，与 graph.py 约定一致）
         t = threading.Thread(
             target=self._run_workflow_thread,
-            args=(session_id, session_id, thread_id, full_text),
+            args=(session_id, session_id, thread_id, full_text, precomputed_review_items or []),
             daemon=True,
         )
         t.start()
@@ -327,6 +328,7 @@ class HITLService:
         contract_id: str,
         thread_id: str,
         full_text: str,
+        precomputed_review_items: list[dict],
     ):
         """后台线程执行工作流（使用独立的 DB session，不与 FastAPI 共享）"""
         db = SessionLocal()
@@ -339,6 +341,7 @@ class HITLService:
                 contract_id=contract_id,
                 full_text=full_text,
                 thread_id=thread_id,
+                precomputed_review_items=precomputed_review_items,
             )
 
             # 将 review_items 从 workflow state 写入数据库

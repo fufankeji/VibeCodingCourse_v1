@@ -1,0 +1,660 @@
+"""RAG retrieval and rule adjudication for water review.
+
+The service is intentionally framework-light: embeddings are generated through
+SiliconFlow, vectors are persisted in local Chroma, and DeepSeek turns retrieved
+evidence into ReviewItem-compatible issue dicts.
+"""
+
+from __future__ import annotations
+
+import json
+import hashlib
+import math
+import re
+import uuid
+from collections import Counter, defaultdict
+from pathlib import Path
+from typing import Any
+
+import httpx
+
+from app.config import get_llm, settings
+
+
+class RAGReviewError(RuntimeError):
+    """Raised when the RAG path cannot complete safely."""
+
+
+def run_rag_review(
+    session_id: str,
+    chunks: list[Any],
+    rules: list[dict[str, Any]],
+    artifact_dir: Path,
+) -> dict[str, Any]:
+    if not settings.siliconflow_api_key:
+        raise RAGReviewError("SILICONFLOW_API_KEY is required for RAG review")
+
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    vector_dir = Path(settings.storage_path) / "vector_stores" / "water_review" / session_id
+    vector_dir.mkdir(parents=True, exist_ok=True)
+
+    embedder = SiliconFlowEmbeddingProvider()
+    store = ChromaChunkStore(vector_dir, session_id, embedder)
+    store.rebuild(chunks)
+
+    project_type = _infer_project_type(chunks)
+    applicable_rules = _filter_applicable_rules(project_type, rules)
+    retrievals = retrieve_for_rules(store, chunks, applicable_rules, top_k=settings.rag_top_k)
+    index_manifest = {
+        "session_id": session_id,
+        "vector_store": str(vector_dir),
+        "collection": store.collection_name,
+        "chunk_count": len(chunks),
+        "rule_count": len(rules),
+        "project_type": project_type,
+        "applicable_rule_count": len(applicable_rules),
+        "embedding_model": settings.siliconflow_embedding_model,
+        "embedding_dimensions": settings.siliconflow_embedding_dimensions,
+        "reranker_model": settings.siliconflow_reranker_model,
+        "retrieval_top_k": settings.rag_top_k,
+        "rerank_top_n": settings.rag_rerank_top_n,
+    }
+
+    _write_json(artifact_dir / "rag_index_manifest.json", index_manifest)
+    _write_json(artifact_dir / "rag_retrievals.json", retrievals)
+
+    issues = adjudicate_top_rules(session_id, chunks, applicable_rules, retrievals, max_issues=settings.rag_max_issues)
+    _write_json(artifact_dir / "rag_issues.json", issues)
+
+    return {
+        "issues": issues,
+        "retrievals": retrievals,
+        "index_manifest": index_manifest,
+    }
+
+
+def _infer_project_type(chunks: list[Any]) -> str:
+    text = "\n".join(_chunk_text(chunk) for chunk in chunks[:80])
+    if any(keyword in text for keyword in ["图书馆", "校区", "学校", "教学楼", "科研楼", "房屋建筑"]):
+        return "生产建设项目"
+    project_type_keywords = [
+        ("铁路建设项目", ["铁路工程", "铁路建设", "铁路线路", "轨道交通", "线路路基"]),
+        ("公路建设项目", ["高速公路", "公路工程", "公路建设", "互通立交", "路线方案", "路基工程"]),
+        ("水利建设项目", ["水库", "水闸", "灌区", "堤防", "泵站"]),
+        ("水电建设项目", ["水电站", "水电枢纽", "大坝"]),
+        ("管道建设项目", ["输油管道", "输气管道", "管道工程", "管沟"]),
+        ("核电建设项目", ["核电", "核岛", "厂址"]),
+        ("煤炭建设项目", ["煤矿", "露天矿", "排矸场", "采煤", "矿井"]),
+        ("输变电建设项目", ["输变电", "变电站", "塔基", "输电线路"]),
+    ]
+    for project_type, keywords in project_type_keywords:
+        if any(keyword in text for keyword in keywords):
+            return project_type
+    return "生产建设项目"
+
+
+def _filter_applicable_rules(project_type: str, rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    applicable: list[dict[str, Any]] = []
+    for rule in rules:
+        project_types = [str(item) for item in rule.get("applicable_project_type", []) if str(item).strip()]
+        if not project_types or "生产建设项目" in project_types or project_type in project_types:
+            applicable.append(rule)
+    return applicable or rules
+
+
+class SiliconFlowEmbeddingProvider:
+    def __init__(self) -> None:
+        self.api_key = settings.siliconflow_api_key
+        self.base_url = settings.siliconflow_base_url.rstrip("/")
+        self.model = settings.siliconflow_embedding_model
+        self.dimensions = settings.siliconflow_embedding_dimensions
+
+    def embed_texts(self, texts: list[str], batch_size: int = 32) -> list[list[float]]:
+        embeddings: list[list[float]] = []
+        for start in range(0, len(texts), batch_size):
+            batch = texts[start : start + batch_size]
+            payload: dict[str, Any] = {
+                "model": self.model,
+                "input": batch,
+                "encoding_format": "float",
+            }
+            if self.dimensions:
+                payload["dimensions"] = self.dimensions
+            try:
+                response = httpx.post(
+                    f"{self.base_url}/embeddings",
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                    timeout=60,
+                )
+                response.raise_for_status()
+                data = response.json()
+            except Exception as exc:
+                raise RAGReviewError(f"SiliconFlow embedding request failed: {exc}") from exc
+
+            try:
+                ordered = sorted(data["data"], key=lambda item: item.get("index", 0))
+                embeddings.extend([item["embedding"] for item in ordered])
+            except Exception as exc:
+                raise RAGReviewError("SiliconFlow embedding response shape is invalid") from exc
+        return embeddings
+
+
+class SiliconFlowRerankerProvider:
+    def __init__(self) -> None:
+        self.api_key = settings.siliconflow_api_key
+        self.base_url = settings.siliconflow_base_url.rstrip("/")
+        self.model = settings.siliconflow_reranker_model
+        self.instruction = settings.siliconflow_reranker_instruction
+
+    def rerank(self, query: str, matches: list[dict[str, Any]], top_n: int) -> list[dict[str, Any]]:
+        if not self.model or not matches:
+            return matches[:top_n]
+
+        documents = [str(match.get("document", "")) for match in matches]
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "query": query,
+            "documents": documents,
+            "top_n": min(top_n, len(documents)),
+            "return_documents": False,
+        }
+        if self.instruction and "Qwen3-Reranker" in self.model:
+            payload["instruction"] = self.instruction
+        try:
+            response = httpx.post(
+                f"{self.base_url}/rerank",
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=90,
+            )
+            response.raise_for_status()
+            data = response.json()
+        except Exception as exc:
+            raise RAGReviewError(f"SiliconFlow reranker request failed: {exc}") from exc
+
+        ranked: list[dict[str, Any]] = []
+        seen: set[int] = set()
+        try:
+            results = data.get("results", [])
+            for rank, result in enumerate(results, start=1):
+                index = int(result["index"])
+                if index in seen or index < 0 or index >= len(matches):
+                    continue
+                seen.add(index)
+                item = dict(matches[index])
+                item["rerank_rank"] = rank
+                item["rerank_score"] = float(result.get("relevance_score", 0))
+                ranked.append(item)
+        except Exception as exc:
+            raise RAGReviewError("SiliconFlow reranker response shape is invalid") from exc
+
+        if len(ranked) < top_n:
+            ranked_ids = {item.get("chunk_id") for item in ranked}
+            ranked.extend(match for match in matches if match.get("chunk_id") not in ranked_ids)
+        return ranked[:top_n]
+
+
+class ChromaChunkStore:
+    def __init__(self, persist_dir: Path, session_id: str, embedder: SiliconFlowEmbeddingProvider) -> None:
+        import chromadb
+
+        self.client = chromadb.PersistentClient(path=str(persist_dir))
+        safe_session = re.sub(r"[^a-zA-Z0-9_-]", "_", session_id)
+        signature = hashlib.sha1(
+            f"{settings.siliconflow_embedding_model}:{settings.siliconflow_embedding_dimensions}".encode()
+        ).hexdigest()[:8]
+        self.collection_name = f"water_review_{safe_session}_{signature}"
+        self.collection = self._create_collection()
+        self.embedder = embedder
+
+    def _create_collection(self) -> Any:
+        return self.client.get_or_create_collection(
+            name=self.collection_name,
+            metadata={"hnsw:space": "cosine"},
+        )
+
+    def rebuild(self, chunks: list[Any]) -> None:
+        chunk_ids = [_chunk_id(chunk) for chunk in chunks]
+        existing = self.collection.get()
+        ids = existing.get("ids", [])
+        existing_dimension = self._existing_embedding_dimension()
+        if set(ids) == set(chunk_ids) and existing_dimension == settings.siliconflow_embedding_dimensions:
+            return
+        if ids and existing_dimension != settings.siliconflow_embedding_dimensions:
+            self.client.delete_collection(self.collection_name)
+            self.collection = self._create_collection()
+            ids = []
+        if ids:
+            self.collection.delete(ids=ids)
+
+        documents = [_chunk_text(chunk) for chunk in chunks]
+        embeddings = self.embedder.embed_texts(documents)
+        self.collection.upsert(
+            ids=chunk_ids,
+            documents=documents,
+            embeddings=embeddings,
+            metadatas=[_chunk_metadata(chunk, index) for index, chunk in enumerate(chunks)],
+        )
+
+    def _existing_embedding_dimension(self) -> int | None:
+        try:
+            probe = self.collection.get(limit=1, include=["embeddings"])
+            embeddings = probe.get("embeddings")
+            if embeddings is None:
+                return None
+            if len(embeddings) == 0:
+                return None
+            return len(embeddings[0])
+        except Exception:
+            return None
+
+    def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
+        embedding = self.embedder.embed_texts([query])[0]
+        result = self.collection.query(
+            query_embeddings=[embedding],
+            n_results=top_k,
+            include=["documents", "metadatas", "distances"],
+        )
+        matches: list[dict[str, Any]] = []
+        ids = result.get("ids", [[]])[0]
+        docs = result.get("documents", [[]])[0]
+        metadatas = result.get("metadatas", [[]])[0]
+        distances = result.get("distances", [[]])[0]
+        for rank, chunk_id in enumerate(ids, start=1):
+            matches.append(
+                {
+                    "chunk_id": chunk_id,
+                    "rank": rank,
+                    "document": docs[rank - 1],
+                    "metadata": metadatas[rank - 1],
+                    "distance": distances[rank - 1],
+                    "score": 1.0 / (1.0 + float(distances[rank - 1])),
+                }
+            )
+        return matches
+
+
+def retrieve_for_rules(
+    store: ChromaChunkStore,
+    chunks: list[Any],
+    rules: list[dict[str, Any]],
+    top_k: int,
+) -> list[dict[str, Any]]:
+    bm25 = BM25Index(chunks)
+    reranker = SiliconFlowRerankerProvider()
+    by_id = {_chunk_id(chunk): chunk for chunk in chunks}
+    by_index = {_chunk_id(chunk): index for index, chunk in enumerate(chunks)}
+
+    retrievals: list[dict[str, Any]] = []
+    for rule_index, rule in enumerate(rules):
+        query = _rule_query(rule)
+        vector_matches = store.query(query, top_k=top_k)
+        bm25_matches = bm25.query(query, top_k=top_k)
+        fused = _rrf(vector_matches, bm25_matches)
+        expanded = _expand_neighbors(
+            fused[:top_k],
+            chunks,
+            by_id,
+            by_index,
+            limit=max(settings.rag_rerank_top_n * 2, settings.rag_rerank_top_n),
+        )
+        reranked = reranker.rerank(query, expanded, top_n=settings.rag_rerank_top_n)
+        retrievals.append(
+            {
+                "rule_index": rule_index,
+                "rule_id": rule.get("rule_id", f"rule-{rule_index}"),
+                "rule_name": rule.get("rule_name", ""),
+                "query": query,
+                "matches": reranked,
+                "candidate_score": _candidate_score(rule, reranked),
+            }
+        )
+    return retrievals
+
+
+class BM25Index:
+    def __init__(self, chunks: list[Any]) -> None:
+        self.chunks = chunks
+        self.docs = [_tokenize(_chunk_text(chunk)) for chunk in chunks]
+        self.df: Counter[str] = Counter()
+        for doc in self.docs:
+            self.df.update(set(doc))
+        self.avgdl = sum(len(doc) for doc in self.docs) / max(len(self.docs), 1)
+
+    def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
+        terms = _tokenize(query)
+        scores: list[tuple[float, int]] = []
+        for index, doc in enumerate(self.docs):
+            score = self._score(terms, doc)
+            if score > 0:
+                scores.append((score, index))
+        scores.sort(reverse=True)
+        matches: list[dict[str, Any]] = []
+        for rank, (score, index) in enumerate(scores[:top_k], start=1):
+            chunk = self.chunks[index]
+            matches.append(
+                {
+                    "chunk_id": _chunk_id(chunk),
+                    "rank": rank,
+                    "document": _chunk_text(chunk),
+                    "metadata": _chunk_metadata(chunk, index),
+                    "score": score,
+                }
+            )
+        return matches
+
+    def _score(self, terms: list[str], doc: list[str]) -> float:
+        counts = Counter(doc)
+        dl = len(doc)
+        score = 0.0
+        k1 = 1.5
+        b = 0.75
+        total_docs = len(self.docs)
+        for term in terms:
+            tf = counts.get(term, 0)
+            if tf <= 0:
+                continue
+            df = self.df.get(term, 0)
+            idf = math.log(1 + (total_docs - df + 0.5) / (df + 0.5))
+            score += idf * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * dl / max(self.avgdl, 1)))
+        return score
+
+
+def adjudicate_top_rules(
+    session_id: str,
+    chunks: list[Any],
+    rules: list[dict[str, Any]],
+    retrievals: list[dict[str, Any]],
+    max_issues: int,
+) -> list[dict[str, Any]]:
+    ranked = sorted(retrievals, key=lambda item: item.get("candidate_score", 0), reverse=True)
+    issues: list[dict[str, Any]] = []
+    for retrieval in ranked:
+        if len(issues) >= max_issues:
+            break
+        rule = rules[retrieval["rule_index"]]
+        evidence = retrieval.get("matches", [])[:8]
+        if not evidence:
+            continue
+        issues.append(_adjudicate_rule(session_id, rule, evidence, retrieval))
+    return issues
+
+
+def _adjudicate_rule(
+    session_id: str,
+    rule: dict[str, Any],
+    evidence: list[dict[str, Any]],
+    retrieval: dict[str, Any],
+) -> dict[str, Any]:
+    payload = _call_deepseek_adjudicator(rule, evidence)
+    first = evidence[0]
+    meta = first.get("metadata", {})
+    bbox_list = []
+    evidence_nodes = []
+    for match in evidence:
+        match_meta = match.get("metadata", {})
+        bboxes = json.loads(match_meta.get("bbox_json") or "[]")
+        bbox_list.extend(bboxes)
+        evidence_nodes.extend(json.loads(match_meta.get("block_ids_json") or "[]"))
+
+    risk_level = payload.get("risk_level") or _severity_from_policy(rule.get("severity_policy", ""))
+    confidence = int(payload.get("confidence") or min(95, max(55, int(first.get("score", 0.5) * 100))))
+    reasoning = {
+        "issue_type": rule.get("category", "规则库审查"),
+        "rule_id": rule.get("rule_id", ""),
+        "rule_name": rule.get("rule_name", ""),
+        "actual_value": payload.get("actual_value", "见召回证据"),
+        "expected_value": payload.get("expected_value", rule.get("evidence_requirement", "")),
+        "evidence_nodes": evidence_nodes,
+        "source_bbox_list": bbox_list,
+        "retrieval_scores": [
+            {
+                "chunk_id": match.get("chunk_id"),
+                "score": match.get("score"),
+                "vector_score": match.get("vector_score"),
+                "bm25_score": match.get("bm25_score"),
+                "rerank_score": match.get("rerank_score"),
+                "rerank_rank": match.get("rerank_rank"),
+            }
+            for match in evidence
+        ],
+        "review_status": "pending",
+        "conclusion_type": payload.get("conclusion_type", "issue"),
+    }
+    evidence_text = "\n\n".join(match.get("document", "")[:800] for match in evidence[:3])
+    return {
+        "id": str(uuid.uuid4()),
+        "session_id": session_id,
+        "clause_text": evidence_text,
+        "page_number": int(meta.get("page_start") or 1),
+        "paragraph_index": int(meta.get("chunk_index") or 0),
+        "highlight_anchor": first.get("chunk_id", ""),
+        "char_offset_start": 0,
+        "char_offset_end": len(evidence_text),
+        "risk_level": risk_level,
+        "confidence_score": confidence,
+        "source_type": "hybrid",
+        "risk_category": rule.get("category", "规则库审查"),
+        "ai_finding": payload.get("issue_desc") or f"{rule.get('rule_name', '规则审查')}：召回证据显示该规则需要人工复核。",
+        "ai_reasoning": json.dumps(reasoning, ensure_ascii=False),
+        "suggested_revision": payload.get("fix_suggestion") or _generic_suggestion(rule),
+        "human_decision": "pending",
+    }
+
+
+def _call_deepseek_adjudicator(rule: dict[str, Any], evidence: list[dict[str, Any]]) -> dict[str, Any]:
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    prompt = {
+        "rule": {
+            "rule_id": rule.get("rule_id"),
+            "rule_name": rule.get("rule_name"),
+            "category": rule.get("category"),
+            "target_fields": rule.get("target_fields", []),
+            "severity_policy": rule.get("severity_policy"),
+            "evidence_requirement": rule.get("evidence_requirement"),
+        },
+        "evidence": [
+            {
+                "chunk_id": match.get("chunk_id"),
+                "page_start": match.get("metadata", {}).get("page_start"),
+                "page_end": match.get("metadata", {}).get("page_end"),
+                "section": match.get("metadata", {}).get("section"),
+                "text": match.get("document", "")[:1200],
+            }
+            for match in evidence[:8]
+        ],
+        "output_schema": {
+            "risk_level": "HIGH|MEDIUM|LOW",
+            "issue_desc": "问题描述，必须基于证据，不能新增事实",
+            "actual_value": "从证据中可见的实际情况或材料中未见明确表述",
+            "expected_value": "规则要求",
+            "fix_suggestion": "具体修改建议",
+            "confidence": "0-100整数",
+            "conclusion_type": "issue|needs_review|attention",
+        },
+    }
+    messages = [
+        SystemMessage(
+            content=(
+                "你是水土保持方案技术审查助手。只基于提供的规则和证据输出 JSON，"
+                "不要输出 markdown，不要新增证据中没有的事实。"
+            )
+        ),
+        HumanMessage(content=json.dumps(prompt, ensure_ascii=False)),
+    ]
+    try:
+        response = get_llm().invoke(messages)
+        content = str(response.content).strip()
+        if content.startswith("```"):
+            content = "\n".join(content.splitlines()[1:-1]).strip()
+        data = json.loads(content)
+    except Exception as exc:
+        raise RAGReviewError(f"DeepSeek rule adjudication failed: {exc}") from exc
+    if not isinstance(data, dict):
+        raise RAGReviewError("DeepSeek adjudication response is not a JSON object")
+    return data
+
+
+def _rrf(vector_matches: list[dict[str, Any]], bm25_matches: list[dict[str, Any]], k: int = 60) -> list[dict[str, Any]]:
+    combined: dict[str, dict[str, Any]] = {}
+    for source, matches in [("vector", vector_matches), ("bm25", bm25_matches)]:
+        for rank, match in enumerate(matches, start=1):
+            chunk_id = match["chunk_id"]
+            entry = combined.setdefault(chunk_id, {**match, "score": 0.0})
+            entry["score"] = float(entry.get("score", 0.0)) + 1.0 / (k + rank)
+            if source == "vector":
+                entry["vector_score"] = match.get("score")
+            else:
+                entry["bm25_score"] = match.get("score")
+    return sorted(combined.values(), key=lambda item: item.get("score", 0), reverse=True)
+
+
+def _expand_neighbors(
+    matches: list[dict[str, Any]],
+    chunks: list[Any],
+    by_id: dict[str, Any],
+    by_index: dict[str, int],
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    expanded: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for match in matches:
+        for candidate_id in [match["chunk_id"], *_neighbor_ids(match["chunk_id"], chunks, by_index)]:
+            if candidate_id in seen or candidate_id not in by_id:
+                continue
+            seen.add(candidate_id)
+            if candidate_id == match["chunk_id"]:
+                expanded.append(match)
+            else:
+                chunk = by_id[candidate_id]
+                expanded.append(
+                    {
+                        "chunk_id": candidate_id,
+                        "document": _chunk_text(chunk),
+                        "metadata": _chunk_metadata(chunk, by_index[candidate_id]),
+                        "score": match.get("score", 0) * 0.85,
+                        "neighbor_of": match["chunk_id"],
+                    }
+                )
+    return expanded[:limit]
+
+
+def _neighbor_ids(chunk_id: str, chunks: list[Any], by_index: dict[str, int]) -> list[str]:
+    index = by_index.get(chunk_id)
+    if index is None:
+        return []
+    seed = chunks[index]
+    seed_pages = set(_page_range(seed))
+    seed_tables = set(getattr(seed, "table_refs", []) or [])
+    ids: list[str] = []
+    for neighbor_index in [index - 1, index + 1]:
+        if 0 <= neighbor_index < len(chunks):
+            ids.append(_chunk_id(chunks[neighbor_index]))
+    same_page = [
+        (abs(other_index - index), _chunk_id(chunk))
+        for other_index, chunk in enumerate(chunks)
+        if other_index != index and seed_pages.intersection(_page_range(chunk))
+    ]
+    same_page.sort(key=lambda item: item[0])
+    ids.extend(chunk_id for _, chunk_id in same_page[:3])
+    if seed_tables:
+        table_related = [
+            (abs(other_index - index), _chunk_id(chunk))
+            for other_index, chunk in enumerate(chunks)
+            if other_index != index and seed_tables.intersection(set(getattr(chunk, "table_refs", []) or []))
+        ]
+        table_related.sort(key=lambda item: item[0])
+        ids.extend(chunk_id for _, chunk_id in table_related[:3])
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for candidate_id in ids:
+        if candidate_id and candidate_id not in seen:
+            seen.add(candidate_id)
+            deduped.append(candidate_id)
+    return deduped
+
+
+def _page_range(chunk: Any) -> list[int]:
+    page_range = getattr(chunk, "page_range", [1, 1])
+    if not page_range:
+        return [1]
+    start = int(page_range[0])
+    end = int(page_range[-1])
+    return list(range(start, end + 1))
+
+
+def _candidate_score(rule: dict[str, Any], matches: list[dict[str, Any]]) -> float:
+    severity = _severity_from_policy(rule.get("severity_policy", ""))
+    severity_weight = {"HIGH": 3.0, "MEDIUM": 2.0, "LOW": 1.0}.get(severity, 1.0)
+    retrieval_score = sum(float(match.get("score", 0)) for match in matches[:3])
+    return severity_weight + retrieval_score
+
+
+def _rule_query(rule: dict[str, Any]) -> str:
+    parts = [
+        rule.get("rule_name", ""),
+        rule.get("category", ""),
+        " ".join(str(item) for item in rule.get("target_fields", [])),
+        rule.get("evidence_requirement", ""),
+        rule.get("severity_policy", ""),
+    ]
+    return "\n".join(part for part in parts if part)
+
+
+def _chunk_text(chunk: Any) -> str:
+    return getattr(chunk, "text", "")
+
+
+def _chunk_id(chunk: Any) -> str:
+    return getattr(chunk, "chunk_id", "")
+
+
+def _chunk_metadata(chunk: Any, index: int) -> dict[str, Any]:
+    bbox_list = getattr(chunk, "bbox_list", [])
+    block_ids = [item.get("block_id") for item in bbox_list if item.get("block_id")]
+    page_range = getattr(chunk, "page_range", [1, 1])
+    return {
+        "chunk_id": _chunk_id(chunk),
+        "chunk_index": index,
+        "section": getattr(chunk, "section", ""),
+        "page_start": int(page_range[0] if page_range else 1),
+        "page_end": int(page_range[-1] if page_range else 1),
+        "bbox_json": json.dumps(bbox_list, ensure_ascii=False),
+        "block_ids_json": json.dumps(block_ids, ensure_ascii=False),
+        "table_refs_json": json.dumps(getattr(chunk, "table_refs", []), ensure_ascii=False),
+    }
+
+
+def _tokenize(text: str) -> list[str]:
+    words = re.findall(r"[\u4e00-\u9fff]{2,}|[a-zA-Z0-9_.-]+", text.lower())
+    tokens: list[str] = []
+    for word in words:
+        if re.match(r"^[\u4e00-\u9fff]+$", word) and len(word) > 3:
+            tokens.extend(word[i : i + 2] for i in range(len(word) - 1))
+        tokens.append(word)
+    return tokens
+
+
+def _severity_from_policy(policy: str) -> str:
+    if "重大" in policy or "严重" in policy:
+        return "HIGH"
+    if "一般" in policy:
+        return "MEDIUM"
+    return "LOW"
+
+
+def _generic_suggestion(rule: dict[str, Any]) -> str:
+    requirement = rule.get("evidence_requirement") or "规则要求"
+    return f"请补充或核验与“{rule.get('rule_name', '规则')}”相关的证明材料。要求：{requirement}"
+
+
+def _write_json(path: Path, data: Any) -> None:
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
