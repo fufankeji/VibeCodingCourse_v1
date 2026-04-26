@@ -10,12 +10,12 @@ class Settings(BaseSettings):
     review_llm_model: str = ""
     siliconflow_api_key: str = ""
     siliconflow_base_url: str = "https://api.siliconflow.cn/v1"
-    siliconflow_embedding_model: str = "Qwen/Qwen3-Embedding-4B"
-    siliconflow_embedding_dimensions: int = 2560
-    siliconflow_reranker_model: str = "Qwen/Qwen3-Reranker-4B"
+    siliconflow_embedding_model: str = "Qwen/Qwen3-Embedding-8B"
+    siliconflow_embedding_dimensions: int = 4096
+    siliconflow_reranker_model: str = "Qwen/Qwen3-Reranker-8B"
     siliconflow_reranker_instruction: str = "请根据水土保持方案审查规则查询，对候选证据片段进行相关性排序，优先保留能支撑规则判断、字段缺失或跨章节一致性核验的片段。"
-    rag_top_k: int = 12
-    rag_rerank_top_n: int = 8
+    rag_top_k: int = 16
+    rag_rerank_top_n: int = 10
     rag_max_issues: int = 10
     database_url: str = "sqlite:///./contract_review.db"
     app_host: str = "0.0.0.0"

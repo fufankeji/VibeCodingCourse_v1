@@ -8,7 +8,7 @@ const ALLOWED_TYPES = ['application/pdf', 'application/vnd.openxmlformats-office
 const ALLOWED_EXTS = ['.pdf', '.docx'];
 
 /**
- * ContractUploadPage — P04 合同上传页
+ * ContractUploadPage — P04 方案上传页
  * POST /contracts/upload — 已开发
  * R12: 前端格式/大小校验为辅助性，上传期间按钮均禁用
  */
@@ -56,8 +56,8 @@ export function ContractUploadPage() {
 
   const handleSubmit = async () => {
     const errs: string[] = [];
-    if (!contractTitle.trim()) errs.push('合同名称不能为空');
-    if (!selectedFile) errs.push('请选择合同文件');
+    if (!contractTitle.trim()) errs.push('方案名称不能为空');
+    if (!selectedFile) errs.push('请选择方案文件');
     if (errs.length > 0) { setErrors(errs); return; }
 
     setErrors([]);
@@ -88,21 +88,21 @@ export function ContractUploadPage() {
       <div className="pt-14">
         <div className="max-w-2xl mx-auto px-6 py-8">
           <div className="mb-6">
-            <h1 className="text-gray-900" style={{ fontSize: 20, fontWeight: 700 }}>新建合同审核</h1>
-            <p className="text-sm text-gray-500 mt-1">上传合同文件，启动 AI 风险审核流程</p>
+            <h1 className="text-gray-900" style={{ fontSize: 20, fontWeight: 700 }}>新建方案评审</h1>
+            <p className="text-sm text-gray-500 mt-1">上传水土保持方案文件，启动智能评审流程</p>
           </div>
 
           <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 space-y-5">
             {/* Contract Title */}
             <div>
               <label className="block text-sm text-gray-700 mb-1.5" style={{ fontWeight: 500 }}>
-                合同名称 <span className="text-red-500">*</span>
+                方案名称 <span className="text-red-500">*</span>
               </label>
               <input
                 type="text"
                 value={contractTitle}
                 onChange={(e) => setContractTitle(e.target.value)}
-                placeholder="请输入合同名称（最多 200 字符）"
+                placeholder="请输入方案名称（最多 200 字符）"
                 maxLength={200}
                 disabled={isDisabled}
                 className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-400"
@@ -112,7 +112,7 @@ export function ContractUploadPage() {
             {/* File Upload Zone */}
             <div>
               <label className="block text-sm text-gray-700 mb-1.5" style={{ fontWeight: 500 }}>
-                合同文件 <span className="text-red-500">*</span>
+                方案文件 <span className="text-red-500">*</span>
               </label>
 
               {!selectedFile ? (

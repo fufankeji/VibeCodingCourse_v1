@@ -124,6 +124,11 @@ export interface ReportData {
   report_status: 'generating' | 'ready';
   generated_at: string;
   summary: {
+    project_name?: string;
+    construction_unit?: string;
+    project_location?: string;
+    construction_nature?: string;
+    investment_estimate?: string;
     contract_parties: string[];
     contract_amount: string;
     effective_date: string;

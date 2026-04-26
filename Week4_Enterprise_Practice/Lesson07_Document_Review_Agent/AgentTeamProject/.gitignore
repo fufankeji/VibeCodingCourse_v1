@@ -4,6 +4,7 @@ backend/.env
 # 本地运行产物
 backend/contract_review.db
 backend/storage/contracts/
+backend/storage/db_backups/
 backend/storage/vector_stores/
 
 # Python

@@ -26,7 +26,7 @@ export function GlobalNav() {
 
   const navItems = [
     { path: '/dashboard', label: '工作台', icon: LayoutDashboard },
-    { path: '/contracts', label: '合同列表', icon: FileText },
+    { path: '/contracts', label: '方案列表', icon: FileText },
     ...(user?.role === 'admin' ? [{ path: '/admin', label: '系统管理', icon: Settings }] : []),
   ];
 
@@ -38,7 +38,7 @@ export function GlobalNav() {
           <FileText className="w-4 h-4 text-white" />
         </div>
         <span className="text-gray-900 select-none" style={{ fontWeight: 600, letterSpacing: '-0.01em' }}>
-          合同智审
+          水土保持方案智能评审
         </span>
       </div>
 

@@ -23,7 +23,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="合同审核系统 API",
+    title="水土保持方案智能评审 API",
     version="1.0.0",
     lifespan=lifespan,
 )

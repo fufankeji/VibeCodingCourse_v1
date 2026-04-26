@@ -194,6 +194,11 @@ def _build_summary(
         risk_conclusion = "首版规则未发现明显高风险问题，仍建议人工抽查关键字段与附图附表。"
 
     return {
+        "project_name": field_map.get("project_name", ""),
+        "construction_unit": field_map.get("construction_unit", ""),
+        "project_location": field_map.get("project_location") or field_map.get("construction_location", ""),
+        "construction_nature": field_map.get("construction_nature") or field_map.get("project_nature", ""),
+        "investment_estimate": field_map.get("investment_estimate", ""),
         "contract_parties": [field_map.get("construction_unit", "")],
         "contract_amount": field_map.get("investment_estimate", ""),
         "effective_date": "",

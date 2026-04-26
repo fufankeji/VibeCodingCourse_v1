@@ -16,7 +16,7 @@ const STATE_OPTIONS: { value: '' | SessionState; label: string }[] = [
 ];
 
 /**
- * ContractListPage — P03 合同列表页
+ * ContractListPage — P03 方案列表页
  * GET /contracts — 已开发（游标分页，state 筛选）
  * GET /contracts?keyword=xxx — 「未开发」：api_spec 未定义 keyword 参数
  */
@@ -49,7 +49,7 @@ export function ContractListPage() {
       setTotal(res.total);
       setLoadError('');
     } catch (err: any) {
-      setLoadError(err.message || '加载合同列表失败');
+      setLoadError(err.message || '加载方案列表失败');
     } finally {
       setIsLoading(false);
       setIsLoadingMore(false);
@@ -98,8 +98,8 @@ export function ContractListPage() {
           {/* Page Header */}
           <div className="flex items-center justify-between mb-6">
             <div>
-              <h1 className="text-gray-900" style={{ fontSize: 20, fontWeight: 700 }}>合同列表</h1>
-              <p className="text-sm text-gray-500 mt-0.5">管理和查看所有合同审核任务</p>
+              <h1 className="text-gray-900" style={{ fontSize: 20, fontWeight: 700 }}>方案列表</h1>
+              <p className="text-sm text-gray-500 mt-0.5">管理和查看所有水土保持方案评审任务</p>
             </div>
             <button
               onClick={() => navigate('/contracts/upload')}
@@ -115,14 +115,14 @@ export function ContractListPage() {
           <div className="bg-white rounded-xl border border-gray-200 px-4 py-3 mb-4 flex items-center gap-3 flex-wrap">
             <Filter className="w-4 h-4 text-gray-400 shrink-0" />
 
-            {/* Keyword Search — 未开发 */}
+            {/* Keyword Search */}
             <div className="relative flex-1 min-w-48">
               <Search className="w-4 h-4 text-gray-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
                 value={keyword}
                 onChange={(e) => setKeyword(e.target.value)}
-                placeholder="搜索合同名称…"
+                placeholder="搜索方案名称…"
                 className="pl-8 pr-3 py-1.5 border border-gray-200 rounded-md text-sm w-full focus:outline-none focus:ring-1 focus:ring-blue-400"
               />
               <span
@@ -163,7 +163,7 @@ export function ContractListPage() {
           {!isLoading && (
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
               <div className="grid grid-cols-12 px-5 py-2.5 bg-gray-50 border-b border-gray-100 text-xs text-gray-500">
-                <div className="col-span-5">合同名称</div>
+                <div className="col-span-5">方案名称</div>
                 <div className="col-span-2">上传人</div>
                 <div className="col-span-2">上传时间</div>
                 <div className="col-span-2">状态</div>
@@ -171,7 +171,7 @@ export function ContractListPage() {
               </div>
 
               {filtered.length === 0 ? (
-                <div className="py-16 text-center text-sm text-gray-400">暂无符合条件的合同</div>
+                <div className="py-16 text-center text-sm text-gray-400">暂无符合条件的方案任务</div>
               ) : (
                 <div className="divide-y divide-gray-50">
                   {filtered.map((contract) => (

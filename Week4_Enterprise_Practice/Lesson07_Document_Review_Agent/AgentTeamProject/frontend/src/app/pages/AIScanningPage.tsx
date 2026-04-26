@@ -14,12 +14,12 @@ interface ScanProgress {
 }
 
 const SCAN_DIMENSIONS_INIT = [
-  { id: 'unilateral', label: '单边条款检测', status: 'pending' as const },
-  { id: 'penalty', label: '违约金条款分析', status: 'pending' as const },
-  { id: 'confidentiality', label: '保密条款审查', status: 'pending' as const },
-  { id: 'ip', label: '知识产权归属', status: 'pending' as const },
-  { id: 'dispute', label: '争议解决条款', status: 'pending' as const },
-  { id: 'termination', label: '合同解除权分析', status: 'pending' as const },
+  { id: 'project_attributes', label: '项目属性判定', status: 'pending' as const },
+  { id: 'formal_completeness', label: '章节与材料完整性', status: 'pending' as const },
+  { id: 'earthwork_balance', label: '土石方平衡核验', status: 'pending' as const },
+  { id: 'topsoil_protection', label: '表土保护措施核验', status: 'pending' as const },
+  { id: 'spoil_borrow', label: '取土弃渣场设置核验', status: 'pending' as const },
+  { id: 'prevention_measures', label: '防治措施与投资核验', status: 'pending' as const },
 ];
 
 const SCAN_DIMENSIONS_DONE = SCAN_DIMENSIONS_INIT.map((d) => ({ ...d, status: 'done' as const }));
@@ -109,10 +109,6 @@ export function AIScanningPage() {
     };
   }, [sessionId, navigate]);
 
-  const handleRouteToReview = () => navigate(`/contracts/${sessionId}/review`);
-  const handleRouteToBatch = () => navigate(`/contracts/${sessionId}/batch`);
-  const handleRouteToReport = () => navigate(`/contracts/${sessionId}/report`);
-
   return (
     <div className="min-h-screen bg-gray-50">
       <GlobalNav />
@@ -129,10 +125,10 @@ export function AIScanningPage() {
                 <div className="absolute inset-0 border-2 border-blue-200 rounded-full animate-ping opacity-50" />
               </div>
               <h2 className="text-gray-800" style={{ fontWeight: 600, fontSize: 18 }}>
-                AI 正在扫描风险条款…
+                AI 正在进行水保方案规则审查…
               </h2>
               {/* R01: 禁止显示「无风险」「扫描通过」等绝对化文字 */}
-              <p className="text-sm text-gray-500 mt-2">已用时 {elapsedSeconds} 秒 · 系统正在分析合同条款，请稍候</p>
+              <p className="text-sm text-gray-500 mt-2">已用时 {elapsedSeconds} 秒 · 系统正在召回证据并匹配审查规则，请稍候</p>
             </div>
 
             {/* Risk Counter — SSE scan_progress */}
@@ -153,7 +149,7 @@ export function AIScanningPage() {
 
             {/* Scan Dimensions */}
             <div className="space-y-2 mb-8">
-              <p className="text-xs text-gray-400 mb-2">扫描维度（来源：后端配置）</p>
+              <p className="text-xs text-gray-400 mb-2">审查维度</p>
               {dimensions.map((dim) => (
                 <div key={dim.id} className="flex items-center gap-3">
                   <div className={`w-2 h-2 rounded-full ${
@@ -176,33 +172,8 @@ export function AIScanningPage() {
               ))}
             </div>
 
-            {/* Demo Route Controls */}
-            <div className="border-t border-gray-100 pt-5">
-              <p className="text-xs text-gray-400 mb-3 text-center">演示：模拟 SSE 分级路由事件</p>
-              <div className="grid grid-cols-3 gap-2">
-                <button
-                  onClick={handleRouteToReview}
-                  className="text-xs bg-red-50 border border-red-200 text-red-700 py-2 rounded-lg hover:bg-red-100 transition-colors"
-                >
-                  高风险路由<br />
-                  <span className="text-red-400">→ P08 HITL 审核</span>
-                </button>
-                <button
-                  onClick={handleRouteToBatch}
-                  className="text-xs bg-amber-50 border border-amber-200 text-amber-700 py-2 rounded-lg hover:bg-amber-100 transition-colors"
-                >
-                  中风险路由<br />
-                  <span className="text-amber-400">→ P09 批量复核</span>
-                </button>
-                <button
-                  onClick={handleRouteToReport}
-                  className="text-xs bg-green-50 border border-green-200 text-green-700 py-2 rounded-lg hover:bg-green-100 transition-colors"
-                >
-                  低风险自动通过<br />
-                  <span className="text-green-400">→ P10 报告页</span>
-                </button>
-              </div>
-              <p className="text-xs text-center text-gray-400 mt-2">SSE events: route_interrupted / route_batch_review / route_auto_passed</p>
+            <div className="border-t border-gray-100 pt-5 text-center text-xs text-gray-400">
+              等待后端审查事件：route_interrupted / route_batch_review / route_auto_passed
             </div>
           </div>
 
@@ -211,7 +182,7 @@ export function AIScanningPage() {
             <button
               onClick={async () => {
                 if (!sessionId) return;
-                if (!window.confirm('确定要放弃本次审核流程吗？此操作不可逆。')) return;
+                if (!window.confirm('确定要放弃本次评审流程吗？此操作不可逆。')) return;
                 try {
                   await abortSession(sessionId, '用户主动放弃');
                   navigate('/contracts');

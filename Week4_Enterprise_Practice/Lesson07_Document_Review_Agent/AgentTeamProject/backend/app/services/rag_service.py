@@ -410,6 +410,10 @@ def _adjudicate_rule(
         "issue_type": rule.get("category", "规则库审查"),
         "rule_id": rule.get("rule_id", ""),
         "rule_name": rule.get("rule_name", ""),
+        "rule_source": rule.get("rule_source", ""),
+        "rule_description": _rule_description(rule),
+        "severity_policy": rule.get("severity_policy", ""),
+        "evidence_requirement": rule.get("evidence_requirement", ""),
         "actual_value": payload.get("actual_value", "见召回证据"),
         "expected_value": payload.get("expected_value", rule.get("evidence_requirement", "")),
         "evidence_nodes": evidence_nodes,
@@ -607,6 +611,18 @@ def _rule_query(rule: dict[str, Any]) -> str:
         rule.get("severity_policy", ""),
     ]
     return "\n".join(part for part in parts if part)
+
+
+def _rule_description(rule: dict[str, Any]) -> str:
+    targets = "、".join(str(item) for item in rule.get("target_fields", []) if str(item).strip())
+    pieces = []
+    if rule.get("rule_source"):
+        pieces.append(str(rule["rule_source"]))
+    if targets:
+        pieces.append(f"重点核查字段：{targets}")
+    if rule.get("severity_policy"):
+        pieces.append(f"判定策略：{rule['severity_policy']}")
+    return "；".join(pieces)
 
 
 def _chunk_text(chunk: Any) -> str:

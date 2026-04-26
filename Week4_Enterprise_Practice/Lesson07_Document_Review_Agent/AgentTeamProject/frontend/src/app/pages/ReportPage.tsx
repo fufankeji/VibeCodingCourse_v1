@@ -121,7 +121,7 @@ export function ReportPage() {
                     <CheckCircle className="w-5 h-5 text-green-500" />
                     <span className="text-sm text-green-600" style={{ fontWeight: 500 }}>报告已就绪（state: report_ready）</span>
                   </div>
-                  <h1 className="text-gray-900" style={{ fontSize: 20, fontWeight: 700 }}>审核报告</h1>
+                  <h1 className="text-gray-900" style={{ fontSize: 20, fontWeight: 700 }}>审查意见稿</h1>
                   <p className="text-xs text-gray-400 mt-1">
                     生成时间：{new Date(report.generated_at).toLocaleString('zh-CN')} ·
                     GET /sessions/{sessionId}/report
@@ -155,20 +155,20 @@ export function ReportPage() {
                 <h2 className="text-gray-800 mb-4" style={{ fontWeight: 600, fontSize: 16 }}>执行摘要</h2>
                 <div className="grid grid-cols-2 gap-4 mb-4">
                   <div>
-                    <p className="text-xs text-gray-500">合同甲方</p>
-                    <p className="text-sm text-gray-800">{report.summary.contract_parties[0]}</p>
+                    <p className="text-xs text-gray-500">项目名称</p>
+                    <p className="text-sm text-gray-800">{report.summary.project_name || '未提取'}</p>
                   </div>
                   <div>
-                    <p className="text-xs text-gray-500">合同乙方</p>
-                    <p className="text-sm text-gray-800">{report.summary.contract_parties[1]}</p>
+                    <p className="text-xs text-gray-500">建设单位</p>
+                    <p className="text-sm text-gray-800">{report.summary.construction_unit || report.summary.contract_parties?.[0] || '未提取'}</p>
                   </div>
                   <div>
-                    <p className="text-xs text-gray-500">合同金额</p>
-                    <p className="text-sm text-gray-800">{report.summary.contract_amount}</p>
+                    <p className="text-xs text-gray-500">建设地点</p>
+                    <p className="text-sm text-gray-800">{report.summary.project_location || '未提取'}</p>
                   </div>
                   <div>
-                    <p className="text-xs text-gray-500">生效日期</p>
-                    <p className="text-sm text-gray-800">{report.summary.effective_date}</p>
+                    <p className="text-xs text-gray-500">水保投资</p>
+                    <p className="text-sm text-gray-800">{report.summary.investment_estimate || report.summary.contract_amount || '未提取'}</p>
                   </div>
                 </div>
 
@@ -185,8 +185,8 @@ export function ReportPage() {
                 {/* Stats */}
                 <div className="mt-4 grid grid-cols-5 gap-2">
                   {[
-                    { label: '总条款', value: report.item_stats.total, color: 'text-gray-700' },
-                    { label: '批准', value: report.item_stats.approved, color: 'text-green-600' },
+                    { label: '问题总数', value: report.item_stats.total, color: 'text-gray-700' },
+                    { label: '确认', value: report.item_stats.approved, color: 'text-green-600' },
                     { label: '修正', value: report.item_stats.edited, color: 'text-amber-600' },
                     { label: '拒绝', value: report.item_stats.rejected, color: 'text-red-600' },
                     { label: '自动通过', value: report.item_stats.auto_passed, color: 'text-blue-600' },
@@ -201,7 +201,7 @@ export function ReportPage() {
 
               {/* Detailed Analysis — reviewed items */}
               <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 mb-4">
-                <h2 className="text-gray-800 mb-4" style={{ fontWeight: 600, fontSize: 16 }}>详细分析（已审核条款）</h2>
+                <h2 className="text-gray-800 mb-4" style={{ fontWeight: 600, fontSize: 16 }}>详细分析（已复核问题）</h2>
                 <div className="space-y-4">
                   {decidedItems.map((item) => (
                     <div key={item.id} className="border border-gray-100 rounded-xl overflow-hidden">

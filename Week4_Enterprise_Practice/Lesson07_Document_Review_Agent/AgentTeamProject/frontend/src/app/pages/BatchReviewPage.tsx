@@ -90,9 +90,9 @@ export function BatchReviewPage() {
           {/* Header */}
           <div className="mb-5">
             <p className="text-xs text-gray-400 mb-1">session_id: {sessionId}</p>
-            <h1 className="text-gray-900" style={{ fontSize: 20, fontWeight: 700 }}>中风险条款批量复核</h1>
+            <h1 className="text-gray-900" style={{ fontSize: 20, fontWeight: 700 }}>中风险问题批量复核</h1>
             <p className="text-sm text-gray-500 mt-1">
-              当前合同未发现高风险条款，以下中风险条款可批量确认。批量确认后将触发报告生成。
+              当前方案以下中风险问题可批量确认。批量确认后将触发审查意见生成。
             </p>
           </div>
 

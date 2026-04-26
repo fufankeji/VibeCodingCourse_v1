@@ -8,8 +8,30 @@ import { listFields, verifyField } from '../api/fields';
 import type { ExtractedField, VerificationStatus } from '../types';
 
 const FIELD_LABEL: Record<string, string> = {
-  party_a: '甲方', party_b: '乙方', contract_amount: '合同金额',
-  effective_date: '生效日期', termination_conditions: '终止条件', signing_party: '签署方',
+  project_name: '项目名称',
+  construction_unit: '建设单位',
+  project_location: '建设地点',
+  construction_location: '建设地点',
+  construction_nature: '建设性质',
+  project_nature: '建设性质',
+  key_prevention_or_control_area: '重点防治区属性',
+  disturbed_area: '扰动地表面积',
+  occupied_area: '占地面积',
+  land_area: '占地面积',
+  excavation_volume: '挖方',
+  fill_volume: '填方',
+  borrow_volume: '借方',
+  spoil_volume: '弃方',
+  topsoil_stripping: '表土剥离',
+  topsoil_preservation: '表土保存',
+  topsoil_backfill: '表土回覆',
+  spoil_ground: '弃渣场',
+  spoil_area: '弃渣场',
+  borrow_ground: '取土场',
+  borrow_area: '取土场',
+  construction_road: '施工道路',
+  prevention_measures: '防治措施',
+  investment_estimate: '投资估算',
 };
 
 /**
@@ -89,7 +111,7 @@ export function FieldVerificationPage() {
             <p className="text-xs text-gray-400 mb-1">session_id: {sessionId}</p>
             <h1 className="text-gray-900" style={{ fontSize: 20, fontWeight: 700 }}>字段核对</h1>
             <p className="text-sm text-gray-500 mt-1">
-              请核对 AI 提取的结构化字段，确认无误后可启动风险扫描
+              请核对 AI 提取的水保方案结构化字段，确认无误后可启动规则审查
             </p>
           </div>
 
@@ -217,7 +239,7 @@ export function FieldVerificationPage() {
               style={{ fontWeight: 500 }}
             >
               <Zap className="w-4 h-4" />
-              {isStartingScanning ? 'AI 扫描启动中…' : '开始 AI 风险扫描'}
+              {isStartingScanning ? 'AI 审查启动中…' : '开始 AI 规则审查'}
             </button>
             <button
               onClick={() => navigate('/contracts')}

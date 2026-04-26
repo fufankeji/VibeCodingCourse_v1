@@ -85,7 +85,7 @@ export function ParsingProgressPage() {
 
   const handleAbort = async () => {
     if (!sessionId) return;
-    if (!window.confirm('确定要放弃本次审核流程吗？此操作不可逆。')) return;
+    if (!window.confirm('确定要放弃本次评审流程吗？此操作不可逆。')) return;
     setIsAborting(true);
     try {
       await abortSession(sessionId, '用户主动放弃');
@@ -119,7 +119,7 @@ export function ParsingProgressPage() {
 
                 <div>
                   <h2 className="text-gray-800" style={{ fontWeight: 600, fontSize: 18 }}>
-                    正在解析合同文件…
+                    正在解析方案文件…
                   </h2>
                   <p className="text-sm text-gray-500 mt-2">
                     已用时 {elapsedSeconds} 秒 · 预计需要 1-3 分钟

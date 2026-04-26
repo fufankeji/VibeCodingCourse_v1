@@ -1,5 +1,5 @@
 """
-合同审核 LangGraph 工作流图构建
+水土保持方案评审 LangGraph 工作流图构建
 
 图结构：
 START → scanning_node → routing_node → human_review_node → resume_check_node → report_generation_node → END
@@ -96,7 +96,7 @@ def run_workflow_sync(
     Args:
         session_id: ReviewSession.id
         contract_id: Contract.id
-        full_text: OCR 提取的合同全文
+        full_text: OCR 提取的方案全文
         thread_id: ReviewSession.langgraph_thread_id（作为 LangGraph thread_id）
 
     Returns:

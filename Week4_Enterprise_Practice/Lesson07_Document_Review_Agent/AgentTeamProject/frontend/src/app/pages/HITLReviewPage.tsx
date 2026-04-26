@@ -33,7 +33,7 @@ interface ConfirmModalProps {
  * GET /sessions/{id}/items/{item_id} — 已开发（懒加载 decision_history）
  * GET /sessions/{id}/recovery — 已开发（跨天恢复）
  *
- * 合同原文全文接口 — 「未开发」：api_spec 未提供 GET /sessions/{id}/contract-text
+ * 方案原文全文接口 — 「未开发」：api_spec 未提供 GET /sessions/{id}/source-text
  *
  * R03: 高风险条款不渲染任何批量操作元素（checkbox/批量按钮），彻底存在子 DOM 中
  * R04: Approve 按钮前置条件：condition_A（原文进入视野）+ condition_B（human_note ≥ 10字）
@@ -96,12 +96,11 @@ export function HITLReviewPage() {
   const decidedCount = items.filter((i) => i.risk_level === 'HIGH' && i.human_decision !== 'pending').length;
   const totalHigh = highRiskItems.length;
 
-  // IntersectionObserver for condition_A: evidence in viewport
+  // Timed evidence-read guard for condition_A.
   useEffect(() => {
-    setConditionA(false); // 重置 condition_A 当切换条款时
+    setConditionA(false); // 重置 condition_A 当切换问题时
     if (!activeItemId) return;
 
-    // 模拟：选择条款 2 秒后证据自动进入视野（真实场景下由 IntersectionObserver 监听）
     const timer = setTimeout(() => setConditionA(true), 2000);
     return () => clearTimeout(timer);
   }, [activeItemId]);
@@ -212,14 +211,14 @@ export function HITLReviewPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col">
+    <div className="h-screen bg-gray-50 overflow-hidden">
       <GlobalNav />
       <WorkflowStatusBar sessionState="hitl_pending" hitlSubtype="interrupt" />
 
-      <div style={{ paddingTop: 78 }} className="flex flex-col flex-1">
+      <div className="fixed left-0 right-0 bottom-0 flex flex-col overflow-hidden" style={{ top: 120 }}>
         {/* Recovery Banner */}
         {showRecoveryBanner && (
-          <div className="bg-amber-50 border-b border-amber-200 px-6 py-2.5 flex items-center justify-between">
+          <div className="shrink-0 bg-amber-50 border-b border-amber-200 px-6 py-2.5 flex items-center justify-between">
             <div className="flex items-center gap-2 text-sm text-amber-700">
               <Clock className="w-4 h-4" />
               <span>
@@ -234,22 +233,22 @@ export function HITLReviewPage() {
         )}
 
         {/* Dual Pane View */}
-        <div className="flex flex-1 overflow-hidden" style={{ height: 'calc(100vh - 78px - 44px - 56px)' }}>
-          {/* Left Pane 42% — Risk Item Cards */}
-          <div className="overflow-y-auto border-r border-gray-200 bg-white" style={{ width: '42%' }}>
-            <div className="px-4 py-3 border-b border-gray-100 sticky top-0 bg-white z-10">
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          {/* Left Pane 42% — Review Issue Cards */}
+          <div className="flex h-full min-h-0 flex-col border-r border-gray-200 bg-white" style={{ width: '42%' }}>
+            <div className="shrink-0 px-4 py-3 border-b border-gray-100 bg-white z-10">
               <h2 className="text-gray-700" style={{ fontWeight: 600, fontSize: 14 }}>
-                风险条款列表
+                评审问题列表
               </h2>
               <p className="text-xs text-gray-400 mt-0.5">
                 高风险 {decidedCount}/{totalHigh} 已处理 · 来源：GET /sessions/{sessionId}/items
               </p>
             </div>
 
-            <div className="divide-y divide-gray-50">
+            <div className="min-h-0 flex-1 divide-y divide-gray-50 overflow-y-auto overscroll-contain">
               {isLoadingItems && (
                 <div className="px-4 py-12 text-center text-gray-400 flex items-center justify-center gap-2">
-                  <Loader2 className="w-5 h-5 animate-spin" /> 加载条款中…
+                  <Loader2 className="w-5 h-5 animate-spin" /> 加载评审问题中…
                 </div>
               )}
               {items.map((item) => (
@@ -283,20 +282,20 @@ export function HITLReviewPage() {
           </div>
 
           {/* Right Pane 58% — Evidence Highlight */}
-          <div className="overflow-y-auto bg-gray-50" style={{ width: '58%' }}>
+          <div className="h-full min-h-0 overflow-y-auto bg-gray-50" style={{ width: '58%' }}>
             <RightPane item={activeItem} conditionA={conditionA} evidenceRef={evidenceRef} sessionId={sessionId ?? ''} />
           </div>
         </div>
 
         {/* Progress Summary Bar */}
-        <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 px-6 py-3 flex items-center justify-between z-30">
+        <div className="shrink-0 bg-white border-t border-gray-200 px-6 py-3 flex items-center justify-between z-30">
           <div className="flex items-center gap-4">
             <span className="text-sm text-gray-600">
-              审核进度：
+              评审进度：
               <span className="text-blue-600" style={{ fontWeight: 600 }}>
                 {decidedCount} / {totalHigh}
               </span>
-              <span className="text-gray-400"> 条高风险已处理</span>
+              <span className="text-gray-400"> 个高风险问题已处理</span>
             </span>
             <div className="w-40 bg-gray-100 rounded-full h-1.5">
               <div
@@ -378,6 +377,11 @@ function RiskItemCard({
   const noteLen = humanNote.trim().length;
   const remaining = Math.max(0, 10 - noteLen);
   const localConditionB = noteLen >= 10;
+  const reasoning = parseReasoning(item.ai_reasoning);
+  const evidenceNodeCount = reasoning?.evidence_nodes?.filter(Boolean).length ?? 0;
+  const bboxCount = reasoning?.source_bbox_list?.length ?? 0;
+  const ruleDescription = reasoning?.rule_description || reasoning?.rule_source || reasoning?.severity_policy || '';
+  const expectedValue = reasoning?.expected_value || reasoning?.evidence_requirement || '';
 
   const decisionConfig: Record<string, { label: string; className: string; icon: React.ReactNode }> = {
     approve: { label: '已批准', className: 'bg-green-100 text-green-700', icon: <CheckCircle className="w-3 h-3" /> },
@@ -413,11 +417,47 @@ function RiskItemCard({
         <ConfidenceBadge score={item.confidence_score} />
       </div>
 
-      {/* Risk Category */}
-      <p className="text-xs text-gray-500 mb-1">{item.risk_category}</p>
+      {/* Review Category */}
+      <p className="text-xs text-gray-500 mb-1">
+        {item.risk_category}
+        {reasoning?.rule_id && (
+          <span className="ml-1 text-blue-600">· {reasoning.rule_id}</span>
+        )}
+      </p>
 
-      {/* AI Finding — R01: 展示 ai_finding 原文，不截断不改写 */}
-      <p className="text-sm text-gray-700 leading-relaxed">{item.ai_finding}</p>
+      {/* Review Issue — R01: 展示 ai_finding 原文，不截断不改写 */}
+      <div className="space-y-1">
+        <p className="text-xs text-gray-400">评审问题</p>
+        <p className="text-sm text-gray-700 leading-relaxed">{item.ai_finding}</p>
+      </div>
+
+      {reasoning && (
+        <div className="mt-2 rounded-lg border border-blue-100 bg-blue-50/60 px-2.5 py-2 text-xs text-gray-700 space-y-1">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-blue-700" style={{ fontWeight: 600 }}>依据规则</span>
+            <span className="text-blue-500 shrink-0">{reasoning.rule_id}</span>
+          </div>
+          <p className="text-gray-800">
+            <span className="text-gray-500">规则名称：</span>
+            {reasoning.rule_name || '规则库审查'}
+          </p>
+          {ruleDescription && (
+            <p>
+              <span className="text-gray-500">规则描述：</span>
+              {truncateText(ruleDescription, 110)}
+            </p>
+          )}
+          {expectedValue && (
+            <p>
+              <span className="text-gray-500">期望：</span>
+              {truncateText(expectedValue, 110)}
+            </p>
+          )}
+          <p className="text-gray-400">
+            证据节点 {evidenceNodeCount} 个 · bbox {bboxCount} 个
+          </p>
+        </div>
+      )}
 
       {/* Edited Values */}
       {item.human_decision === 'edit' && item.human_edited_finding && (
@@ -598,7 +638,7 @@ function HumanNoteInput({ note, onChange, remaining }: { note: string; onChange:
   return (
     <div>
       <label className="block text-xs text-gray-600 mb-1">
-        处理原因 * <span className="text-gray-400">（高风险条款须 ≥ 10 字）</span>
+        处理原因 * <span className="text-gray-400">（高风险问题须 ≥ 10 字）</span>
       </label>
       <textarea
         value={note}
@@ -624,7 +664,7 @@ function RightPane({ item, conditionA, evidenceRef, sessionId }: {
   if (!item) {
     return (
       <div className="flex items-center justify-center h-full text-gray-400 text-sm">
-        ← 从左侧选择一条风险条款
+        ← 从左侧选择一个评审问题
       </div>
     );
   }
@@ -650,11 +690,11 @@ function RightPane({ item, conditionA, evidenceRef, sessionId }: {
         </div>
       </div>
 
-      {/* Clause Location */}
+      {/* Issue Location */}
       <div className="bg-white rounded-xl border border-gray-200 p-4">
         <div className="flex items-center gap-2 mb-3">
           <Info className="w-4 h-4 text-gray-400" />
-          <span className="text-sm text-gray-700" style={{ fontWeight: 500 }}>条款位置</span>
+          <span className="text-sm text-gray-700" style={{ fontWeight: 500 }}>问题位置</span>
         </div>
         <p className="text-xs text-gray-500">
           第 {item.clause_location.page_number} 页 · 第 {item.clause_location.paragraph_index + 1} 段
@@ -665,7 +705,7 @@ function RightPane({ item, conditionA, evidenceRef, sessionId }: {
       {/* Evidence Highlights */}
       <div className="bg-white rounded-xl border border-gray-200 p-4">
         <p className="text-sm text-gray-700 mb-3" style={{ fontWeight: 500 }}>
-          风险证据段落
+          证据段落
           {!conditionA && (
             <span className="ml-2 text-xs text-orange-500 animate-pulse">
               ↓ 请滚动查看主要证据以解锁 Approve 按钮
@@ -708,7 +748,7 @@ function RightPane({ item, conditionA, evidenceRef, sessionId }: {
 
       {/* AI Reasoning */}
       <div className="bg-white rounded-xl border border-gray-200 p-4">
-        <p className="text-sm text-gray-700 mb-2" style={{ fontWeight: 500 }}>AI 判断依据</p>
+        <p className="text-sm text-gray-700 mb-2" style={{ fontWeight: 500 }}>评审依据</p>
         {reasoning ? (
           <div className="space-y-2 text-sm text-gray-600">
             <p>规则：{reasoning.rule_id} · {reasoning.rule_name}</p>
@@ -741,6 +781,12 @@ function parseReasoning(raw: string): any | null {
   }
 }
 
+function truncateText(value: unknown, maxLength = 96): string {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength)}...`;
+}
+
 // ─── Confirmation Modal — R05: 不可 ESC/遮罩关闭 ──────────────────────────────
 function ConfirmModal({ item, decision, humanNote, editedRiskLevel, editedFinding, isFalsePositive, onConfirm, onCancel, isLoading }: ConfirmModalProps) {
   // R05: 不绑定 onKeyDown ESC 处理，不绑定 overlay onClick
@@ -756,7 +802,7 @@ function ConfirmModal({ item, decision, humanNote, editedRiskLevel, editedFindin
         <p className="text-xs text-gray-400 mb-4">此弹窗不可通过 ESC 或点击遮罩关闭（防 Automation Bias）</p>
 
         <div className="space-y-3 bg-gray-50 rounded-xl p-4 mb-5">
-          <Row label="条款摘要" value={item.ai_finding.slice(0, 60) + '…'} />
+          <Row label="问题摘要" value={item.ai_finding.slice(0, 60) + '…'} />
           <Row label="原始风险等级" value={<RiskLevelBadge level={item.risk_level} />} />
           <Row label="决策类型" value={
             <span className={`text-xs px-2 py-0.5 rounded ${

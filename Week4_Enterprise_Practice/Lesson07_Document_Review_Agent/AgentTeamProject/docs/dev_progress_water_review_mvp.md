@@ -14,6 +14,7 @@
 - 复用现有 `ReviewItem`、LangGraph/HITL 流程和审核页。
 - 新增 Chroma 本地持久化向量库，路径为 `backend/storage/vector_stores/water_review/{session_id}`。
 - Embedding 使用 SiliconFlow，必须通过环境变量 `SILICONFLOW_API_KEY` 提供密钥。
+- 默认选型为 `Qwen/Qwen3-Embedding-8B` + `Qwen/Qwen3-Reranker-8B`，当前是文本 RAG 主链路，暂不使用多模态 VL embedding。
 - 规则裁决使用 DeepSeek structured JSON 输出，结果写回现有 `ReviewItem` 兼容字段。
 
 ## 已完成
@@ -23,8 +24,8 @@
   - 写入 Chroma collection，并为每个向量文档保留 `chunk_id`、页码范围、section、bbox JSON、block ids。
   - 先做项目类型轻量判定，通用生产建设项目不会进入煤矿、铁路、公路、核电、管道等行业专项规则。
   - 每条规则按 `rule_name + category + target_fields + evidence_requirement + severity_policy` 构造 query。
-  - 向量召回 top 12、BM25/关键词召回 top 12，RRF 融合后取 top 8，并做前后 chunk 邻接扩展。
-  - 使用 `Qwen/Qwen3-Reranker-4B` 对融合与邻接扩展后的候选证据精排为 top 8。
+  - 向量召回 top 16、BM25/关键词召回 top 16，RRF 融合后做前后 chunk 邻接扩展。
+  - 使用 `Qwen/Qwen3-Reranker-8B` 对融合与邻接扩展后的候选证据精排为 top 10。
   - DeepSeek 基于规则和召回证据输出结构化 issue。
 - 规则审查输出收敛为 exactly 10 条高价值 issue，用于业务抽查。
 - 每条 issue 带规则 ID、规则名称、风险等级、证据文本、页码、bbox 节点、实际情况、期望要求和修改建议。
@@ -40,12 +41,12 @@
 
 ```bash
 SILICONFLOW_API_KEY=...
-SILICONFLOW_EMBEDDING_MODEL=Qwen/Qwen3-Embedding-4B
-SILICONFLOW_EMBEDDING_DIMENSIONS=2560
-SILICONFLOW_RERANKER_MODEL=Qwen/Qwen3-Reranker-4B
+SILICONFLOW_EMBEDDING_MODEL=Qwen/Qwen3-Embedding-8B
+SILICONFLOW_EMBEDDING_DIMENSIONS=4096
+SILICONFLOW_RERANKER_MODEL=Qwen/Qwen3-Reranker-8B
 SILICONFLOW_RERANKER_INSTRUCTION=请根据水土保持方案审查规则查询，对候选证据片段进行相关性排序，优先保留能支撑规则判断、字段缺失或跨章节一致性核验的片段。
-RAG_TOP_K=12
-RAG_RERANK_TOP_N=8
+RAG_TOP_K=16
+RAG_RERANK_TOP_N=10
 RAG_MAX_ISSUES=10
 ```
 

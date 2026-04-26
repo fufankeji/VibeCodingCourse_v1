@@ -42,17 +42,19 @@ STRUCTURED_FIELDS = [
 ]
 
 # Prompts
-_EXTRACTION_SYSTEM = """你是一名专业合同分析助手。请从以下合同文本中提取结构化字段信息。
+_EXTRACTION_SYSTEM = """你是一名水土保持方案技术审查助手。请从以下方案文本中提取结构化字段信息。
 返回严格的 JSON 对象，包含以下键（如未找到则返回空字符串）：
-party_a, party_b, contract_amount, effective_date, governing_law
+project_name, construction_unit, construction_location, project_nature, disturbed_area, land_area, investment_estimate
 
 示例输出：
 {
-  "party_a": "甲方公司名称",
-  "party_b": "乙方公司名称",
-  "contract_amount": "100万元人民币",
-  "effective_date": "2024年1月1日",
-  "governing_law": "中国法律"
+  "project_name": "某水土保持方案项目",
+  "construction_unit": "某建设单位",
+  "construction_location": "某市某区",
+  "project_nature": "新建",
+  "disturbed_area": "1.5hm²",
+  "land_area": "3hm²",
+  "investment_estimate": "16万元"
 }
 只返回 JSON，不要其他内容。"""
 
@@ -219,7 +221,7 @@ async def _llm_extract_fields(text: str) -> dict[str, str]:
     truncated = text[:8000] if len(text) > 8000 else text
     messages = [
         SystemMessage(content=_EXTRACTION_SYSTEM),
-        HumanMessage(content=f"合同文本：\n\n{truncated}"),
+        HumanMessage(content=f"水土保持方案文本：\n\n{truncated}"),
     ]
     response = await llm.ainvoke(messages)
     content = response.content.strip()
