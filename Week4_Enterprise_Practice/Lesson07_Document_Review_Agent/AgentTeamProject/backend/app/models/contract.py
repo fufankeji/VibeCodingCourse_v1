@@ -11,6 +11,7 @@ from app.database import Base
 class FileType(str, enum.Enum):
     pdf = "pdf"
     docx = "docx"
+    json = "json"
 
 
 class ContractStatus(str, enum.Enum):

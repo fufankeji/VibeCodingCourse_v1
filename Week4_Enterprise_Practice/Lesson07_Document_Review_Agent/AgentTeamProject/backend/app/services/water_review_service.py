@@ -20,6 +20,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from app.config import settings
+from app.services.review_rule_schema import build_review_rule_topics, normalize_review_rules
+
 
 @dataclass
 class ParsedBlock:
@@ -54,17 +57,23 @@ WATER_FIELDS = [
     "key_prevention_or_control_area",
     "disturbed_area",
     "land_area",
+    "prevention_responsibility_area",
+    "zone_area",
     "excavation_volume",
     "fill_volume",
     "borrow_volume",
     "spoil_volume",
+    "comprehensive_utilization",
+    "spoil_destination",
     "topsoil_stripping",
     "topsoil_preservation",
     "topsoil_backfill",
+    "temp_soil_stockpile",
     "borrow_area",
     "spoil_area",
     "construction_road",
     "prevention_measures",
+    "monitoring",
     "schedule_arrangement",
     "investment_estimate",
 ]
@@ -145,18 +154,49 @@ def run_pipeline(file_path: str, artifact_dir: str, session_id: str) -> dict[str
     """Parse, chunk, extract fields, review rules, and persist JSON artifacts."""
     blocks = parse_document(file_path)
     chunks = build_chunks(blocks)
-    fields = extract_fields(chunks)
+    fallback_fields = extract_fields(chunks)
+    langextract_facts: list[dict[str, Any]] = []
+    cross_chapter_findings: list[dict[str, Any]] = []
+    if settings.langextract_enabled:
+        from app.services.langextract_service import (
+            build_cross_chapter_findings,
+            build_fact_index,
+            facts_to_extracted_fields,
+            run_langextract,
+        )
+
+        langextract_facts = run_langextract(chunks)
+        fields = facts_to_extracted_fields(langextract_facts, fallback_fields)
+        fact_index = build_fact_index(langextract_facts)
+        cross_chapter_findings = build_cross_chapter_findings(langextract_facts)
+    else:
+        fields = fallback_fields
+        fact_index = {"fact_count": 0, "fields": [], "by_field": {}}
     rules = load_rule_set()
 
     artifact_path = Path(artifact_dir)
     artifact_path.mkdir(parents=True, exist_ok=True)
     from app.services.rag_service import run_rag_review
 
-    rag_result = run_rag_review(session_id, chunks, rules, artifact_path)
+    rag_result = run_rag_review(
+        session_id,
+        chunks,
+        rules,
+        artifact_path,
+        facts=langextract_facts,
+        findings=cross_chapter_findings,
+    )
     issues = rag_result["issues"]
+    from app.services.review_config_service import list_check_item_specs
+
+    rule_topics = build_review_rule_topics(rules, issues, configured_check_items=list_check_item_specs())
     _write_json(artifact_path / "parsed_blocks.json", [asdict(b) for b in blocks])
     _write_json(artifact_path / "review_chunks.json", [asdict(c) for c in chunks])
     _write_json(artifact_path / "extracted_fields.json", fields)
+    _write_json(artifact_path / "langextract_facts.json", langextract_facts)
+    _write_json(artifact_path / "langextract_fact_index.json", fact_index)
+    _write_json(artifact_path / "cross_chapter_findings.json", cross_chapter_findings)
+    _write_json(artifact_path / "review_rule_topics.json", rule_topics)
     _write_json(artifact_path / "issues.json", issues)
 
     return {
@@ -164,41 +204,44 @@ def run_pipeline(file_path: str, artifact_dir: str, session_id: str) -> dict[str
         "blocks": blocks,
         "chunks": chunks,
         "fields": fields,
+        "facts": langextract_facts,
+        "cross_chapter_findings": cross_chapter_findings,
         "review_items": issues,
         "rules": rules,
+        "rule_topics": rule_topics,
         "rag": rag_result,
         "artifact_dir": str(artifact_path),
     }
 
 
 def parse_document(file_path: str | None = None) -> list[ParsedBlock]:
-    """Load prepared MinerU artifacts first, then fall back to source parsing.
+    """Load an explicit source first, then fall back to bundled MinerU samples."""
+    if file_path:
+        path = Path(file_path)
+        suffix = path.suffix.lower()
+        if suffix == ".json" and path.exists():
+            return _parse_mineru_json(path)
+        if suffix == ".md" and path.exists():
+            return _parse_markdown(path)
+        if suffix == ".pdf":
+            return _parse_pdf(str(path))
+        if suffix == ".docx":
+            return _parse_docx(str(path))
+        return []
 
-    MinerU JSON is the preferred source because it already carries page and
-    bbox data. PyMuPDF remains available as a practical fallback and later RAG
-    ingestion path.
-    """
     if DEFAULT_MINERU_JSON.exists():
         return _parse_mineru_json(DEFAULT_MINERU_JSON)
     if DEFAULT_MINERU_MD.exists():
         return _parse_markdown(DEFAULT_MINERU_MD)
-    if not file_path:
-        return []
-
-    suffix = Path(file_path).suffix.lower()
-    if suffix == ".pdf":
-        return _parse_pdf(file_path)
-    if suffix == ".docx":
-        return _parse_docx(file_path)
     return []
 
 
 def load_rule_set(path: Path = DEFAULT_RULE_SET) -> list[dict[str, Any]]:
     if not path.exists():
-        return RULES
+        return normalize_review_rules(RULES)
     data = json.loads(path.read_text(encoding="utf-8"))
     rules = data.get("rules", []) if isinstance(data, dict) else data
-    return rules or RULES
+    return normalize_review_rules(rules or RULES)
 
 
 def build_chunks(blocks: list[ParsedBlock], max_chars: int = 1600) -> list[ReviewChunk]:
@@ -256,6 +299,8 @@ def extract_fields(chunks: list[ReviewChunk]) -> list[dict[str, Any]]:
         _field("project_nature", _match_after(text, [r"建设性质[:：]?\s*([^\n，。；;]+)", r"项目性质[:：]?\s*([^\n，。；;]+)"]), chunks),
         _field("disturbed_area", _match_metric(text, ["扰动地表面积", "扰动面积", "防治责任范围"]), chunks),
         _field("land_area", _match_metric(text, ["占地面积", "总占地"]), chunks),
+        _field("prevention_responsibility_area", _match_metric(text, ["防治责任范围面积", "防治责任范围"]), chunks),
+        _field("zone_area", _match_metric(text, ["分区面积", "防治分区"]), chunks),
         _field("excavation_volume", _match_metric(text, ["挖方", "开挖量"]), chunks),
         _field("fill_volume", _match_metric(text, ["填方", "回填量"]), chunks),
         _field("borrow_volume", _match_metric(text, ["借方", "取土量"]), chunks),
@@ -268,17 +313,21 @@ def extract_fields(chunks: list[ReviewChunk]) -> list[dict[str, Any]]:
         "topsoil_stripping": ["表土剥离"],
         "topsoil_preservation": ["表土保存", "表土临时堆存", "表土堆存"],
         "topsoil_backfill": ["表土回覆", "表土回填"],
+        "comprehensive_utilization": ["综合利用"],
+        "spoil_destination": ["外运", "消纳场", "弃土去向", "弃方去向"],
+        "temp_soil_stockpile": ["临时堆土区", "临时堆土场"],
         "borrow_area": ["取土场"],
         "spoil_area": ["弃渣场", "弃土场"],
         "construction_road": ["施工道路", "施工便道"],
         "prevention_measures": ["工程措施", "植物措施", "临时措施", "防治措施"],
+        "monitoring": ["水土保持监测", "监测"],
         "schedule_arrangement": ["时序安排", "施工时序", "实施进度"],
     }
     for name, keywords in keyword_fields.items():
         extracted.append(_field(name, _match_keyword(text, keywords), chunks))
 
     present = {item["field_name"]: item for item in extracted}
-    return [present[name] for name in WATER_FIELDS]
+    return [present.get(name) or _field(name, None, chunks) for name in WATER_FIELDS]
 
 
 def review_rules(

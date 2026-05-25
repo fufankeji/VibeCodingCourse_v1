@@ -16,7 +16,13 @@ class Settings(BaseSettings):
     siliconflow_reranker_instruction: str = "请根据水土保持方案审查规则查询，对候选证据片段进行相关性排序，优先保留能支撑规则判断、字段缺失或跨章节一致性核验的片段。"
     rag_top_k: int = 16
     rag_rerank_top_n: int = 10
-    rag_max_issues: int = 10
+    rag_max_issues: int = 20
+    langextract_enabled: bool = True
+    langextract_extraction_passes: int = 2
+    langextract_max_workers: int = 6
+    langextract_max_char_buffer: int = 3000
+    langextract_max_chunks: int = 24
+    langextract_request_timeout: int = 120
     database_url: str = "sqlite:///./contract_review.db"
     app_host: str = "0.0.0.0"
     app_port: int = 8000
@@ -44,4 +50,6 @@ def get_llm():
         api_key=api_key,
         base_url=base_url,
         temperature=0.1,
+        timeout=90,
+        max_retries=1,
     )

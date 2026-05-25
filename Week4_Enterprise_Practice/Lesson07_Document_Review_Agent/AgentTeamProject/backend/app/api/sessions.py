@@ -1,7 +1,8 @@
 import asyncio
 import json
 from datetime import datetime
-from typing import Optional
+from pathlib import Path
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Header
 from sqlalchemy.orm import Session
@@ -78,6 +79,141 @@ def get_session_recovery(session_id: str, db: Session = Depends(get_db)):
         resumable=resumable,
         message="会话可恢复，继续上次审核进度" if resumable else "会话不在可恢复状态",
     )
+
+
+@router.get("/{session_id}/document-content")
+def get_review_document_content(session_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    session = db.query(ReviewSession).filter(ReviewSession.id == session_id).first()
+    if not session:
+        raise APIError.not_found("ReviewSession")
+
+    contract = db.query(Contract).filter(Contract.id == session.contract_id).first()
+    if not contract:
+        raise APIError.not_found("Contract")
+
+    artifact_dir = Path(contract.file_path).parent / "water_review"
+    parsed_blocks_path = artifact_dir / "parsed_blocks.json"
+    if not parsed_blocks_path.exists():
+        raise APIError.not_found("ParsedDocument")
+
+    try:
+        blocks = json.loads(parsed_blocks_path.read_text(encoding="utf-8"))
+    except Exception:
+        raise APIError.internal("解析文档内容读取失败")
+
+    if not isinstance(blocks, list):
+        raise APIError.internal("解析文档内容格式错误")
+
+    normalized_blocks = [_normalize_document_block(block, index) for index, block in enumerate(blocks)]
+    pages: dict[int, list[dict[str, Any]]] = {}
+    for block in normalized_blocks:
+        pages.setdefault(block["page"], []).append(block)
+
+    ordered_pages = [
+        {"page_number": page, "blocks": page_blocks}
+        for page, page_blocks in sorted(pages.items(), key=lambda item: item[0])
+    ]
+
+    return {
+        "session_id": session_id,
+        "contract_id": contract.id,
+        "title": contract.title,
+        "file_type": contract.file_type,
+        "source": "parsed_blocks",
+        "page_count": max(pages) if pages else 0,
+        "outline": _build_document_outline(normalized_blocks),
+        "pages": ordered_pages,
+    }
+
+
+def _normalize_document_block(block: Any, index: int) -> dict[str, Any]:
+    data = block if isinstance(block, dict) else {}
+    text = str(data.get("text") or "").strip()
+    page = _safe_int(data.get("page"), 1)
+    block_id = str(data.get("block_id") or f"block-{index + 1:04d}")
+    block_type = str(data.get("type") or "paragraph")
+    bbox = data.get("bbox") if isinstance(data.get("bbox"), list) else []
+    return {
+        "block_id": block_id,
+        "page": page,
+        "type": block_type,
+        "text": text,
+        "bbox": bbox,
+        "section_hint": str(data.get("section_hint") or ""),
+    }
+
+
+def _build_document_outline(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    outline: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    for block in blocks:
+        text = block["text"]
+        if block["type"] != "title" or not text:
+            continue
+        if text in {"目 录", "附件：", "附图："}:
+            continue
+        if "....." in text:
+            continue
+        page = block["page"]
+        level = _outline_level(text)
+        if page <= 7 and level > 1:
+            continue
+        key = (text, page)
+        if key in seen:
+            continue
+        seen.add(key)
+        outline.append(
+            {
+                "id": block["block_id"],
+                "title": text,
+                "page_number": page,
+                "level": level,
+            }
+        )
+    return outline[:160]
+
+
+def _outline_level(text: str) -> int:
+    import re
+
+    match = re.match(r"^(\d+(?:\.\d+)*)\s*", text)
+    if not match:
+        return 1
+    return min(4, match.group(1).count(".") + 1)
+
+
+def _safe_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+@router.get("/{session_id}/rule-topics")
+def get_review_rule_topics(session_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    session = db.query(ReviewSession).filter(ReviewSession.id == session_id).first()
+    if not session:
+        raise APIError.not_found("ReviewSession")
+
+    from app.services.water_review_service import load_rule_set
+    from app.services.review_rule_schema import build_review_rule_topics
+    from app.services.review_config_service import list_check_item_specs
+
+    review_items = (
+        db.query(ReviewItem)
+        .filter(ReviewItem.session_id == session_id)
+        .order_by(ReviewItem.created_at.asc())
+        .all()
+    )
+    return {
+        "session_id": session_id,
+        "source": "session_items",
+        "topics": build_review_rule_topics(
+            load_rule_set(),
+            review_items,
+            configured_check_items=list_check_item_specs(),
+        ),
+    }
 
 
 @router.post("/{session_id}/retry-parse")

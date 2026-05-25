@@ -11,6 +11,7 @@ import json
 import hashlib
 import math
 import re
+import time
 import uuid
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -19,10 +20,52 @@ from typing import Any
 import httpx
 
 from app.config import get_llm, settings
+from app.services.review_rule_schema import execute_rule_precheck
 
 
 class RAGReviewError(RuntimeError):
     """Raised when the RAG path cannot complete safely."""
+
+
+def _post_json_with_retries(
+    url: str,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+    timeout: int,
+    label: str,
+    attempts: int = 3,
+) -> dict[str, Any]:
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            response = httpx.post(url, headers=headers, json=payload, timeout=timeout)
+            response.raise_for_status()
+            return response.json()
+        except Exception as exc:
+            last_exc = exc
+            if attempt < attempts and _is_retryable_http_error(exc):
+                wait_seconds = 2 ** (attempt - 1)
+                print(f"[rag] retry {label} {attempt + 1}/{attempts}: {exc}", flush=True)
+                time.sleep(wait_seconds)
+                continue
+            raise RAGReviewError(f"SiliconFlow {label} request failed: {exc}") from exc
+    raise RAGReviewError(f"SiliconFlow {label} request failed: {last_exc}")
+
+
+def _is_retryable_http_error(exc: Exception) -> bool:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in {408, 429, 500, 502, 503, 504}
+    return isinstance(
+        exc,
+        (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.ReadTimeout,
+            httpx.ProxyError,
+            httpx.RemoteProtocolError,
+            httpx.NetworkError,
+        ),
+    )
 
 
 def run_rag_review(
@@ -30,6 +73,8 @@ def run_rag_review(
     chunks: list[Any],
     rules: list[dict[str, Any]],
     artifact_dir: Path,
+    facts: list[dict[str, Any]] | None = None,
+    findings: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if not settings.siliconflow_api_key:
         raise RAGReviewError("SILICONFLOW_API_KEY is required for RAG review")
@@ -44,7 +89,16 @@ def run_rag_review(
 
     project_type = _infer_project_type(chunks)
     applicable_rules = _filter_applicable_rules(project_type, rules)
-    retrievals = retrieve_for_rules(store, chunks, applicable_rules, top_k=settings.rag_top_k)
+    structured_facts = facts or []
+    cross_chapter_findings = findings or []
+    retrievals = retrieve_for_rules(
+        store,
+        chunks,
+        applicable_rules,
+        top_k=settings.rag_top_k,
+        facts=structured_facts,
+        findings=cross_chapter_findings,
+    )
     index_manifest = {
         "session_id": session_id,
         "vector_store": str(vector_dir),
@@ -53,17 +107,34 @@ def run_rag_review(
         "rule_count": len(rules),
         "project_type": project_type,
         "applicable_rule_count": len(applicable_rules),
+        "review_topic_count": len({rule.get("review_path", {}).get("topic_id") for rule in applicable_rules if rule.get("review_path")}),
+        "review_logic_types": sorted(
+            {
+                logic.get("type")
+                for rule in applicable_rules
+                for logic in rule.get("review_logic", [])
+                if logic.get("type")
+            }
+        ),
         "embedding_model": settings.siliconflow_embedding_model,
         "embedding_dimensions": settings.siliconflow_embedding_dimensions,
         "reranker_model": settings.siliconflow_reranker_model,
         "retrieval_top_k": settings.rag_top_k,
         "rerank_top_n": settings.rag_rerank_top_n,
+        "langextract_fact_count": len(structured_facts),
+        "cross_chapter_finding_count": len(cross_chapter_findings),
     }
 
     _write_json(artifact_dir / "rag_index_manifest.json", index_manifest)
     _write_json(artifact_dir / "rag_retrievals.json", retrievals)
 
-    issues = adjudicate_top_rules(session_id, chunks, applicable_rules, retrievals, max_issues=settings.rag_max_issues)
+    issues = adjudicate_top_rules(
+        session_id,
+        chunks,
+        applicable_rules,
+        retrievals,
+        max_issues=settings.rag_max_issues,
+    )
     _write_json(artifact_dir / "rag_issues.json", issues)
 
     return {
@@ -121,19 +192,18 @@ class SiliconFlowEmbeddingProvider:
             if self.dimensions:
                 payload["dimensions"] = self.dimensions
             try:
-                response = httpx.post(
+                data = _post_json_with_retries(
                     f"{self.base_url}/embeddings",
                     headers={
                         "Authorization": f"Bearer {self.api_key}",
                         "Content-Type": "application/json",
                     },
-                    json=payload,
+                    payload=payload,
                     timeout=60,
+                    label="embedding",
                 )
-                response.raise_for_status()
-                data = response.json()
             except Exception as exc:
-                raise RAGReviewError(f"SiliconFlow embedding request failed: {exc}") from exc
+                raise RAGReviewError(str(exc)) from exc
 
             try:
                 ordered = sorted(data["data"], key=lambda item: item.get("index", 0))
@@ -165,19 +235,18 @@ class SiliconFlowRerankerProvider:
         if self.instruction and "Qwen3-Reranker" in self.model:
             payload["instruction"] = self.instruction
         try:
-            response = httpx.post(
+            data = _post_json_with_retries(
                 f"{self.base_url}/rerank",
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json",
                 },
-                json=payload,
+                payload=payload,
                 timeout=90,
+                label="reranker",
             )
-            response.raise_for_status()
-            data = response.json()
         except Exception as exc:
-            raise RAGReviewError(f"SiliconFlow reranker request failed: {exc}") from exc
+            raise RAGReviewError(str(exc)) from exc
 
         ranked: list[dict[str, Any]] = []
         seen: set[int] = set()
@@ -257,6 +326,9 @@ class ChromaChunkStore:
 
     def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
         embedding = self.embedder.embed_texts([query])[0]
+        return self.query_by_embedding(embedding, top_k)
+
+    def query_by_embedding(self, embedding: list[float], top_k: int) -> list[dict[str, Any]]:
         result = self.collection.query(
             query_embeddings=[embedding],
             n_results=top_k,
@@ -286,16 +358,22 @@ def retrieve_for_rules(
     chunks: list[Any],
     rules: list[dict[str, Any]],
     top_k: int,
+    facts: list[dict[str, Any]] | None = None,
+    findings: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     bm25 = BM25Index(chunks)
     reranker = SiliconFlowRerankerProvider()
     by_id = {_chunk_id(chunk): chunk for chunk in chunks}
     by_index = {_chunk_id(chunk): index for index, chunk in enumerate(chunks)}
+    queries = [_rule_query(rule) for rule in rules]
+    query_embeddings = store.embedder.embed_texts(queries)
 
     retrievals: list[dict[str, Any]] = []
     for rule_index, rule in enumerate(rules):
-        query = _rule_query(rule)
-        vector_matches = store.query(query, top_k=top_k)
+        query = queries[rule_index]
+        matched_facts = _facts_for_rule(rule, facts or [])
+        matched_findings = _findings_for_rule(rule, findings or [], matched_facts)
+        vector_matches = store.query_by_embedding(query_embeddings[rule_index], top_k=top_k)
         bm25_matches = bm25.query(query, top_k=top_k)
         fused = _rrf(vector_matches, bm25_matches)
         expanded = _expand_neighbors(
@@ -311,9 +389,18 @@ def retrieve_for_rules(
                 "rule_index": rule_index,
                 "rule_id": rule.get("rule_id", f"rule-{rule_index}"),
                 "rule_name": rule.get("rule_name", ""),
+                "review_topic": rule.get("review_topic", {}),
+                "review_item": rule.get("review_item", {}),
+                "review_logic": rule.get("review_logic", []),
+                "evidence_scope": rule.get("evidence_scope", {}),
+                "rule_execution": rule.get("rule_execution", {}),
                 "query": query,
                 "matches": reranked,
-                "candidate_score": _candidate_score(rule, reranked),
+                "structured_facts": [_compact_fact(fact) for fact in matched_facts[:12]],
+                "cross_chapter_findings": [_compact_finding(finding) for finding in matched_findings[:6]],
+                "fact_ids": [fact.get("fact_id") for fact in matched_facts[:12] if fact.get("fact_id")],
+                "finding_ids": [finding.get("finding_id") for finding in matched_findings[:6] if finding.get("finding_id")],
+                "candidate_score": _candidate_score(rule, reranked, matched_facts, matched_findings),
             }
         )
     return retrievals
@@ -393,7 +480,10 @@ def _adjudicate_rule(
     evidence: list[dict[str, Any]],
     retrieval: dict[str, Any],
 ) -> dict[str, Any]:
-    payload = _call_deepseek_adjudicator(rule, evidence)
+    structured_facts = retrieval.get("structured_facts", []) or []
+    cross_chapter_findings = retrieval.get("cross_chapter_findings", []) or []
+    execution_result = execute_rule_precheck(rule, evidence, structured_facts, cross_chapter_findings)
+    payload = _call_deepseek_adjudicator(rule, evidence, structured_facts, cross_chapter_findings, execution_result)
     first = evidence[0]
     meta = first.get("metadata", {})
     bbox_list = []
@@ -403,6 +493,11 @@ def _adjudicate_rule(
         bboxes = json.loads(match_meta.get("bbox_json") or "[]")
         bbox_list.extend(bboxes)
         evidence_nodes.extend(json.loads(match_meta.get("block_ids_json") or "[]"))
+    for fact in structured_facts:
+        bbox_list.extend(fact.get("bbox_list") or [])
+        evidence_nodes.extend(fact.get("block_ids") or [])
+    for finding in cross_chapter_findings:
+        bbox_list.extend(finding.get("bbox_list") or [])
 
     risk_level = payload.get("risk_level") or _severity_from_policy(rule.get("severity_policy", ""))
     confidence = int(payload.get("confidence") or min(95, max(55, int(first.get("score", 0.5) * 100))))
@@ -412,12 +507,28 @@ def _adjudicate_rule(
         "rule_name": rule.get("rule_name", ""),
         "rule_source": rule.get("rule_source", ""),
         "rule_description": _rule_description(rule),
+        "review_topic": rule.get("review_topic", {}),
+        "review_item": rule.get("review_item", {}),
+        "review_logic": rule.get("review_logic", []),
+        "evidence_scope": rule.get("evidence_scope", {}),
+        "rule_execution": {
+            "plan": rule.get("rule_execution", {}),
+            "result": execution_result,
+        },
         "severity_policy": rule.get("severity_policy", ""),
         "evidence_requirement": rule.get("evidence_requirement", ""),
         "actual_value": payload.get("actual_value", "见召回证据"),
         "expected_value": payload.get("expected_value", rule.get("evidence_requirement", "")),
         "evidence_nodes": evidence_nodes,
         "source_bbox_list": bbox_list,
+        "fact_ids": retrieval.get("fact_ids", []),
+        "structured_facts": structured_facts,
+        "cross_chapter_findings": cross_chapter_findings,
+        "langextract_grounding": {
+            "fact_count": len(structured_facts),
+            "finding_count": len(cross_chapter_findings),
+            "source": "langextract",
+        },
         "retrieval_scores": [
             {
                 "chunk_id": match.get("chunk_id"),
@@ -453,7 +564,13 @@ def _adjudicate_rule(
     }
 
 
-def _call_deepseek_adjudicator(rule: dict[str, Any], evidence: list[dict[str, Any]]) -> dict[str, Any]:
+def _call_deepseek_adjudicator(
+    rule: dict[str, Any],
+    evidence: list[dict[str, Any]],
+    structured_facts: list[dict[str, Any]],
+    cross_chapter_findings: list[dict[str, Any]],
+    execution_result: dict[str, Any],
+) -> dict[str, Any]:
     from langchain_core.messages import HumanMessage, SystemMessage
 
     prompt = {
@@ -461,10 +578,16 @@ def _call_deepseek_adjudicator(rule: dict[str, Any], evidence: list[dict[str, An
             "rule_id": rule.get("rule_id"),
             "rule_name": rule.get("rule_name"),
             "category": rule.get("category"),
+            "review_topic": rule.get("review_topic", {}),
+            "review_item": rule.get("review_item", {}),
+            "review_logic": rule.get("review_logic", []),
+            "evidence_scope": rule.get("evidence_scope", {}),
+            "rule_execution_plan": rule.get("rule_execution", {}),
             "target_fields": rule.get("target_fields", []),
             "severity_policy": rule.get("severity_policy"),
             "evidence_requirement": rule.get("evidence_requirement"),
         },
+        "rule_execution_result": execution_result,
         "evidence": [
             {
                 "chunk_id": match.get("chunk_id"),
@@ -475,6 +598,8 @@ def _call_deepseek_adjudicator(rule: dict[str, Any], evidence: list[dict[str, An
             }
             for match in evidence[:8]
         ],
+        "structured_facts": structured_facts[:12],
+        "cross_chapter_findings": cross_chapter_findings[:6],
         "output_schema": {
             "risk_level": "HIGH|MEDIUM|LOW",
             "issue_desc": "问题描述，必须基于证据，不能新增事实",
@@ -489,6 +614,10 @@ def _call_deepseek_adjudicator(rule: dict[str, Any], evidence: list[dict[str, An
         SystemMessage(
             content=(
                 "你是水土保持方案技术审查助手。只基于提供的规则和证据输出 JSON，"
+                "必须先遵循 review_topic -> review_item -> review_rule -> evidence_scope -> rule_execution 的审查路径，"
+                "rule_execution_result 是确定性预检查结果，可用于识别缺失字段、证据范围覆盖和跨章节一致性线索。"
+                "structured_facts 是 LangExtract 从原文定位出的结构化事实，"
+                "cross_chapter_findings 是基于这些事实形成的跨章节核验线索。"
                 "不要输出 markdown，不要新增证据中没有的事实。"
             )
         ),
@@ -595,20 +724,178 @@ def _page_range(chunk: Any) -> list[int]:
     return list(range(start, end + 1))
 
 
-def _candidate_score(rule: dict[str, Any], matches: list[dict[str, Any]]) -> float:
+def _candidate_score(
+    rule: dict[str, Any],
+    matches: list[dict[str, Any]],
+    facts: list[dict[str, Any]] | None = None,
+    findings: list[dict[str, Any]] | None = None,
+) -> float:
     severity = _severity_from_policy(rule.get("severity_policy", ""))
     severity_weight = {"HIGH": 3.0, "MEDIUM": 2.0, "LOW": 1.0}.get(severity, 1.0)
     retrieval_score = sum(float(match.get("score", 0)) for match in matches[:3])
-    return severity_weight + retrieval_score
+    fact_bonus = min(1.5, len(facts or []) * 0.12)
+    finding_bonus = min(2.0, len(findings or []) * 0.5)
+    return severity_weight + retrieval_score + fact_bonus + finding_bonus
+
+
+def _facts_for_rule(rule: dict[str, Any], facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not facts:
+        return []
+    query = _rule_query(rule)
+    target_text = " ".join(str(item) for item in rule.get("target_fields", []))
+    haystack = f"{query}\n{target_text}"
+    ranked: list[tuple[int, dict[str, Any]]] = []
+    for fact in facts:
+        field_name = str(fact.get("field_name", ""))
+        label = _field_label(field_name)
+        score = 0
+        if field_name and field_name in target_text:
+            score += 5
+        if label and label in haystack:
+            score += 4
+        if any(keyword in haystack for keyword in _fact_keywords(field_name)):
+            score += 3
+        if str(fact.get("section", "")) and str(fact.get("section", "")) in haystack:
+            score += 1
+        if score:
+            ranked.append((score, fact))
+    ranked.sort(key=lambda item: (item[0], int(item[1].get("confidence") or 0)), reverse=True)
+    return [fact for _, fact in ranked]
+
+
+def _findings_for_rule(
+    rule: dict[str, Any],
+    findings: list[dict[str, Any]],
+    facts: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not findings:
+        return []
+    query = _rule_query(rule)
+    fact_ids = {fact.get("fact_id") for fact in facts}
+    ranked: list[tuple[int, dict[str, Any]]] = []
+    for finding in findings:
+        field_name = str(finding.get("field_name", ""))
+        label = _field_label(field_name)
+        score = 0
+        if any(fact_id in fact_ids for fact_id in finding.get("fact_ids", [])):
+            score += 5
+        if (label and label in query) or (field_name and field_name in query):
+            score += 4
+        if any(keyword in query for keyword in _fact_keywords(field_name)):
+            score += 3
+        if score:
+            ranked.append((score, finding))
+    ranked.sort(key=lambda item: (item[0], int(item[1].get("confidence") or 0)), reverse=True)
+    return [finding for _, finding in ranked]
+
+
+def _compact_fact(fact: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "fact_id": fact.get("fact_id"),
+        "field_name": fact.get("field_name"),
+        "field_label": _field_label(str(fact.get("field_name", ""))),
+        "value": fact.get("value"),
+        "normalized_value": fact.get("normalized_value"),
+        "unit": fact.get("unit"),
+        "section": fact.get("section"),
+        "chunk_id": fact.get("chunk_id"),
+        "page_range": fact.get("page_range"),
+        "source_text": str(fact.get("source_text", ""))[:400],
+        "block_ids": fact.get("block_ids", [])[:20],
+        "bbox_count": len(fact.get("bbox_list") or []),
+        "bbox_list": fact.get("bbox_list", [])[:20],
+        "confidence": fact.get("confidence"),
+    }
+
+
+def _compact_finding(finding: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "finding_id": finding.get("finding_id"),
+        "finding_type": finding.get("finding_type"),
+        "field_name": finding.get("field_name"),
+        "description": finding.get("description"),
+        "risk_level": finding.get("risk_level"),
+        "actual_value": finding.get("actual_value"),
+        "expected_value": finding.get("expected_value"),
+        "fact_ids": finding.get("fact_ids", []),
+        "source_pages": finding.get("source_pages", []),
+        "bbox_count": len(finding.get("bbox_list") or []),
+        "bbox_list": finding.get("bbox_list", [])[:20],
+        "evidence_text": str(finding.get("evidence_text", ""))[:600],
+        "confidence": finding.get("confidence"),
+    }
+
+
+def _field_label(field_name: str) -> str:
+    labels = {
+        "project_name": "项目名称",
+        "construction_unit": "建设单位",
+        "construction_location": "建设地点",
+        "project_nature": "建设性质",
+        "key_prevention_or_control_area": "重点防治区",
+        "disturbed_area": "扰动地表面积",
+        "land_area": "占地面积",
+        "prevention_responsibility_area": "防治责任范围",
+        "zone_area": "分区面积",
+        "excavation_volume": "挖方",
+        "fill_volume": "填方",
+        "borrow_volume": "借方",
+        "spoil_volume": "弃方",
+        "comprehensive_utilization": "综合利用",
+        "spoil_destination": "外运去向",
+        "topsoil_stripping": "表土剥离",
+        "topsoil_preservation": "表土保存",
+        "topsoil_backfill": "表土回覆",
+        "temp_soil_stockpile": "临时堆土区",
+        "borrow_area": "取土场",
+        "spoil_area": "弃渣场",
+        "construction_road": "施工道路",
+        "prevention_measures": "防治措施",
+        "monitoring": "监测",
+        "schedule_arrangement": "时序安排",
+        "investment_estimate": "投资估算",
+        "earthwork_balance": "土石方平衡",
+        "topsoil_protection": "表土保护",
+        "area": "面积",
+    }
+    return labels.get(field_name, field_name)
+
+
+def _fact_keywords(field_name: str) -> list[str]:
+    keywords = {
+        "earthwork_balance": ["土石方", "挖方", "填方", "借方", "弃方"],
+        "spoil_destination": ["弃方", "弃渣", "弃土", "外运", "消纳", "综合利用"],
+        "topsoil_protection": ["表土", "剥离", "保存", "回覆", "堆存"],
+        "area": ["面积", "扰动", "占地", "防治责任范围"],
+    }
+    if field_name in keywords:
+        return keywords[field_name]
+    label = _field_label(field_name)
+    return [label] if label else []
 
 
 def _rule_query(rule: dict[str, Any]) -> str:
+    scope = rule.get("evidence_scope", {}) or {}
+    logic_labels = " ".join(str(item.get("label", "")) for item in rule.get("review_logic", []))
     parts = [
+        rule.get("expert_brief_query", ""),
+        rule.get("review_topic", {}).get("name", ""),
+        rule.get("review_item", {}).get("name", ""),
         rule.get("rule_name", ""),
         rule.get("category", ""),
+        logic_labels,
         " ".join(str(item) for item in rule.get("target_fields", [])),
+        " ".join(str(item) for item in scope.get("chapters", [])),
+        " ".join(str(item) for item in scope.get("tables", [])),
+        " ".join(str(item) for item in scope.get("attachments", [])),
+        " ".join(str(item) for item in scope.get("regulations", [])),
         rule.get("evidence_requirement", ""),
         rule.get("severity_policy", ""),
+        rule.get("review_criteria", ""),
+        rule.get("expected_result", ""),
+        " ".join(str(item) for item in rule.get("failure_conditions", [])),
+        " ".join(str(item) for item in rule.get("regulation_clauses", [])),
+        rule.get("rule_source", ""),
     ]
     return "\n".join(part for part in parts if part)
 

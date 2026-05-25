@@ -50,6 +50,7 @@ def backfill_session(session_id: str, file_path: str, artifact_dir: str, db: Any
     artifact_path = artifact_dir or str(Path("storage") / "contracts" / session.contract_id / "water_review")
 
     try:
+        print(f"[water-rag] running pipeline for session={session_id}", flush=True)
         pipeline = water_review_service.run_pipeline(file_path, artifact_path, session_id)
     except Exception as exc:
         session.state = "aborted"
@@ -73,6 +74,15 @@ def backfill_session(session_id: str, file_path: str, artifact_dir: str, db: Any
         db.commit()
         raise
 
+    print(
+        "[water-rag] pipeline complete: "
+        f"fields={len(pipeline.get('fields', []))}, "
+        f"facts={len(pipeline.get('facts', []))}, "
+        f"findings={len(pipeline.get('cross_chapter_findings', []))}, "
+        f"items={len(pipeline.get('review_items', []))}",
+        flush=True,
+    )
+    print("[water-rag] replacing fields and review items", flush=True)
     _replace_fields(session_id, pipeline.get("fields", []), pipeline.get("full_text", ""), db)
     hitl_service._persist_review_items(session_id, pipeline.get("review_items", []), db)
 
@@ -103,6 +113,7 @@ def backfill_session(session_id: str, file_path: str, artifact_dir: str, db: Any
         )
     )
     db.commit()
+    print("[water-rag] database commit complete", flush=True)
 
     return {
         "session_id": session_id,
@@ -122,6 +133,7 @@ def _replace_fields(session_id: str, extracted_fields: list[dict[str, Any]], ful
         value = data.get("value", "")
         source_span = data.get("source_span") or {}
         confidence = int(data.get("confidence") or 50)
+        source_page_number = int(data.get("source_page_number") or 1)
         db.add(
             ExtractedField(
                 session_id=session_id,
@@ -131,7 +143,8 @@ def _replace_fields(session_id: str, extracted_fields: list[dict[str, Any]], ful
                 confidence_score=confidence,
                 needs_human_verification=confidence < 60,
                 verification_status="unverified",
-                source_evidence_text=_find_evidence(full_text, value),
+                source_evidence_text=data.get("source_evidence_text") or _find_evidence(full_text, value),
+                source_page_number=source_page_number,
                 source_char_offset_start=source_span.get("char_start", 0),
                 source_char_offset_end=source_span.get("char_end", 0),
             )

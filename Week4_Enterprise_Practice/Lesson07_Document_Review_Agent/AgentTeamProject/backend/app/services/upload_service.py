@@ -26,6 +26,8 @@ def _detect_file_type(header: bytes) -> str | None:
         return "pdf"
     if header[:4] == ZIP_MAGIC:
         return "docx"
+    if header.lstrip().startswith((b"{", b"[")):
+        return "json"
     return None
 
 
@@ -53,6 +55,19 @@ def _check_docx_integrity(file_path: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def _check_mineru_json_integrity(file_path: str) -> bool:
+    try:
+        data = json.loads(Path(file_path).read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+    pages = data.get("pdf_info")
+    if not isinstance(pages, list) or not pages:
+        return False
+    return any(isinstance(page, dict) and page.get("para_blocks") for page in pages)
 
 
 def _is_scanned_pdf(file_path: str) -> bool:
@@ -111,6 +126,10 @@ async def handle_upload(file: UploadFile, db: Session, user_id: str = "anonymous
         is_scanned = _is_scanned_pdf(file_path)
     elif file_type == "docx":
         if not _check_docx_integrity(file_path):
+            shutil.rmtree(storage_dir, ignore_errors=True)
+            raise APIError.corrupt_file()
+    elif file_type == "json":
+        if not _check_mineru_json_integrity(file_path):
             shutil.rmtree(storage_dir, ignore_errors=True)
             raise APIError.corrupt_file()
 
