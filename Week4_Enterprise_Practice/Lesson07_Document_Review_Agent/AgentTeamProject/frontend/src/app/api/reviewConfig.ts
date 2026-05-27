@@ -41,11 +41,26 @@ export interface PreviewCheckItemPayload extends CheckItemPayload {
   session_id: string;
 }
 
+export interface EvidenceAnchor {
+  page?: number;
+  block_id?: string;
+  bbox?: number[];
+  coordinate_mode?: string;
+  page_width?: number | null;
+  page_height?: number | null;
+}
+
 export interface RetrievalMatch {
   chunk_id?: string;
   page?: number;
   page_end?: number;
+  primary_page?: number;
+  page_range?: number[];
+  chunk_index?: number;
   section?: string;
+  anchors?: EvidenceAnchor[];
+  block_ids?: string[];
+  bbox_count?: number;
   score?: number;
   vector_score?: number;
   bm25_score?: number;

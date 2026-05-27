@@ -22,10 +22,12 @@ import {
   previewCheckItem,
   updateCheckItem,
   type CheckItemPayload,
+  type EvidenceAnchor,
   type ExecutorType,
   type ExpertReviewBrief,
   type PreviewAgentTrace,
   type PreviewCheckItemResponse,
+  type RetrievalMatch,
 } from '../api/reviewConfig';
 import { subscribeSSE } from '../api/sse';
 import { useAuth } from '../contexts/AuthContext';
@@ -103,6 +105,7 @@ export function HITLReviewPage() {
   const [activeRuleTopicId, setActiveRuleTopicId] = useState<string | null>(null);
   const [configDraft, setConfigDraft] = useState<ConfigDraft | null>(null);
   const [previewResult, setPreviewResult] = useState<PreviewCheckItemResponse | null>(null);
+  const [activeEvidenceAnchors, setActiveEvidenceAnchors] = useState<EvidenceAnchor[]>([]);
   const [isPreviewing, setIsPreviewing] = useState(false);
   const [isSavingConfig, setIsSavingConfig] = useState(false);
   const [isLoadingItems, setIsLoadingItems] = useState(true);
@@ -232,6 +235,7 @@ export function HITLReviewPage() {
   const handleSelectItem = (itemId: string) => {
     if (itemId !== activeItemId) {
       setActiveItemId(itemId);
+      setActiveEvidenceAnchors([]);
       setActiveAction(null);
       setHumanNote('');
       setEditedFinding('');
@@ -249,6 +253,7 @@ export function HITLReviewPage() {
   const resetPreviewState = () => {
     previewRequestSeq.current += 1;
     setPreviewResult(null);
+    setActiveEvidenceAnchors([]);
     setIsPreviewing(false);
   };
 
@@ -329,6 +334,15 @@ export function HITLReviewPage() {
       if (previewRequestSeq.current === requestSeq) {
         setIsPreviewing(false);
       }
+    }
+  };
+
+  const handleSelectPreviewMatch = (match: RetrievalMatch) => {
+    const anchors = getRetrievalMatchAnchors(match);
+    setActiveEvidenceAnchors(anchors);
+    const targetPage = getRetrievalMatchPage(match, anchors);
+    if (targetPage) {
+      setActiveDocumentPage(targetPage);
     }
   };
 
@@ -461,6 +475,7 @@ export function HITLReviewPage() {
           evidenceRef={evidenceRef}
           documentContent={documentContent}
           activePage={activeDocumentPage}
+          activeEvidenceAnchors={activeEvidenceAnchors}
           onSelectPage={setActiveDocumentPage}
           isLoading={isLoadingDocument}
         />
@@ -653,6 +668,7 @@ function PdfWorkbenchPanel({
   evidenceRef,
   documentContent,
   activePage,
+  activeEvidenceAnchors,
   onSelectPage,
   isLoading,
 }: {
@@ -661,6 +677,7 @@ function PdfWorkbenchPanel({
   evidenceRef: React.RefObject<HTMLDivElement | null>;
   documentContent: ReviewDocumentContentResponse | null;
   activePage: number;
+  activeEvidenceAnchors: EvidenceAnchor[];
   onSelectPage: (page: number) => void;
   isLoading: boolean;
 }) {
@@ -703,7 +720,7 @@ function PdfWorkbenchPanel({
               <Loader2 className="h-4 w-4 animate-spin" /> 加载审查对象解析内容...
             </div>
           ) : page ? (
-            <DocumentPageView page={page} activeItem={item} title={title} />
+            <DocumentPageView page={page} activeItem={item} activeEvidenceAnchors={activeEvidenceAnchors} title={title} />
           ) : (
             <div className="flex h-[720px] items-center justify-center text-xs text-slate-400">当前页暂无解析内容</div>
           )}
@@ -719,7 +736,17 @@ function PdfWorkbenchPanel({
   );
 }
 
-function DocumentPageView({ page, activeItem, title }: { page: ReviewDocumentPage; activeItem?: ReviewItem; title: string }) {
+function DocumentPageView({
+  page,
+  activeItem,
+  activeEvidenceAnchors,
+  title,
+}: {
+  page: ReviewDocumentPage;
+  activeItem?: ReviewItem;
+  activeEvidenceAnchors: EvidenceAnchor[];
+  title: string;
+}) {
   return (
     <>
       <div className="mb-7 flex items-start justify-between border-b border-slate-200 pb-3">
@@ -735,7 +762,7 @@ function DocumentPageView({ page, activeItem, title }: { page: ReviewDocumentPag
           <DocumentBlockView
             key={block.block_id}
             block={block}
-            highlighted={isActiveEvidenceBlock(block, activeItem)}
+            highlighted={isActiveAnchorBlock(block, activeEvidenceAnchors) || isActiveEvidenceBlock(block, activeItem)}
           />
         ))}
       </div>
@@ -774,6 +801,23 @@ function DocumentBlockView({ block, highlighted }: { block: ReviewDocumentBlock;
   }
 
   return <p className={`whitespace-pre-wrap break-words ${baseClass}`}>{block.text}</p>;
+}
+
+function isActiveAnchorBlock(block: ReviewDocumentBlock, anchors: EvidenceAnchor[]): boolean {
+  if (anchors.length === 0) return false;
+  return anchors.some((anchor) => anchor.page === block.page && anchor.block_id === block.block_id);
+}
+
+function getRetrievalMatchAnchors(match: RetrievalMatch): EvidenceAnchor[] {
+  return Array.isArray(match.anchors) ? match.anchors.filter((anchor) => typeof anchor.page === 'number') : [];
+}
+
+function getRetrievalMatchPage(match: RetrievalMatch, anchors = getRetrievalMatchAnchors(match)): number | null {
+  const anchorPage = anchors.find((anchor) => typeof anchor.page === 'number')?.page;
+  if (typeof anchorPage === 'number' && anchorPage > 0) return anchorPage;
+  if (typeof match.primary_page === 'number' && match.primary_page > 0) return match.primary_page;
+  if (typeof match.page === 'number' && match.page > 0) return match.page;
+  return null;
 }
 
 function isActiveEvidenceBlock(block: ReviewDocumentBlock, activeItem?: ReviewItem): boolean {
@@ -1850,7 +1894,7 @@ function CheckItemDraftModal({
             </details>
           </div>
 
-          <PreviewResultPanel result={previewResult} isLoading={isPreviewing} />
+          <PreviewResultPanel result={previewResult} isLoading={isPreviewing} onSelectEvidenceMatch={handleSelectPreviewMatch} />
         </div>
 
         <div className="flex shrink-0 items-center justify-between gap-2 border-t border-slate-100 px-4 py-3">
@@ -1894,9 +1938,11 @@ function CheckItemDraftModal({
 function PreviewResultPanel({
   result,
   isLoading,
+  onSelectEvidenceMatch,
 }: {
   result: PreviewCheckItemResponse | null;
   isLoading: boolean;
+  onSelectEvidenceMatch: (match: RetrievalMatch) => void;
 }) {
   if (isLoading) {
     return (
@@ -1922,7 +1968,7 @@ function PreviewResultPanel({
   const evidence = result.evidence_bundle ?? {};
   const precheck = result.precheck_result ?? {};
   const conclusion = result.review_conclusion ?? {};
-  const retrievalMatches = toRecordArray(evidence.retrieval_matches);
+  const retrievalMatches = toRecordArray(evidence.retrieval_matches) as RetrievalMatch[];
   const structuredFacts = toUnknownArray(evidence.structured_facts);
   const crossReferenceFindings = toUnknownArray(evidence.cross_reference_findings);
   const langextractGrounding = toUnknownArray(evidence.langextract_grounding);
@@ -1967,16 +2013,22 @@ function PreviewResultPanel({
         {retrievalMatches.length === 0 ? (
           <EmptyPreviewLine text="未召回 RAG chunk" />
         ) : retrievalMatches.map((match, index) => (
-          <div key={`${match.chunk_id || index}`} className="rounded bg-slate-50 px-2 py-1.5 text-[11px] leading-4 text-slate-700">
+          <button
+            key={`${match.chunk_id || index}`}
+            type="button"
+            onClick={() => onSelectEvidenceMatch(match)}
+            className="w-full rounded bg-slate-50 px-2 py-1.5 text-left text-[11px] leading-4 text-slate-700 ring-1 ring-transparent hover:bg-blue-50 hover:ring-blue-100"
+          >
             <div className="mb-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-slate-400">
               <span>{String(match.chunk_id || `chunk-${index + 1}`)}</span>
               <span>页码 {match.page || '-'}{match.page_end && match.page_end !== match.page ? `-${match.page_end}` : ''}</span>
               <span>{String(match.section || '-')}</span>
+              <span>bbox {String(match.bbox_count ?? getRetrievalMatchAnchors(match).length)}</span>
               <span>score {formatScore(match.score)}</span>
               <span>rerank {formatScore(match.rerank_score)}</span>
             </div>
             <p className="whitespace-pre-wrap break-words">{String(match.text || '')}</p>
-          </div>
+          </button>
         ))}
       </PreviewSection>
 

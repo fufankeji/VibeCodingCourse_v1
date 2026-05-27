@@ -38,7 +38,10 @@ def _write_review_artifacts(artifact_dir: Path) -> None:
                     "text": "第5章 植物措施：主体工程区设置乔木120株、灌木800株，植物措施工程量表列明草籽撒播0.42hm2。",
                     "section": "5 植物措施",
                     "page_range": [12, 12],
-                    "bbox_list": [],
+                    "bbox_list": [
+                        {"block_id": "p12-b03", "page": 12, "bbox": [86.0, 320.0, 506.0, 338.0]},
+                        {"block_id": "p12-b04", "page": 12, "bbox": [86.0, 342.0, 506.0, 380.0]},
+                    ],
                     "table_refs": ["植物措施工程量表"],
                     "metadata": {"block_type": "table"},
                     "char_start": 0,
@@ -428,8 +431,33 @@ def test_preview_check_item_uses_rag_agent_without_saving_config(isolated_config
     assert data["check_item"]["id"] == "draft-preview"
     assert bundle["source"] == "rag_agent"
     assert bundle["retrieval_matches"]
-    assert bundle["retrieval_matches"][0]["chunk_id"] == "rag-plant-001"
-    assert "乔木120株" in bundle["retrieval_matches"][0]["text"]
+    first_match = bundle["retrieval_matches"][0]
+    assert first_match["chunk_id"] == "rag-plant-001"
+    assert first_match["primary_page"] == 12
+    assert first_match["page_range"] == [12, 12]
+    assert first_match["chunk_index"] == 0
+    assert first_match["bbox_count"] == 2
+    assert first_match["block_ids"] == ["p12-b03", "p12-b04"]
+    assert first_match["anchors"] == [
+        {
+            "page": 12,
+            "block_id": "p12-b03",
+            "bbox": [86.0, 320.0, 506.0, 338.0],
+            "coordinate_mode": "page_coordinate",
+            "page_width": None,
+            "page_height": None,
+        },
+        {
+            "page": 12,
+            "block_id": "p12-b04",
+            "bbox": [86.0, 342.0, 506.0, 380.0],
+            "coordinate_mode": "page_coordinate",
+            "page_width": None,
+            "page_height": None,
+        },
+    ]
+    assert bundle["evidence_locations"][0]["anchors"] == first_match["anchors"]
+    assert "乔木120株" in first_match["text"]
     assert "植物措施" in bundle["matched_target_fields"]
     assert bundle["structured_facts"][0]["fact_id"] == "fact-plant-001"
     assert bundle["cross_reference_findings"][0]["finding_id"] == "finding-plant-001"
