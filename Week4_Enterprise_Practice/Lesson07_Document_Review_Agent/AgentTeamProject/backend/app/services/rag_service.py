@@ -406,6 +406,51 @@ def retrieve_for_rules(
     return retrievals
 
 
+def retrieve_for_query(
+    chunks: list[Any],
+    query: str,
+    top_k: int,
+    store: ChromaChunkStore | None = None,
+    use_rerank: bool = True,
+) -> dict[str, Any]:
+    bm25 = BM25Index(chunks)
+    by_id = {_chunk_id(chunk): chunk for chunk in chunks}
+    by_index = {_chunk_id(chunk): index for index, chunk in enumerate(chunks)}
+    vector_matches: list[dict[str, Any]] = []
+    vector_available = store is not None
+    if store is not None:
+        try:
+            vector_matches = store.query(query, top_k=top_k)
+        except Exception as exc:
+            raise RAGReviewError(f"vector retrieval failed: {exc}") from exc
+
+    bm25_matches = [
+        {**match, "bm25_score": match.get("score")}
+        for match in bm25.query(query, top_k=top_k)
+    ]
+    fused = _rrf(vector_matches, bm25_matches) if vector_matches else bm25_matches
+    expanded = _expand_neighbors(
+        fused[:top_k],
+        chunks,
+        by_id,
+        by_index,
+        limit=max(top_k, settings.rag_rerank_top_n),
+    )
+    rerank_available = bool(vector_available and use_rerank and settings.siliconflow_reranker_model)
+    if rerank_available:
+        matches = SiliconFlowRerankerProvider().rerank(query, expanded, top_n=min(top_k, settings.rag_rerank_top_n))
+    else:
+        matches = expanded[:top_k]
+    return {
+        "query": query,
+        "matches": matches,
+        "vector_available": vector_available,
+        "bm25_available": True,
+        "rerank_available": rerank_available,
+        "retrieval_mode": "vector_bm25_neighbor_rerank" if vector_available else "bm25_neighbor",
+    }
+
+
 class BM25Index:
     def __init__(self, chunks: list[Any]) -> None:
         self.chunks = chunks

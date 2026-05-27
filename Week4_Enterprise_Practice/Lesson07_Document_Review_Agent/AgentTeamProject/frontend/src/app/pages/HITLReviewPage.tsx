@@ -8,12 +8,14 @@ import { listItems, submitDecision, revokeDecision } from '../api/items';
 import {
   getReviewDocumentContent,
   getReviewRuleTopics,
+  runRetrievalDebug,
   type ReviewDocumentContentResponse,
   type ReviewDocumentPage,
   type ReviewDocumentBlock,
   type ReviewRuleTopic,
   type ReviewRuleItem,
   type ReviewCheckItem,
+  type RetrievalDebugResponse,
 } from '../api/sessions';
 import {
   createCheckItem,
@@ -105,7 +107,10 @@ export function HITLReviewPage() {
   const [activeRuleTopicId, setActiveRuleTopicId] = useState<string | null>(null);
   const [configDraft, setConfigDraft] = useState<ConfigDraft | null>(null);
   const [previewResult, setPreviewResult] = useState<PreviewCheckItemResponse | null>(null);
+  const [retrievalDebugResult, setRetrievalDebugResult] = useState<RetrievalDebugResponse | null>(null);
+  const [retrievalDebugError, setRetrievalDebugError] = useState<string | null>(null);
   const [activeEvidenceAnchors, setActiveEvidenceAnchors] = useState<EvidenceAnchor[]>([]);
+  const [isRetrievalDebugging, setIsRetrievalDebugging] = useState(false);
   const [isPreviewing, setIsPreviewing] = useState(false);
   const [isSavingConfig, setIsSavingConfig] = useState(false);
   const [isLoadingItems, setIsLoadingItems] = useState(true);
@@ -346,6 +351,20 @@ export function HITLReviewPage() {
     }
   };
 
+  const handleRunRetrievalDebug = async (query: string) => {
+    if (!sessionId) return;
+    setIsRetrievalDebugging(true);
+    setRetrievalDebugError(null);
+    try {
+      const result = await runRetrievalDebug(sessionId, { query, top_k: 8, use_rerank: true });
+      setRetrievalDebugResult(result);
+    } catch (err) {
+      setRetrievalDebugError(getErrorMessage(err));
+    } finally {
+      setIsRetrievalDebugging(false);
+    }
+  };
+
   const removeCheckItem = async (item: ReviewCheckItem) => {
     if (!item.id || item.ai_or_human_source !== 'configured_checklist') return;
     const confirmed = window.confirm(`确认删除审查项「${item.review_sub_type}」吗？`);
@@ -505,6 +524,11 @@ export function HITLReviewPage() {
           onRevoke={activeItem ? () => handleRevoke(activeItem.id) : undefined}
           onOpenCreateCheckItem={openCreateCheckItem}
           ruleTopicCount={ruleTopics.length}
+          retrievalDebugResult={retrievalDebugResult}
+          retrievalDebugError={retrievalDebugError}
+          isRetrievalDebugging={isRetrievalDebugging}
+          onRunRetrievalDebug={handleRunRetrievalDebug}
+          onSelectRetrievalDebugMatch={handleSelectPreviewMatch}
         />
       </main>
 
@@ -872,6 +896,11 @@ function ReviewIssuePanel({
   onRevoke,
   onOpenCreateCheckItem,
   ruleTopicCount,
+  retrievalDebugResult,
+  retrievalDebugError,
+  isRetrievalDebugging,
+  onRunRetrievalDebug,
+  onSelectRetrievalDebugMatch,
 }: {
   items: ReviewItem[];
   activeItemId: string | null;
@@ -898,6 +927,11 @@ function ReviewIssuePanel({
   onRevoke?: () => void;
   onOpenCreateCheckItem: () => void;
   ruleTopicCount: number;
+  retrievalDebugResult: RetrievalDebugResponse | null;
+  retrievalDebugError: string | null;
+  isRetrievalDebugging: boolean;
+  onRunRetrievalDebug: (query: string) => void;
+  onSelectRetrievalDebugMatch: (match: RetrievalMatch) => void;
 }) {
   const [chapterFilter, setChapterFilter] = useState<ChapterFilter>('all');
   const [severityFilter, setSeverityFilter] = useState<SeverityFilter>('all');
@@ -957,6 +991,13 @@ function ReviewIssuePanel({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
+        <RetrievalDebugPanel
+          result={retrievalDebugResult}
+          error={retrievalDebugError}
+          isLoading={isRetrievalDebugging}
+          onRun={onRunRetrievalDebug}
+          onSelectMatch={onSelectRetrievalDebugMatch}
+        />
         {isLoadingItems ? (
           <div className="flex items-center justify-center gap-2 px-4 py-10 text-xs text-slate-400">
             <Loader2 className="h-4 w-4 animate-spin" /> 加载审查问题中...
@@ -1123,6 +1164,89 @@ function isCurrentSectionIssue(row: WorkbenchIssueRow): boolean {
 
 function getIssueDecision(row: WorkbenchIssueRow): HumanDecision {
   return row.item?.human_decision ?? 'pending';
+}
+
+function RetrievalDebugPanel({
+  result,
+  error,
+  isLoading,
+  onRun,
+  onSelectMatch,
+}: {
+  result: RetrievalDebugResponse | null;
+  error: string | null;
+  isLoading: boolean;
+  onRun: (query: string) => void;
+  onSelectMatch: (match: RetrievalMatch) => void;
+}) {
+  const [query, setQuery] = useState('弃渣场 480m 截排水');
+  const canRun = query.trim().length > 0 && !isLoading;
+  const matches = result?.matches ?? [];
+  const statusClass = result?.status === 'ready'
+    ? 'bg-emerald-50 text-emerald-700'
+    : result?.status === 'degraded'
+      ? 'bg-amber-50 text-amber-700'
+      : 'bg-slate-50 text-slate-500';
+
+  return (
+    <section className="border-b border-slate-100 bg-white px-3 py-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <p className="text-[11px] font-semibold text-slate-500">Retrieval Debug</p>
+        <span className={`rounded px-1.5 py-0.5 text-[10px] ${statusClass}`}>
+          {result?.status ?? 'idle'}
+        </span>
+      </div>
+      <form
+        className="flex gap-1.5"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (canRun) onRun(query.trim());
+        }}
+      >
+        <input
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          className="min-w-0 flex-1 rounded border border-slate-200 px-2 py-1 text-[11px] text-slate-700 outline-none focus:border-blue-300"
+          placeholder="输入检索 query"
+        />
+        <button
+          type="submit"
+          disabled={!canRun}
+          className="inline-flex shrink-0 items-center gap-1 rounded bg-slate-900 px-2 py-1 text-[11px] text-white disabled:bg-slate-300"
+        >
+          {isLoading && <Loader2 className="h-3 w-3 animate-spin" />}
+          查询
+        </button>
+      </form>
+      {error && <p className="mt-2 text-[11px] leading-4 text-red-600">{error}</p>}
+      {result && (
+        <div className="mt-2 text-[10px] text-slate-400">
+          {result.trace.retrieval_mode || '-'} · chunks {result.trace.chunk_count ?? '-'} · vector {result.trace.vector_available ? 'on' : 'off'}
+        </div>
+      )}
+      {matches.length > 0 && (
+        <div className="mt-2 max-h-56 space-y-1.5 overflow-y-auto">
+          {matches.slice(0, 6).map((match, index) => (
+            <button
+              key={`${match.chunk_id || index}`}
+              type="button"
+              onClick={() => onSelectMatch(match)}
+              className="w-full rounded border border-slate-100 bg-slate-50 px-2 py-1.5 text-left text-[11px] leading-4 text-slate-700 hover:border-blue-100 hover:bg-blue-50"
+            >
+              <div className="mb-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-slate-400">
+                <span>{String(match.chunk_id || `chunk-${index + 1}`)}</span>
+                <span>p.{match.page || '-'}{match.page_end && match.page_end !== match.page ? `-${match.page_end}` : ''}</span>
+                <span>bbox {String(match.bbox_count ?? getRetrievalMatchAnchors(match).length)}</span>
+                <span>bm25 {formatScore(match.bm25_score)}</span>
+                <span>rerank {formatScore(match.rerank_score)}</span>
+              </div>
+              <p className="line-clamp-2 break-words">{String(match.text || '')}</p>
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
+  );
 }
 
 // ─── RiskItemCard ──────────────────────────────────────────────────────────────

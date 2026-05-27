@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Header
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.errors import APIError
@@ -20,8 +21,15 @@ from app.schemas.session import (
     ReviewSessionResponse,
     SessionRecoveryResponse,
 )
+from app.services import retrieval_debug_service
 
 router = APIRouter()
+
+
+class RetrievalDebugRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=500)
+    top_k: int = Field(default=8, ge=1, le=20)
+    use_rerank: bool = True
 
 
 def _build_progress_summary(session: ReviewSession) -> ProgressSummary:
@@ -124,6 +132,24 @@ def get_review_document_content(session_id: str, db: Session = Depends(get_db)) 
         "outline": _build_document_outline(normalized_blocks),
         "pages": ordered_pages,
     }
+
+
+@router.post("/{session_id}/retrieval-debug")
+def run_retrieval_debug(
+    session_id: str,
+    payload: RetrievalDebugRequest,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    try:
+        return retrieval_debug_service.run_retrieval_debug(
+            session_id,
+            payload.query,
+            db,
+            top_k=payload.top_k,
+            use_rerank=payload.use_rerank,
+        )
+    except retrieval_debug_service.RetrievalDebugBadRequest as exc:
+        raise APIError.bad_request(str(exc)) from exc
 
 
 def _normalize_document_block(block: Any, index: int) -> dict[str, Any]:

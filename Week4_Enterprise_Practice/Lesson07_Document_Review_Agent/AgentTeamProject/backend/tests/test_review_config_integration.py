@@ -174,6 +174,7 @@ def client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setattr(settings, "rag_top_k", 4)
     monkeypatch.setattr(settings, "rag_rerank_top_n", 3)
     monkeypatch.setattr(review_agent_service, "SiliconFlowEmbeddingProvider", FakeEmbedder)
+    monkeypatch.setattr(rag_service, "SiliconFlowEmbeddingProvider", FakeEmbedder)
     monkeypatch.setattr(rag_service, "SiliconFlowRerankerProvider", lambda: FakeReranker())
     monkeypatch.setattr(review_agent_service, "get_llm", lambda: FakeLLM())
 
@@ -472,6 +473,80 @@ def test_preview_check_item_uses_rag_agent_without_saving_config(isolated_config
     assert data["suggested_rule_improvements"]
     assert not isolated_config.exists()
     assert review_config_service.list_check_item_specs() == []
+
+
+def test_retrieval_debug_returns_non_persistent_matches_with_anchors(client: TestClient):
+    preview_response = client.post(
+        "/api/v1/review-config/check-items/preview",
+        json={
+            "session_id": "task5-session",
+            "topic_id": "scmc-010",
+            "rule_id": "PLANT-TASK5-001",
+            "executor_type_id": "evidence_presence",
+            "review_type": "证据存在性核验",
+            "review_sub_type": "植物措施配置完整性",
+            "target_fields": ["植物措施", "乔木", "灌木"],
+            "review_criteria": "核验植物措施章节是否说明乔木、灌木配置。",
+            "expected_result": "植物措施配置完整且有表格支撑。",
+            "enabled": True,
+        },
+    )
+    assert preview_response.status_code == 200
+
+    with client.app.state.TestingSessionLocal() as db:
+        before_review_item_count = db.query(ReviewItem).count()
+
+    response = client.post(
+        "/api/v1/sessions/task5-session/retrieval-debug",
+        json={"query": "植物措施 乔木 灌木", "top_k": 4, "use_rerank": True},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "ready"
+    assert data["query"] == "植物措施 乔木 灌木"
+    assert data["matches"]
+    first_match = data["matches"][0]
+    assert first_match["chunk_id"] == "rag-plant-001"
+    assert "乔木120株" in first_match["text"]
+    assert first_match["page"] == 12
+    assert first_match["page_end"] == 12
+    assert first_match["section"] == "5 植物措施"
+    assert first_match["bbox_count"] == 2
+    assert first_match["block_ids"] == ["p12-b03", "p12-b04"]
+    assert first_match["anchors"][0]["block_id"] == "p12-b03"
+    assert data["trace"]["persisted"] is False
+    assert data["trace"]["vector_available"] is True
+    assert data["trace"]["retrieval_mode"] == "vector_bm25_neighbor_rerank"
+
+    with client.app.state.TestingSessionLocal() as db:
+        assert db.query(ReviewItem).count() == before_review_item_count
+
+
+def test_retrieval_debug_degrades_to_bm25_when_vector_index_is_missing(client: TestClient):
+    with client.app.state.TestingSessionLocal() as db:
+        before_review_item_count = db.query(ReviewItem).count()
+
+    response = client.post(
+        "/api/v1/sessions/task5-session/retrieval-debug",
+        json={"query": "植物措施 乔木 灌木", "top_k": 4, "use_rerank": True},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "degraded"
+    assert data["matches"]
+    assert data["matches"][0]["chunk_id"] == "rag-plant-001"
+    assert data["matches"][0]["bm25_score"] is not None
+    assert data["matches"][0]["vector_score"] is None
+    assert data["trace"]["persisted"] is False
+    assert data["trace"]["vector_available"] is False
+    assert data["trace"]["bm25_available"] is True
+    assert data["trace"]["rerank_available"] is False
+    assert data["trace"]["retrieval_mode"] == "bm25_neighbor"
+
+    with client.app.state.TestingSessionLocal() as db:
+        assert db.query(ReviewItem).count() == before_review_item_count
 
 
 def test_preview_check_item_rag_query_is_driven_by_expert_brief(isolated_config, client: TestClient):

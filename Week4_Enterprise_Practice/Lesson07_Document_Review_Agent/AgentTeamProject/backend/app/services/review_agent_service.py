@@ -21,6 +21,7 @@ from app.services.rag_service import (
     SiliconFlowEmbeddingProvider,
     retrieve_for_rules,
 )
+from app.services.retrieval_match_serializer import serialize_retrieval_location, serialize_retrieval_match
 from app.services.water_review_service import ReviewChunk, build_chunks, parse_document
 
 
@@ -332,10 +333,10 @@ def _build_evidence_bundle(
     haystack = f"{evidence_text}\n{fact_text}"
     matched_fields = [field for field in target_fields if field and field in haystack]
     missing_fields = [field for field in target_fields if field and field not in matched_fields]
-    retrieval_matches = [_preview_match(match) for match in evidence]
+    retrieval_matches = [serialize_retrieval_match(match) for match in evidence]
     return {
         "evidence_texts": [item["text"] for item in retrieval_matches],
-        "evidence_locations": [_preview_location(match) for match in evidence],
+        "evidence_locations": [serialize_retrieval_location(match) for match in evidence],
         "retrieval_matches": retrieval_matches,
         "matched_target_fields": matched_fields,
         "missing_target_fields": missing_fields,
@@ -350,86 +351,6 @@ def _build_evidence_bundle(
         "retrieval_score": retrieval.get("candidate_score", 0),
         "source": "rag_agent",
     }
-
-
-def _preview_match(match: dict[str, Any]) -> dict[str, Any]:
-    meta = match.get("metadata") if isinstance(match.get("metadata"), dict) else {}
-    anchors = _preview_anchors(meta)
-    block_ids = [anchor["block_id"] for anchor in anchors if anchor.get("block_id")]
-    page_start = meta.get("page_start")
-    page_end = meta.get("page_end")
-    return {
-        "chunk_id": match.get("chunk_id"),
-        "page": page_start,
-        "page_end": page_end,
-        "primary_page": page_start,
-        "page_range": [page_start, page_end] if page_start is not None and page_end is not None else [],
-        "chunk_index": meta.get("chunk_index"),
-        "section": meta.get("section"),
-        "anchors": anchors,
-        "block_ids": block_ids,
-        "bbox_count": len(anchors),
-        "score": match.get("score"),
-        "vector_score": match.get("vector_score"),
-        "bm25_score": match.get("bm25_score"),
-        "rerank_score": match.get("rerank_score"),
-        "rerank_rank": match.get("rerank_rank"),
-        "neighbor_of": match.get("neighbor_of"),
-        "text": str(match.get("document", ""))[:1600],
-    }
-
-
-def _preview_location(match: dict[str, Any]) -> dict[str, Any]:
-    meta = match.get("metadata") if isinstance(match.get("metadata"), dict) else {}
-    anchors = _preview_anchors(meta)
-    return {
-        "chunk_id": match.get("chunk_id"),
-        "page_number": meta.get("page_start"),
-        "page_end": meta.get("page_end"),
-        "paragraph_index": meta.get("chunk_index"),
-        "highlight_anchor": match.get("chunk_id"),
-        "section": meta.get("section"),
-        "anchors": anchors,
-        "block_ids": [anchor["block_id"] for anchor in anchors if anchor.get("block_id")],
-        "bbox_count": len(anchors),
-    }
-
-
-def _preview_anchors(meta: dict[str, Any]) -> list[dict[str, Any]]:
-    raw_bboxes = _loads_json_list(meta.get("bbox_json"))
-    anchors: list[dict[str, Any]] = []
-    for raw in raw_bboxes:
-        if not isinstance(raw, dict):
-            continue
-        raw_page = raw.get("page")
-        bbox = raw.get("bbox")
-        if not isinstance(raw_page, (int, float)) or not isinstance(bbox, list):
-            continue
-        page = int(raw_page)
-        anchors.append(
-            {
-                "page": page,
-                "block_id": raw.get("block_id"),
-                "bbox": bbox,
-                "coordinate_mode": "page_coordinate",
-                "page_width": raw.get("page_width"),
-                "page_height": raw.get("page_height"),
-            }
-        )
-    return anchors
-
-
-def _loads_json_list(value: Any) -> list[Any]:
-    if isinstance(value, list):
-        return value
-    if not isinstance(value, str) or not value.strip():
-        return []
-    try:
-        parsed = json.loads(value)
-    except json.JSONDecodeError:
-        return []
-    return parsed if isinstance(parsed, list) else []
-
 
 def _regulation_context(check_item: dict[str, Any]) -> list[dict[str, Any]]:
     clauses = [str(item) for item in check_item.get("regulation_clauses", []) if str(item).strip()]

@@ -1,4 +1,5 @@
 import { apiClient } from './client';
+import type { RetrievalMatch } from './reviewConfig';
 
 export interface ProgressSummary {
   total_high_risk: number;
@@ -149,6 +150,25 @@ export interface ReviewRuleTopicsResponse {
   topics: ReviewRuleTopic[];
 }
 
+export interface RetrievalDebugResponse {
+  status: 'ready' | 'degraded' | 'unavailable';
+  query: string;
+  reason?: string;
+  matches: RetrievalMatch[];
+  trace: {
+    persisted?: boolean;
+    artifact_dir?: string;
+    chunk_count?: number;
+    vector_store?: string;
+    vector_available?: boolean;
+    bm25_available?: boolean;
+    rerank_available?: boolean;
+    retrieval_mode?: string;
+    top_k?: number;
+    [key: string]: unknown;
+  };
+}
+
 export function getSession(sessionId: string): Promise<SessionResponse> {
   return apiClient.get<SessionResponse>(`/sessions/${sessionId}`);
 }
@@ -163,6 +183,13 @@ export function getReviewDocumentContent(sessionId: string): Promise<ReviewDocum
 
 export function getReviewRuleTopics(sessionId: string): Promise<ReviewRuleTopicsResponse> {
   return apiClient.get<ReviewRuleTopicsResponse>(`/sessions/${sessionId}/rule-topics`);
+}
+
+export function runRetrievalDebug(
+  sessionId: string,
+  body: { query: string; top_k?: number; use_rerank?: boolean }
+): Promise<RetrievalDebugResponse> {
+  return apiClient.post<RetrievalDebugResponse>(`/sessions/${sessionId}/retrieval-debug`, body);
 }
 
 export function retryParse(sessionId: string) {
