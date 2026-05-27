@@ -28,7 +28,7 @@ router = APIRouter()
 
 class RetrievalDebugRequest(BaseModel):
     query: str = Field(min_length=1, max_length=500)
-    top_k: int = Field(default=8, ge=1, le=20)
+    top_k: int = Field(default=8, ge=1)
     use_rerank: bool = True
 
 

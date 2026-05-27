@@ -165,6 +165,9 @@ export interface RetrievalDebugResponse {
     rerank_available?: boolean;
     retrieval_mode?: string;
     top_k?: number;
+    requested_top_k?: number;
+    top_k_clamped?: boolean;
+    requested_use_rerank?: boolean;
     [key: string]: unknown;
   };
 }

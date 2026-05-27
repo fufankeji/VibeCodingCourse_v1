@@ -30,6 +30,7 @@ def run_retrieval_debug(
     normalized_query = query.strip()
     if not normalized_query:
         raise RetrievalDebugBadRequest("query 不能为空")
+    requested_top_k = int(top_k)
 
     session = db.query(ReviewSession).filter(ReviewSession.id == session_id).first()
     if not session:
@@ -50,7 +51,7 @@ def run_retrieval_debug(
         if vector_available
         else None
     )
-    bounded_top_k = max(1, min(int(top_k), 20))
+    bounded_top_k = max(1, min(requested_top_k, 20))
     retrieval = rag_service.retrieve_for_query(
         chunks,
         normalized_query,
@@ -73,6 +74,9 @@ def run_retrieval_debug(
             "rerank_available": retrieval["rerank_available"],
             "retrieval_mode": retrieval["retrieval_mode"],
             "top_k": bounded_top_k,
+            "requested_top_k": requested_top_k,
+            "top_k_clamped": requested_top_k != bounded_top_k,
+            "requested_use_rerank": use_rerank,
         },
     }
 

@@ -1220,8 +1220,19 @@ function RetrievalDebugPanel({
       </form>
       {error && <p className="mt-2 text-[11px] leading-4 text-red-600">{error}</p>}
       {result && (
-        <div className="mt-2 text-[10px] text-slate-400">
-          {result.trace.retrieval_mode || '-'} · chunks {result.trace.chunk_count ?? '-'} · vector {result.trace.vector_available ? 'on' : 'off'}
+        <div className="mt-2 space-y-1 text-[10px] leading-4 text-slate-400">
+          <p>
+            {result.trace.retrieval_mode || '-'} · chunks {result.trace.chunk_count ?? '-'} · vector {result.trace.vector_available ? 'on' : 'off'} · rerank {result.trace.rerank_available ? 'on' : 'off'}
+          </p>
+          {result.trace.top_k_clamped && (
+            <p className="text-amber-600">top_k 已从 {result.trace.requested_top_k} 裁剪为 {result.trace.top_k}</p>
+          )}
+          {result.status === 'degraded' && (
+            <p className="text-amber-600">当前为降级检索，仅使用可用检索路径。</p>
+          )}
+          {result.status === 'unavailable' && (
+            <p className="text-red-600">检索不可用：{result.reason || 'artifact 不完整'}</p>
+          )}
         </div>
       )}
       {matches.length > 0 && (

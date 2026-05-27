@@ -549,6 +549,54 @@ def test_retrieval_debug_degrades_to_bm25_when_vector_index_is_missing(client: T
         assert db.query(ReviewItem).count() == before_review_item_count
 
 
+def test_retrieval_debug_reports_unavailable_when_chunks_are_missing(client: TestClient):
+    (client.app.state.artifact_dir / "review_chunks.json").unlink()
+    response = client.post(
+        "/api/v1/sessions/task5-session/retrieval-debug",
+        json={"query": "植物措施 乔木 灌木", "top_k": 4, "use_rerank": True},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "unavailable"
+    assert data["reason"] == "review_chunks_missing"
+    assert data["matches"] == []
+    assert data["trace"]["persisted"] is False
+    assert data["trace"]["bm25_available"] is False
+    assert data["trace"]["vector_available"] is False
+    assert data["trace"]["rerank_available"] is False
+
+
+def test_retrieval_debug_rejects_oversized_query(client: TestClient):
+    response = client.post(
+        "/api/v1/sessions/task5-session/retrieval-debug",
+        json={"query": "水" * 501, "top_k": 4, "use_rerank": True},
+    )
+
+    assert response.status_code == 422
+
+
+def test_retrieval_debug_clamps_top_k_without_persisting(client: TestClient):
+    with client.app.state.TestingSessionLocal() as db:
+        before_review_item_count = db.query(ReviewItem).count()
+
+    response = client.post(
+        "/api/v1/sessions/task5-session/retrieval-debug",
+        json={"query": "植物措施 乔木 灌木", "top_k": 999, "use_rerank": False},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["trace"]["top_k"] == 20
+    assert data["trace"]["requested_top_k"] == 999
+    assert data["trace"]["top_k_clamped"] is True
+    assert data["trace"]["requested_use_rerank"] is False
+    assert data["trace"]["rerank_available"] is False
+    assert data["trace"]["persisted"] is False
+    with client.app.state.TestingSessionLocal() as db:
+        assert db.query(ReviewItem).count() == before_review_item_count
+
+
 def test_preview_check_item_rag_query_is_driven_by_expert_brief(isolated_config, client: TestClient):
     with client.app.state.TestingSessionLocal() as db:
         before_review_item_count = db.query(ReviewItem).count()
