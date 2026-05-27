@@ -64,6 +64,12 @@ export interface RetrievalMatch {
   score?: number;
   vector_score?: number;
   bm25_score?: number;
+  vector_rank?: number;
+  bm25_rank?: number;
+  neighbor_rank?: number;
+  final_rank?: number;
+  retrieval_sources?: string[];
+  source_ranks?: Record<string, unknown>;
   rerank_score?: number;
   rerank_rank?: number;
   neighbor_of?: string;

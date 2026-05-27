@@ -515,6 +515,11 @@ def test_retrieval_debug_returns_non_persistent_matches_with_anchors(client: Tes
     assert first_match["bbox_count"] == 2
     assert first_match["block_ids"] == ["p12-b03", "p12-b04"]
     assert first_match["anchors"][0]["block_id"] == "p12-b03"
+    assert first_match["final_rank"] == 1
+    assert first_match["retrieval_sources"] == ["bm25", "rerank", "vector"]
+    assert first_match["source_ranks"]["bm25"] == 1
+    assert first_match["source_ranks"]["rerank"] == 1
+    assert first_match["source_ranks"]["vector"] == 1
     assert data["trace"]["persisted"] is False
     assert data["trace"]["vector_available"] is True
     assert data["trace"]["retrieval_mode"] == "vector_bm25_neighbor_rerank"
@@ -539,6 +544,11 @@ def test_retrieval_debug_degrades_to_bm25_when_vector_index_is_missing(client: T
     assert data["matches"][0]["chunk_id"] == "rag-plant-001"
     assert data["matches"][0]["bm25_score"] is not None
     assert data["matches"][0]["vector_score"] is None
+    assert data["matches"][0]["final_rank"] == 1
+    assert data["matches"][0]["retrieval_sources"] == ["bm25"]
+    assert data["matches"][0]["source_ranks"]["bm25"] == 1
+    assert data["matches"][0]["source_ranks"].get("vector") is None
+    assert data["matches"][0]["source_ranks"].get("rerank") is None
     assert data["trace"]["persisted"] is False
     assert data["trace"]["vector_available"] is False
     assert data["trace"]["bm25_available"] is True

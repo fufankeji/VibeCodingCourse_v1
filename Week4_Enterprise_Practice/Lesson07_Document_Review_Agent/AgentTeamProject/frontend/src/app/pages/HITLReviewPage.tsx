@@ -1248,8 +1248,14 @@ function RetrievalDebugPanel({
                 <span>{String(match.chunk_id || `chunk-${index + 1}`)}</span>
                 <span>p.{match.page || '-'}{match.page_end && match.page_end !== match.page ? `-${match.page_end}` : ''}</span>
                 <span>bbox {String(match.bbox_count ?? getRetrievalMatchAnchors(match).length)}</span>
-                <span>bm25 {formatScore(match.bm25_score)}</span>
-                <span>rerank {formatScore(match.rerank_score)}</span>
+                {getRetrievalContributionBadges(match, index).map((badge) => (
+                  <span
+                    key={badge}
+                    className="rounded bg-white px-1 py-0.5 text-[10px] text-slate-500 ring-1 ring-slate-200"
+                  >
+                    {badge}
+                  </span>
+                ))}
               </div>
               <p className="line-clamp-2 break-words">{String(match.text || '')}</p>
             </button>
@@ -2668,6 +2674,39 @@ function formatScore(value: unknown): string {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return '-';
   return numeric.toFixed(3);
+}
+
+function getRetrievalContributionBadges(match: RetrievalMatch, fallbackIndex: number): string[] {
+  const badges = [`final #${numberOrFallback(match.final_rank, fallbackIndex + 1)}`];
+  const sourceRanks = match.source_ranks && typeof match.source_ranks === 'object' && !Array.isArray(match.source_ranks)
+    ? match.source_ranks
+    : {};
+  const sources = Array.isArray(match.retrieval_sources) && match.retrieval_sources.length > 0
+    ? match.retrieval_sources
+    : inferRetrievalSources(match);
+
+  for (const source of sources) {
+    const rank = Number(sourceRanks[source] ?? match[`${source}_rank`]);
+    const label = source === 'bm25' ? 'BM25' : source;
+    badges.push(Number.isFinite(rank) ? `${label} #${rank}` : label);
+  }
+  if (match.bm25_score !== undefined) badges.push(`bm25 ${formatScore(match.bm25_score)}`);
+  if (match.rerank_score !== undefined) badges.push(`rerank ${formatScore(match.rerank_score)}`);
+  return badges;
+}
+
+function inferRetrievalSources(match: RetrievalMatch): string[] {
+  const sources: string[] = [];
+  if (match.bm25_score !== undefined || match.bm25_rank !== undefined) sources.push('bm25');
+  if (match.rerank_score !== undefined || match.rerank_rank !== undefined) sources.push('rerank');
+  if (match.vector_score !== undefined || match.vector_rank !== undefined) sources.push('vector');
+  if (match.neighbor_of || match.neighbor_rank !== undefined) sources.push('neighbor');
+  return sources;
+}
+
+function numberOrFallback(value: unknown, fallback: number): number {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
 }
 
 function statusClassName(status: unknown): string {

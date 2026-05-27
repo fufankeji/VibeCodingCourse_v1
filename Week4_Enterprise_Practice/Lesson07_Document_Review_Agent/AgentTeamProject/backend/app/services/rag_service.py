@@ -260,6 +260,7 @@ class SiliconFlowRerankerProvider:
                 item = dict(matches[index])
                 item["rerank_rank"] = rank
                 item["rerank_score"] = float(result.get("relevance_score", 0))
+                _add_retrieval_source(item, "rerank", rank)
                 ranked.append(item)
         except Exception as exc:
             raise RAGReviewError("SiliconFlow reranker response shape is invalid") from exc
@@ -340,14 +341,19 @@ class ChromaChunkStore:
         metadatas = result.get("metadatas", [[]])[0]
         distances = result.get("distances", [[]])[0]
         for rank, chunk_id in enumerate(ids, start=1):
+            score = 1.0 / (1.0 + float(distances[rank - 1]))
             matches.append(
                 {
                     "chunk_id": chunk_id,
                     "rank": rank,
+                    "vector_rank": rank,
                     "document": docs[rank - 1],
                     "metadata": metadatas[rank - 1],
                     "distance": distances[rank - 1],
-                    "score": 1.0 / (1.0 + float(distances[rank - 1])),
+                    "score": score,
+                    "vector_score": score,
+                    "retrieval_sources": ["vector"],
+                    "source_ranks": {"vector": rank},
                 }
             )
         return matches
@@ -383,7 +389,7 @@ def retrieve_for_rules(
             by_index,
             limit=max(settings.rag_rerank_top_n * 2, settings.rag_rerank_top_n),
         )
-        reranked = reranker.rerank(query, expanded, top_n=settings.rag_rerank_top_n)
+        reranked = _with_final_ranks(reranker.rerank(query, expanded, top_n=settings.rag_rerank_top_n))
         retrievals.append(
             {
                 "rule_index": rule_index,
@@ -424,10 +430,7 @@ def retrieve_for_query(
         except Exception as exc:
             raise RAGReviewError(f"vector retrieval failed: {exc}") from exc
 
-    bm25_matches = [
-        {**match, "bm25_score": match.get("score")}
-        for match in bm25.query(query, top_k=top_k)
-    ]
+    bm25_matches = bm25.query(query, top_k=top_k)
     fused = _rrf(vector_matches, bm25_matches) if vector_matches else bm25_matches
     expanded = _expand_neighbors(
         fused[:top_k],
@@ -441,6 +444,7 @@ def retrieve_for_query(
         matches = SiliconFlowRerankerProvider().rerank(query, expanded, top_n=min(top_k, settings.rag_rerank_top_n))
     else:
         matches = expanded[:top_k]
+    matches = _with_final_ranks(matches)
     return {
         "query": query,
         "matches": matches,
@@ -475,9 +479,13 @@ class BM25Index:
                 {
                     "chunk_id": _chunk_id(chunk),
                     "rank": rank,
+                    "bm25_rank": rank,
                     "document": _chunk_text(chunk),
                     "metadata": _chunk_metadata(chunk, index),
                     "score": score,
+                    "bm25_score": score,
+                    "retrieval_sources": ["bm25"],
+                    "source_ranks": {"bm25": rank},
                 }
             )
         return matches
@@ -688,10 +696,16 @@ def _rrf(vector_matches: list[dict[str, Any]], bm25_matches: list[dict[str, Any]
             chunk_id = match["chunk_id"]
             entry = combined.setdefault(chunk_id, {**match, "score": 0.0})
             entry["score"] = float(entry.get("score", 0.0)) + 1.0 / (k + rank)
+            _merge_retrieval_sources(entry, match)
             if source == "vector":
-                entry["vector_score"] = match.get("score")
+                source_rank = int(match.get("vector_rank") or rank)
+                entry["vector_rank"] = source_rank
+                entry["vector_score"] = match.get("vector_score", match.get("score"))
             else:
-                entry["bm25_score"] = match.get("score")
+                source_rank = int(match.get("bm25_rank") or rank)
+                entry["bm25_rank"] = source_rank
+                entry["bm25_score"] = match.get("bm25_score", match.get("score"))
+            _add_retrieval_source(entry, source, source_rank)
     return sorted(combined.values(), key=lambda item: item.get("score", 0), reverse=True)
 
 
@@ -713,16 +727,63 @@ def _expand_neighbors(
                 expanded.append(match)
             else:
                 chunk = by_id[candidate_id]
-                expanded.append(
-                    {
-                        "chunk_id": candidate_id,
-                        "document": _chunk_text(chunk),
-                        "metadata": _chunk_metadata(chunk, by_index[candidate_id]),
-                        "score": match.get("score", 0) * 0.85,
-                        "neighbor_of": match["chunk_id"],
-                    }
-                )
+                neighbor = {
+                    "chunk_id": candidate_id,
+                    "document": _chunk_text(chunk),
+                    "metadata": _chunk_metadata(chunk, by_index[candidate_id]),
+                    "score": match.get("score", 0) * 0.85,
+                    "neighbor_of": match["chunk_id"],
+                    "neighbor_rank": len(expanded) + 1,
+                }
+                _add_retrieval_source(neighbor, "neighbor", neighbor["neighbor_rank"])
+                expanded.append(neighbor)
     return expanded[:limit]
+
+
+def _with_final_ranks(matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    ranked: list[dict[str, Any]] = []
+    for rank, match in enumerate(matches, start=1):
+        item = dict(match)
+        if item.get("rerank_rank") is not None:
+            _add_retrieval_source(item, "rerank", int(item["rerank_rank"]))
+        item["final_rank"] = rank
+        item["retrieval_sources"] = sorted(set(_retrieval_sources(item)))
+        item["source_ranks"] = _retrieval_source_ranks(item)
+        ranked.append(item)
+    return ranked
+
+
+def _merge_retrieval_sources(target: dict[str, Any], source: dict[str, Any]) -> None:
+    target["retrieval_sources"] = sorted(set(_retrieval_sources(target)) | set(_retrieval_sources(source)))
+    ranks = _retrieval_source_ranks(target)
+    ranks.update(_retrieval_source_ranks(source))
+    target["source_ranks"] = ranks
+
+
+def _add_retrieval_source(match: dict[str, Any], source: str, rank: int) -> None:
+    match["retrieval_sources"] = sorted(set(_retrieval_sources(match)) | {source})
+    ranks = _retrieval_source_ranks(match)
+    ranks[source] = rank
+    match["source_ranks"] = ranks
+
+
+def _retrieval_sources(match: dict[str, Any]) -> list[str]:
+    sources = match.get("retrieval_sources")
+    if not isinstance(sources, list):
+        return []
+    return [str(source) for source in sources if source]
+
+
+def _retrieval_source_ranks(match: dict[str, Any]) -> dict[str, int]:
+    ranks = match.get("source_ranks")
+    if not isinstance(ranks, dict):
+        return {}
+    normalized: dict[str, int] = {}
+    for source, rank in ranks.items():
+        if isinstance(rank, bool) or not isinstance(rank, (int, float)):
+            continue
+        normalized[str(source)] = int(rank)
+    return normalized
 
 
 def _neighbor_ids(chunk_id: str, chunks: list[Any], by_index: dict[str, int]) -> list[str]:
