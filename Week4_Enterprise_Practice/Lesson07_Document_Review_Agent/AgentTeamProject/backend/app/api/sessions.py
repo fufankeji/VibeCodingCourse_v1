@@ -29,6 +29,9 @@ router = APIRouter()
 class RetrievalDebugRequest(BaseModel):
     query: str = Field(min_length=1, max_length=500)
     top_k: int = Field(default=8, ge=1)
+    use_vector: bool = True
+    use_bm25: bool = True
+    use_neighbors: bool = True
     use_rerank: bool = True
 
 
@@ -146,6 +149,9 @@ def run_retrieval_debug(
             payload.query,
             db,
             top_k=payload.top_k,
+            use_vector=payload.use_vector,
+            use_bm25=payload.use_bm25,
+            use_neighbors=payload.use_neighbors,
             use_rerank=payload.use_rerank,
         )
     except retrieval_debug_service.RetrievalDebugBadRequest as exc:

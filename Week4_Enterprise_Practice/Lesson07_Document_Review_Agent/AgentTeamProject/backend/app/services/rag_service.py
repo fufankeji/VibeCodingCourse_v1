@@ -417,9 +417,11 @@ def retrieve_for_query(
     query: str,
     top_k: int,
     store: ChromaChunkStore | None = None,
+    use_bm25: bool = True,
+    use_neighbors: bool = True,
     use_rerank: bool = True,
 ) -> dict[str, Any]:
-    bm25 = BM25Index(chunks)
+    bm25 = BM25Index(chunks) if use_bm25 else None
     by_id = {_chunk_id(chunk): chunk for chunk in chunks}
     by_index = {_chunk_id(chunk): index for index, chunk in enumerate(chunks)}
     vector_matches: list[dict[str, Any]] = []
@@ -430,15 +432,23 @@ def retrieve_for_query(
         except Exception as exc:
             raise RAGReviewError(f"vector retrieval failed: {exc}") from exc
 
-    bm25_matches = bm25.query(query, top_k=top_k)
-    fused = _rrf(vector_matches, bm25_matches) if vector_matches else bm25_matches
-    expanded = _expand_neighbors(
-        fused[:top_k],
-        chunks,
-        by_id,
-        by_index,
-        limit=max(top_k, settings.rag_rerank_top_n),
-    )
+    bm25_matches = bm25.query(query, top_k=top_k) if bm25 else []
+    if vector_matches and bm25_matches:
+        fused = _rrf(vector_matches, bm25_matches)
+    elif vector_matches:
+        fused = vector_matches
+    else:
+        fused = bm25_matches
+    if use_neighbors:
+        expanded = _expand_neighbors(
+            fused[:top_k],
+            chunks,
+            by_id,
+            by_index,
+            limit=max(top_k, settings.rag_rerank_top_n),
+        )
+    else:
+        expanded = fused[:top_k]
     rerank_available = bool(vector_available and use_rerank and settings.siliconflow_reranker_model)
     if rerank_available:
         matches = SiliconFlowRerankerProvider().rerank(query, expanded, top_n=min(top_k, settings.rag_rerank_top_n))
@@ -449,9 +459,9 @@ def retrieve_for_query(
         "query": query,
         "matches": matches,
         "vector_available": vector_available,
-        "bm25_available": True,
+        "bm25_available": use_bm25,
         "rerank_available": rerank_available,
-        "retrieval_mode": "vector_bm25_neighbor_rerank" if vector_available else "bm25_neighbor",
+        "retrieval_mode": _retrieval_mode(vector_available, use_bm25, use_neighbors, rerank_available),
     }
 
 
@@ -751,6 +761,24 @@ def _with_final_ranks(matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
         item["source_ranks"] = _retrieval_source_ranks(item)
         ranked.append(item)
     return ranked
+
+
+def _retrieval_mode(
+    vector_available: bool,
+    bm25_available: bool,
+    neighbors_enabled: bool,
+    rerank_available: bool,
+) -> str:
+    parts: list[str] = []
+    if vector_available:
+        parts.append("vector")
+    if bm25_available:
+        parts.append("bm25")
+    if neighbors_enabled:
+        parts.append("neighbor")
+    if rerank_available:
+        parts.append("rerank")
+    return "_".join(parts) if parts else "unavailable"
 
 
 def _merge_retrieval_sources(target: dict[str, Any], source: dict[str, Any]) -> None:

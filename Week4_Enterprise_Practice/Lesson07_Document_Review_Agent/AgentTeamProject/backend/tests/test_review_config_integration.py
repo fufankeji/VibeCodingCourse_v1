@@ -607,6 +607,85 @@ def test_retrieval_debug_clamps_top_k_without_persisting(client: TestClient):
         assert db.query(ReviewItem).count() == before_review_item_count
 
 
+def test_retrieval_debug_can_isolate_vector_and_bm25_paths(client: TestClient):
+    preview_response = client.post(
+        "/api/v1/review-config/check-items/preview",
+        json={
+            "session_id": "task5-session",
+            "topic_id": "scmc-010",
+            "rule_id": "PLANT-TASK5-001",
+            "executor_type_id": "evidence_presence",
+            "review_type": "证据存在性核验",
+            "review_sub_type": "植物措施配置完整性",
+            "target_fields": ["植物措施", "乔木", "灌木"],
+            "review_criteria": "核验植物措施章节是否说明乔木、灌木配置。",
+            "expected_result": "植物措施配置完整且有表格支撑。",
+            "enabled": True,
+        },
+    )
+    assert preview_response.status_code == 200
+
+    vector_only = client.post(
+        "/api/v1/sessions/task5-session/retrieval-debug",
+        json={
+            "query": "植物措施 乔木 灌木",
+            "top_k": 4,
+            "use_vector": True,
+            "use_bm25": False,
+            "use_neighbors": False,
+            "use_rerank": False,
+        },
+    )
+    assert vector_only.status_code == 200
+    vector_data = vector_only.json()
+    assert vector_data["status"] == "ready"
+    assert vector_data["matches"]
+    assert vector_data["matches"][0]["retrieval_sources"] == ["vector"]
+    assert vector_data["matches"][0]["source_ranks"]["vector"] == 1
+    assert vector_data["matches"][0]["source_ranks"].get("bm25") is None
+    assert vector_data["trace"]["requested_use_vector"] is True
+    assert vector_data["trace"]["requested_use_bm25"] is False
+    assert vector_data["trace"]["requested_use_neighbors"] is False
+    assert vector_data["trace"]["retrieval_mode"] == "vector"
+
+    bm25_only = client.post(
+        "/api/v1/sessions/task5-session/retrieval-debug",
+        json={
+            "query": "植物措施 乔木 灌木",
+            "top_k": 4,
+            "use_vector": False,
+            "use_bm25": True,
+            "use_neighbors": False,
+            "use_rerank": False,
+        },
+    )
+    assert bm25_only.status_code == 200
+    bm25_data = bm25_only.json()
+    assert bm25_data["status"] == "ready"
+    assert bm25_data["matches"]
+    assert bm25_data["matches"][0]["retrieval_sources"] == ["bm25"]
+    assert bm25_data["matches"][0]["source_ranks"]["bm25"] == 1
+    assert bm25_data["matches"][0]["source_ranks"].get("vector") is None
+    assert bm25_data["trace"]["requested_use_vector"] is False
+    assert bm25_data["trace"]["requested_use_bm25"] is True
+    assert bm25_data["trace"]["requested_use_neighbors"] is False
+    assert bm25_data["trace"]["retrieval_mode"] == "bm25"
+
+
+def test_retrieval_debug_rejects_when_all_retrieval_paths_are_disabled(client: TestClient):
+    response = client.post(
+        "/api/v1/sessions/task5-session/retrieval-debug",
+        json={
+            "query": "植物措施 乔木 灌木",
+            "use_vector": False,
+            "use_bm25": False,
+        },
+    )
+
+    assert response.status_code == 400
+    assert "至少启用" in response.json()["detail"]["message"]
+
+
 def test_preview_check_item_rag_query_is_driven_by_expert_brief(isolated_config, client: TestClient):
     with client.app.state.TestingSessionLocal() as db:
         before_review_item_count = db.query(ReviewItem).count()

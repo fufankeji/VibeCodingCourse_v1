@@ -351,12 +351,12 @@ export function HITLReviewPage() {
     }
   };
 
-  const handleRunRetrievalDebug = async (query: string) => {
+  const handleRunRetrievalDebug = async (query: string, options: RetrievalDebugOptions) => {
     if (!sessionId) return;
     setIsRetrievalDebugging(true);
     setRetrievalDebugError(null);
     try {
-      const result = await runRetrievalDebug(sessionId, { query, top_k: 8, use_rerank: true });
+      const result = await runRetrievalDebug(sessionId, { query, ...options });
       setRetrievalDebugResult(result);
     } catch (err) {
       setRetrievalDebugError(getErrorMessage(err));
@@ -868,6 +868,13 @@ type WorkbenchIssueRow = {
 
 type ChapterFilter = 'all' | 'current';
 type SeverityFilter = 'all' | RiskLevel;
+type RetrievalDebugOptions = {
+  top_k: number;
+  use_vector: boolean;
+  use_bm25: boolean;
+  use_neighbors: boolean;
+  use_rerank: boolean;
+};
 type DecisionFilter = 'pending' | 'handled' | 'all';
 
 function ReviewIssuePanel({
@@ -1176,11 +1183,16 @@ function RetrievalDebugPanel({
   result: RetrievalDebugResponse | null;
   error: string | null;
   isLoading: boolean;
-  onRun: (query: string) => void;
+  onRun: (query: string, options: RetrievalDebugOptions) => void;
   onSelectMatch: (match: RetrievalMatch) => void;
 }) {
   const [query, setQuery] = useState('弃渣场 480m 截排水');
-  const canRun = query.trim().length > 0 && !isLoading;
+  const [topK, setTopK] = useState(8);
+  const [useVector, setUseVector] = useState(true);
+  const [useBm25, setUseBm25] = useState(true);
+  const [useNeighbors, setUseNeighbors] = useState(true);
+  const [useRerank, setUseRerank] = useState(true);
+  const canRun = query.trim().length > 0 && !isLoading && (useVector || useBm25);
   const matches = result?.matches ?? [];
   const statusClass = result?.status === 'ready'
     ? 'bg-emerald-50 text-emerald-700'
@@ -1200,7 +1212,15 @@ function RetrievalDebugPanel({
         className="flex gap-1.5"
         onSubmit={(event) => {
           event.preventDefault();
-          if (canRun) onRun(query.trim());
+          if (canRun) {
+            onRun(query.trim(), {
+              top_k: topK,
+              use_vector: useVector,
+              use_bm25: useBm25,
+              use_neighbors: useNeighbors,
+              use_rerank: useRerank,
+            });
+          }
         }}
       >
         <input
@@ -1218,11 +1238,43 @@ function RetrievalDebugPanel({
           查询
         </button>
       </form>
+      <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] text-slate-500">
+        <label className="inline-flex items-center gap-1">
+          top_k
+          <input
+            type="number"
+            min={1}
+            max={20}
+            value={topK}
+            onChange={(event) => setTopK(Number(event.target.value) || 1)}
+            className="h-6 w-12 rounded border border-slate-200 px-1 text-[10px] outline-none focus:border-blue-300"
+          />
+        </label>
+        <label className="inline-flex items-center gap-1">
+          <input type="checkbox" checked={useVector} onChange={(event) => setUseVector(event.target.checked)} />
+          vector
+        </label>
+        <label className="inline-flex items-center gap-1">
+          <input type="checkbox" checked={useBm25} onChange={(event) => setUseBm25(event.target.checked)} />
+          BM25
+        </label>
+        <label className="inline-flex items-center gap-1">
+          <input type="checkbox" checked={useNeighbors} onChange={(event) => setUseNeighbors(event.target.checked)} />
+          neighbor
+        </label>
+        <label className="inline-flex items-center gap-1">
+          <input type="checkbox" checked={useRerank} onChange={(event) => setUseRerank(event.target.checked)} />
+          rerank
+        </label>
+      </div>
       {error && <p className="mt-2 text-[11px] leading-4 text-red-600">{error}</p>}
       {result && (
         <div className="mt-2 space-y-1 text-[10px] leading-4 text-slate-400">
           <p>
-            {result.trace.retrieval_mode || '-'} · chunks {result.trace.chunk_count ?? '-'} · vector {result.trace.vector_available ? 'on' : 'off'} · rerank {result.trace.rerank_available ? 'on' : 'off'}
+            {result.trace.retrieval_mode || '-'} · chunks {result.trace.chunk_count ?? '-'} · vector {result.trace.vector_available ? 'on' : 'off'} · BM25 {result.trace.bm25_available ? 'on' : 'off'} · rerank {result.trace.rerank_available ? 'on' : 'off'}
+          </p>
+          <p>
+            request: vector {result.trace.requested_use_vector ? 'on' : 'off'} · BM25 {result.trace.requested_use_bm25 ? 'on' : 'off'} · neighbor {result.trace.requested_use_neighbors ? 'on' : 'off'} · rerank {result.trace.requested_use_rerank ? 'on' : 'off'}
           </p>
           {result.trace.top_k_clamped && (
             <p className="text-amber-600">top_k 已从 {result.trace.requested_top_k} 裁剪为 {result.trace.top_k}</p>

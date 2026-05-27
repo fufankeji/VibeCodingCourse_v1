@@ -167,6 +167,9 @@ export interface RetrievalDebugResponse {
     top_k?: number;
     requested_top_k?: number;
     top_k_clamped?: boolean;
+    requested_use_vector?: boolean;
+    requested_use_bm25?: boolean;
+    requested_use_neighbors?: boolean;
     requested_use_rerank?: boolean;
     [key: string]: unknown;
   };
@@ -190,7 +193,14 @@ export function getReviewRuleTopics(sessionId: string): Promise<ReviewRuleTopics
 
 export function runRetrievalDebug(
   sessionId: string,
-  body: { query: string; top_k?: number; use_rerank?: boolean }
+  body: {
+    query: string;
+    top_k?: number;
+    use_vector?: boolean;
+    use_bm25?: boolean;
+    use_neighbors?: boolean;
+    use_rerank?: boolean;
+  }
 ): Promise<RetrievalDebugResponse> {
   return apiClient.post<RetrievalDebugResponse>(`/sessions/${sessionId}/retrieval-debug`, body);
 }

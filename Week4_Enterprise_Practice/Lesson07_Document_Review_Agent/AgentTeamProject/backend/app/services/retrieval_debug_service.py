@@ -25,11 +25,16 @@ def run_retrieval_debug(
     query: str,
     db: Session,
     top_k: int = 8,
+    use_vector: bool = True,
+    use_bm25: bool = True,
+    use_neighbors: bool = True,
     use_rerank: bool = True,
 ) -> dict[str, Any]:
     normalized_query = query.strip()
     if not normalized_query:
         raise RetrievalDebugBadRequest("query 不能为空")
+    if not use_vector and not use_bm25:
+        raise RetrievalDebugBadRequest("至少启用 BM25 或向量检索")
     requested_top_k = int(top_k)
 
     session = db.query(ReviewSession).filter(ReviewSession.id == session_id).first()
@@ -45,7 +50,7 @@ def run_retrieval_debug(
         return _unavailable_response(normalized_query, "review_chunks_missing", artifact_dir)
 
     vector_dir = Path(settings.storage_path) / "vector_stores" / "water_review" / session_id
-    vector_available = _vector_store_exists(vector_dir)
+    vector_available = bool(use_vector and _vector_store_exists(vector_dir))
     store = (
         rag_service.ChromaChunkStore(vector_dir, session_id, rag_service.SiliconFlowEmbeddingProvider())
         if vector_available
@@ -57,9 +62,11 @@ def run_retrieval_debug(
         normalized_query,
         top_k=bounded_top_k,
         store=store,
+        use_bm25=use_bm25,
+        use_neighbors=use_neighbors,
         use_rerank=use_rerank,
     )
-    status = "ready" if retrieval["vector_available"] else "degraded"
+    status = "degraded" if use_vector and not retrieval["vector_available"] else "ready"
     return {
         "status": status,
         "query": normalized_query,
@@ -76,6 +83,9 @@ def run_retrieval_debug(
             "top_k": bounded_top_k,
             "requested_top_k": requested_top_k,
             "top_k_clamped": requested_top_k != bounded_top_k,
+            "requested_use_vector": use_vector,
+            "requested_use_bm25": use_bm25,
+            "requested_use_neighbors": use_neighbors,
             "requested_use_rerank": use_rerank,
         },
     }
