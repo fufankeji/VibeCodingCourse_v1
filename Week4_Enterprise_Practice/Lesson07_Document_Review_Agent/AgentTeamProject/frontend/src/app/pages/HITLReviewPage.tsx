@@ -877,6 +877,11 @@ type RetrievalDebugOptions = {
   use_neighbors: boolean;
   use_rerank: boolean;
 };
+type RetrievalContributionBadge = {
+  key: string;
+  label: string;
+  className: string;
+};
 type DecisionFilter = 'pending' | 'handled' | 'all';
 
 function ReviewIssuePanel({
@@ -1304,10 +1309,10 @@ function RetrievalDebugPanel({
                 <span>bbox {String(match.bbox_count ?? getRetrievalMatchAnchors(match).length)}</span>
                 {getRetrievalContributionBadges(match, index).map((badge) => (
                   <span
-                    key={badge}
-                    className="rounded bg-white px-1 py-0.5 text-[10px] text-slate-500 ring-1 ring-slate-200"
+                    key={badge.key}
+                    className={`rounded px-1.5 py-0.5 text-[10px] font-medium ring-1 ${badge.className}`}
                   >
-                    {badge}
+                    {badge.label}
                   </span>
                 ))}
               </div>
@@ -2835,23 +2840,72 @@ function formatNullableNumber(value: unknown): string {
   return Number.isInteger(numeric) ? String(numeric) : numeric.toFixed(2);
 }
 
-function getRetrievalContributionBadges(match: RetrievalMatch, fallbackIndex: number): string[] {
-  const badges = [`final #${numberOrFallback(match.final_rank, fallbackIndex + 1)}`];
+function getRetrievalContributionBadges(match: RetrievalMatch, fallbackIndex: number): RetrievalContributionBadge[] {
+  const badges: RetrievalContributionBadge[] = [
+    {
+      key: 'final',
+      label: `最终排序 #${numberOrFallback(match.final_rank, fallbackIndex + 1)}`,
+      className: 'bg-slate-100 text-slate-700 ring-slate-200',
+    },
+  ];
   const sourceRanks = match.source_ranks && typeof match.source_ranks === 'object' && !Array.isArray(match.source_ranks)
     ? match.source_ranks
     : {};
-  const sources = Array.isArray(match.retrieval_sources) && match.retrieval_sources.length > 0
+  const rawSources = Array.isArray(match.retrieval_sources) && match.retrieval_sources.length > 0
     ? match.retrieval_sources
     : inferRetrievalSources(match);
+  const sources = orderRetrievalSources(rawSources);
 
   for (const source of sources) {
     const rank = Number(sourceRanks[source] ?? match[`${source}_rank`]);
-    const label = source === 'bm25' ? 'BM25' : source;
-    badges.push(Number.isFinite(rank) ? `${label} #${rank}` : label);
+    const meta = retrievalSourceMeta(source);
+    badges.push({
+      key: source,
+      label: Number.isFinite(rank) ? `${meta.label} #${rank}` : meta.label,
+      className: meta.className,
+    });
   }
-  if (match.bm25_score !== undefined) badges.push(`bm25 ${formatScore(match.bm25_score)}`);
-  if (match.rerank_score !== undefined) badges.push(`rerank ${formatScore(match.rerank_score)}`);
+  if (match.bm25_score !== undefined) {
+    badges.push({
+      key: 'bm25-score',
+      label: `BM25分 ${formatScore(match.bm25_score)}`,
+      className: 'bg-white text-amber-700 ring-amber-200',
+    });
+  }
+  if (match.vector_score !== undefined) {
+    badges.push({
+      key: 'vector-score',
+      label: `向量分 ${formatScore(match.vector_score)}`,
+      className: 'bg-white text-blue-700 ring-blue-200',
+    });
+  }
+  if (match.rerank_score !== undefined) {
+    badges.push({
+      key: 'rerank-score',
+      label: `重排分 ${formatScore(match.rerank_score)}`,
+      className: 'bg-white text-emerald-700 ring-emerald-200',
+    });
+  }
   return badges;
+}
+
+function orderRetrievalSources(sources: string[]): string[] {
+  const order = ['bm25', 'vector', 'neighbor', 'rerank'];
+  return [...new Set(sources)].sort((a, b) => {
+    const left = order.indexOf(a);
+    const right = order.indexOf(b);
+    return (left === -1 ? 99 : left) - (right === -1 ? 99 : right);
+  });
+}
+
+function retrievalSourceMeta(source: string): { label: string; className: string } {
+  const metas: Record<string, { label: string; className: string }> = {
+    bm25: { label: 'BM25召回', className: 'bg-amber-50 text-amber-800 ring-amber-200' },
+    vector: { label: '向量召回', className: 'bg-blue-50 text-blue-800 ring-blue-200' },
+    neighbor: { label: '邻近扩展', className: 'bg-violet-50 text-violet-800 ring-violet-200' },
+    rerank: { label: '重排命中', className: 'bg-emerald-50 text-emerald-800 ring-emerald-200' },
+  };
+  return metas[source] ?? { label: source, className: 'bg-slate-50 text-slate-700 ring-slate-200' };
 }
 
 function inferRetrievalSources(match: RetrievalMatch): string[] {
