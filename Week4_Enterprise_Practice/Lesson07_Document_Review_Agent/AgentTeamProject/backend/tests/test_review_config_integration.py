@@ -1337,7 +1337,6 @@ def test_retrieval_debug_can_run_evidence_slot_package(client: TestClient, monke
             "rerank_available": False,
         }
 
-    monkeypatch.setattr(settings, "rag_top_k", 50)
     monkeypatch.setattr(review_agent_service, "retrieve_for_query", fake_retrieve_for_query)
 
     with client.app.state.TestingSessionLocal() as db:
@@ -1373,6 +1372,9 @@ def test_retrieval_debug_can_run_evidence_slot_package(client: TestClient, monke
     assert slot["slot_id"] == "debug_plant_slot"
     assert slot["status"] == "matched"
     assert slot["min_matches"] == 2
+    assert slot["candidate_top_k"] == 50
+    assert slot["final_match_limit"] == 5
+    assert slot["prompt_match_limit"] == 3
     assert slot["match_count"] == 5
     assert [match["chunk_id"] for match in slot["prompt_matches"]] == ["debug-slot-1", "debug-slot-2", "debug-slot-3"]
     assert [match["chunk_id"] for match in slot["trace_matches"]] == ["debug-slot-4", "debug-slot-5"]
@@ -1386,6 +1388,11 @@ def test_retrieval_debug_can_run_evidence_slot_package(client: TestClient, monke
     assert data["trace"]["debug_mode"] == "evidence_slot"
     assert data["trace"]["top_k"] == 50
     assert data["trace"]["slot_top_k"] == 50
+    assert data["trace"]["evidence_slot_defaults"]["candidate_top_k"] == 50
+    assert data["trace"]["evidence_slot_defaults"]["final_top_k_per_slot"] == 5
+    assert data["trace"]["evidence_slot_defaults"]["prompt_match_limit"] == 3
+    assert data["trace"]["evidence_slot_defaults"]["min_matches"] == 1
+    assert "vector_top_k" not in data["trace"]["evidence_slot_defaults"]
     assert data["trace"]["top_k_clamped"] is False
     assert data["trace"]["requested_use_bm25"] is True
 

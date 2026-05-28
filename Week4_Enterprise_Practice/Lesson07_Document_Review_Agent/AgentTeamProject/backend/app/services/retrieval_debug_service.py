@@ -13,6 +13,7 @@ from app.models.contract import Contract
 from app.models.session import ReviewSession
 from app.services import rag_service
 from app.services.review_agent_service import build_evidence_slot_package
+from app.services.review_retrieval_defaults import evidence_slot_retrieval_defaults_trace
 from app.services.retrieval_match_serializer import serialize_retrieval_match
 from app.services.water_review_service import ReviewChunk
 
@@ -145,6 +146,7 @@ def _run_evidence_slot_debug(
     query_traces = [item for item in queries if isinstance(item, dict)] if isinstance(queries, list) else []
     vector_used = bool(vector_available and use_vector)
     rerank_available = any(bool(item.get("matches")) for item in query_traces) and vector_used and use_rerank and bool(settings.siliconflow_reranker_model)
+    defaults = evidence_slot_retrieval_defaults_trace()
     return {
         "status": "degraded" if use_vector and not vector_available else "ready",
         "query": first_query or query,
@@ -160,8 +162,9 @@ def _run_evidence_slot_debug(
             "bm25_available": use_bm25,
             "rerank_available": rerank_available,
             "retrieval_mode": query_traces[0].get("retrieval_mode", "") if query_traces else "",
-            "top_k": settings.rag_top_k,
-            "slot_top_k": settings.rag_top_k,
+            "top_k": defaults["candidate_top_k"],
+            "slot_top_k": defaults["candidate_top_k"],
+            "evidence_slot_defaults": defaults,
             "requested_top_k": requested_top_k,
             "top_k_clamped": False,
             "requested_use_vector": use_vector,

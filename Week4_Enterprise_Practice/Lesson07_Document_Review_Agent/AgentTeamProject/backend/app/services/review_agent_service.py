@@ -16,6 +16,10 @@ from app.models.session import ReviewSession
 from app.services.review_executor_service import execute_check_item_precheck
 from app.services.project_composition_service import analyze_project_composition_consistency
 from app.services.review_formula_service import execute_formula_checks
+from app.services.review_retrieval_defaults import (
+    EVIDENCE_SLOT_RETRIEVAL_DEFAULTS,
+    evidence_slot_retrieval_defaults_trace,
+)
 from app.services.review_rule_schema import SCMC_TOPIC_SPECS, execute_rule_precheck
 from app.services.rag_service import (
     ChromaChunkStore,
@@ -30,7 +34,7 @@ from app.services.water_review_service import ReviewChunk, build_chunks, parse_d
 MAX_EVIDENCE_SLOTS = 8
 MAX_EVIDENCE_SLOT_QUERIES = 3
 MAX_EVIDENCE_SLOT_QUERY_LENGTH = 240
-MAX_EVIDENCE_SLOT_PROMPT_MATCHES = 3
+MAX_EVIDENCE_SLOT_PROMPT_MATCHES = EVIDENCE_SLOT_RETRIEVAL_DEFAULTS.prompt_match_limit
 
 
 class ReviewAgentBadRequest(ValueError):
@@ -376,6 +380,7 @@ def build_evidence_slot_package(
             "missing_required_slot_ids": [],
             "truncated": len(raw_slots) > MAX_EVIDENCE_SLOTS,
             "slot_limit": MAX_EVIDENCE_SLOTS,
+            "defaults": evidence_slot_retrieval_defaults_trace(),
             "slots": [],
         }
 
@@ -408,6 +413,7 @@ def build_evidence_slot_package(
         "missing_required_slot_ids": missing_required_slot_ids,
         "truncated": len(raw_slots) > len(slots),
         "slot_limit": MAX_EVIDENCE_SLOTS,
+        "defaults": evidence_slot_retrieval_defaults_trace(),
         "truncated_required_slot_ids": truncated_required_slot_ids,
         "slots": packaged_slots,
     }
@@ -428,11 +434,12 @@ def _retrieve_single_evidence_slot(
     queries = raw_queries[:MAX_EVIDENCE_SLOT_QUERIES]
     query_results: list[dict[str, Any]] = []
     by_chunk_id: dict[str, dict[str, Any]] = {}
+    candidate_top_k = EVIDENCE_SLOT_RETRIEVAL_DEFAULTS.candidate_top_k
     for query in queries:
         retrieval = retrieve_for_query(
             chunks,
             query,
-            top_k=settings.rag_top_k,
+            top_k=candidate_top_k,
             store=store,
             use_bm25=use_bm25,
             use_neighbors=use_neighbors,
@@ -451,8 +458,9 @@ def _retrieve_single_evidence_slot(
             if chunk_id and chunk_id not in by_chunk_id:
                 by_chunk_id[chunk_id] = match
 
-    matches = list(by_chunk_id.values())
-    min_matches = _positive_int(slot.get("min_matches"), 1)
+    final_match_limit = EVIDENCE_SLOT_RETRIEVAL_DEFAULTS.final_top_k_per_slot
+    matches = list(by_chunk_id.values())[:final_match_limit]
+    min_matches = _positive_int(slot.get("min_matches"), EVIDENCE_SLOT_RETRIEVAL_DEFAULTS.min_matches)
     prompt_matches = matches[:MAX_EVIDENCE_SLOT_PROMPT_MATCHES]
     trace_matches = matches[MAX_EVIDENCE_SLOT_PROMPT_MATCHES:]
     expected_terms = _string_list(slot.get("expected_terms"))
@@ -466,6 +474,8 @@ def _retrieve_single_evidence_slot(
         "required": required,
         "status": status,
         "min_matches": min_matches,
+        "candidate_top_k": candidate_top_k,
+        "final_match_limit": final_match_limit,
         "queries": query_results,
         "query_count": len(query_results),
         "query_limit": MAX_EVIDENCE_SLOT_QUERIES,

@@ -1,5 +1,8 @@
 import json
 
+import pytest
+
+from app.services import review_agent_service
 from app.services.langextract_service import facts_to_extracted_fields
 from app.services.mineru_table_fact_service import extract_table_facts
 from app.services.water_review_service import ReviewChunk, WATER_FIELDS, review_rules
@@ -35,6 +38,68 @@ def _field(field_name: str, value: str, unit: str = "万m3") -> dict:
         "source_text": f"{field_name}={value}{unit}",
         "confidence": 90,
     }
+
+
+def test_evidence_slot_package_uses_shared_candidate_top_k_default(monkeypatch: pytest.MonkeyPatch):
+    captured_top_k: list[int] = []
+
+    def fake_retrieve_for_query(chunks, query, top_k, **kwargs):
+        captured_top_k.append(top_k)
+        return {
+            "query": query,
+            "retrieval_mode": "fake",
+            "matches": [
+                {
+                    "chunk_id": f"slot-candidate-{index}",
+                    "document": f"植物措施 乔木 灌木 第 {index} 条证据",
+                    "metadata": {"page_start": index, "page_end": index, "section": "植物措施"},
+                    "score": 1.0 / index,
+                    "retrieval_sources": ["bm25"],
+                    "source_ranks": {"bm25": index},
+                }
+                for index in range(1, 8)
+            ],
+        }
+
+    monkeypatch.setattr(review_agent_service, "retrieve_for_query", fake_retrieve_for_query)
+
+    package = review_agent_service.build_evidence_slot_package(
+        {
+            "evidence_slots": [
+                {
+                    "id": "plant_slot",
+                    "required": True,
+                    "queries": ["植物措施 乔木 灌木"],
+                }
+            ]
+        },
+        [_chunk("plant", "植物措施：乔木120株、灌木800株。")],
+        store=None,
+    )
+
+    slot = package["slots"][0]
+    assert captured_top_k == [50]
+    assert slot["candidate_top_k"] == 50
+    assert slot["final_match_limit"] == 5
+    assert slot["match_count"] == 5
+    assert slot["prompt_match_limit"] == 3
+    assert slot["min_matches"] == 1
+    assert [match["chunk_id"] for match in slot["prompt_matches"]] == [
+        "slot-candidate-1",
+        "slot-candidate-2",
+        "slot-candidate-3",
+    ]
+    assert [match["chunk_id"] for match in slot["trace_matches"]] == [
+        "slot-candidate-4",
+        "slot-candidate-5",
+    ]
+    assert [match["chunk_id"] for match in slot["matches"]] == [
+        "slot-candidate-1",
+        "slot-candidate-2",
+        "slot-candidate-3",
+        "slot-candidate-4",
+        "slot-candidate-5",
+    ]
 
 
 def test_formal_review_configured_check_item_blocks_when_required_evidence_slot_is_missing():
