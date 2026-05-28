@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
+from app.services.mineru_table_fact_service import extract_table_facts
 from app.services.review_rule_schema import build_review_rule_topics, normalize_review_rules
 
 
@@ -157,7 +158,8 @@ def run_pipeline(file_path: str, artifact_dir: str, session_id: str) -> dict[str
     blocks = parse_document(file_path)
     chunks = build_chunks(blocks)
     fallback_fields = extract_fields(chunks)
-    langextract_facts: list[dict[str, Any]] = []
+    table_facts = extract_table_facts(blocks, chunks)
+    langextract_facts: list[dict[str, Any]] = list(table_facts)
     cross_chapter_findings: list[dict[str, Any]] = []
     if settings.langextract_enabled:
         from app.services.langextract_service import (
@@ -167,13 +169,19 @@ def run_pipeline(file_path: str, artifact_dir: str, session_id: str) -> dict[str
             run_langextract,
         )
 
-        langextract_facts = run_langextract(chunks)
+        langextract_facts = [*table_facts, *run_langextract(chunks)]
         fields = facts_to_extracted_fields(langextract_facts, fallback_fields)
         fact_index = build_fact_index(langextract_facts)
         cross_chapter_findings = build_cross_chapter_findings(langextract_facts)
     else:
-        fields = fallback_fields
-        fact_index = {"fact_count": 0, "fields": [], "by_field": {}}
+        if table_facts:
+            from app.services.langextract_service import build_fact_index, facts_to_extracted_fields
+
+            fields = facts_to_extracted_fields(table_facts, fallback_fields)
+            fact_index = build_fact_index(table_facts)
+        else:
+            fields = fallback_fields
+            fact_index = {"fact_count": 0, "fields": [], "by_field": {}}
     rules = load_rule_set()
 
     artifact_path = Path(artifact_dir)
@@ -353,6 +361,7 @@ def review_rules(
             session_id,
             chunks,
             text,
+            fields,
             configured_rules,
             limit=QUICK_VALIDATION_ISSUE_COUNT - len(issues),
         )
@@ -537,6 +546,7 @@ def _issues_from_configured_rules(
     session_id: str,
     chunks: list[ReviewChunk],
     full_text: str,
+    fields: list[dict[str, Any]],
     rules: list[dict[str, Any]],
     limit: int = 12,
 ) -> list[dict[str, Any]]:
@@ -545,6 +555,12 @@ def _issues_from_configured_rules(
         return issues
     for rule in rules:
         if not isinstance(rule, dict):
+            continue
+        structured_issue = _issue_from_structured_check_item(session_id, chunks, fields, rule)
+        if structured_issue:
+            issues.append(structured_issue)
+            if len(issues) >= limit:
+                break
             continue
         target_fields = [str(item) for item in rule.get("target_fields", []) if str(item).strip()]
         if not target_fields:
@@ -585,6 +601,176 @@ def _issues_from_configured_rules(
         if len(issues) >= limit:
             break
     return issues
+
+
+def _issue_from_structured_check_item(
+    session_id: str,
+    chunks: list[ReviewChunk],
+    fields: list[dict[str, Any]],
+    rule: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not isinstance(rule.get("evidence_slots"), list) and not isinstance(rule.get("formula_checks"), list):
+        return None
+
+    from app.services.review_agent_service import build_evidence_slot_package
+    from app.services.review_formula_service import execute_formula_checks
+
+    evidence_slot_package = build_evidence_slot_package(
+        rule,
+        chunks,
+        None,
+        use_bm25=True,
+        use_neighbors=True,
+        use_rerank=False,
+    )
+    formula_check_results = execute_formula_checks(
+        [item for item in rule.get("formula_checks", []) if isinstance(item, dict)],
+        fields,
+    )
+    earthwork_audit_results = _earthwork_audit_results(rule, fields)
+    missing_slot_ids = [
+        str(slot_id)
+        for slot_id in evidence_slot_package.get("missing_required_slot_ids", [])
+        if str(slot_id).strip()
+    ]
+    formula_checks = [item for item in formula_check_results.get("checks", []) if isinstance(item, dict)]
+    failed_formula_ids = [
+        str(item.get("formula_check_id") or "")
+        for item in formula_checks
+        if item.get("status") == "fail"
+    ]
+    missing_formula_ids = [
+        str(item.get("formula_check_id") or "")
+        for item in formula_checks
+        if item.get("status") in {"missing", "unsupported"}
+    ]
+    missing_audit_ids = [
+        str(item.get("audit_check_id") or "")
+        for item in earthwork_audit_results.get("checks", [])
+        if isinstance(item, dict) and item.get("status") == "missing"
+    ]
+    if not missing_slot_ids and not failed_formula_ids and not missing_formula_ids and not missing_audit_ids:
+        return None
+
+    if missing_slot_ids or missing_formula_ids:
+        status = "needs_evidence"
+    elif failed_formula_ids:
+        status = "issue"
+    else:
+        status = "needs_evidence" if missing_audit_ids else "issue"
+    chunk = _best_chunk(chunks, _structured_issue_keywords(rule, evidence_slot_package))
+    page = chunk.page_range[0] if chunk else 1
+    evidence = chunk.text[:500] if chunk else ""
+    rule_name = str(rule.get("rule_name") or rule.get("review_sub_type") or "配置化审查项")
+    category = str(rule.get("category") or rule.get("review_type") or "配置化审查")
+    expected = str(rule.get("evidence_requirement") or rule.get("expected_result") or "应满足配置化审查要求")
+    actual_value, finding_reason = _structured_issue_reason(
+        missing_slot_ids,
+        missing_formula_ids,
+        failed_formula_ids,
+        missing_audit_ids,
+    )
+    reasoning = {
+        "issue_type": category,
+        "rule_id": str(rule.get("rule_id") or rule.get("id") or "WSB-CONFIG"),
+        "rule_name": rule_name,
+        "actual_value": actual_value,
+        "expected_value": expected,
+        "evidence_nodes": [item.get("block_id") for item in (chunk.bbox_list if chunk else [])],
+        "source_bbox_list": chunk.bbox_list if chunk else [],
+        "evidence_slot_package": evidence_slot_package,
+        "formula_check_results": formula_check_results,
+        "earthwork_audit_results": earthwork_audit_results,
+        "review_status": status,
+        "conclusion_type": status,
+    }
+    return {
+        "id": str(uuid.uuid4()),
+        "session_id": session_id,
+        "clause_text": evidence,
+        "page_number": page,
+        "paragraph_index": 0,
+        "highlight_anchor": chunk.chunk_id if chunk else f"page{page}",
+        "char_offset_start": chunk.char_start if chunk else 0,
+        "char_offset_end": chunk.char_end if chunk else len(evidence),
+        "risk_level": _severity_from_policy(str(rule.get("severity_policy") or "")) if status == "issue" else "HIGH",
+        "confidence_score": 76,
+        "source_type": "rule_engine",
+        "risk_category": category,
+        "ai_finding": f"{rule_name}：{finding_reason}，需补齐后复核。",
+        "ai_reasoning": json.dumps(reasoning, ensure_ascii=False),
+        "suggested_revision": "补齐配置项所需证据或修正文档数据后重新审查。",
+        "human_decision": "pending",
+    }
+
+
+def _earthwork_audit_results(rule: dict[str, Any], fields: list[dict[str, Any]]) -> dict[str, Any]:
+    if not _should_run_earthwork_audit(rule):
+        return {"source": "earthwork_audit", "status": "not_applicable", "check_count": 0, "missing_count": 0, "checks": []}
+    from app.services.earthwork_audit_service import execute_earthwork_audit
+
+    return execute_earthwork_audit(fields)
+
+
+def _should_run_earthwork_audit(rule: dict[str, Any]) -> bool:
+    text = " ".join(
+        str(value or "")
+        for value in [
+            rule.get("rule_id"),
+            rule.get("rule_name"),
+            rule.get("review_type"),
+            rule.get("review_sub_type"),
+            rule.get("category"),
+            rule.get("review_criteria"),
+            rule.get("expected_result"),
+        ]
+    )
+    if "土石方" in text or "表土" in text:
+        return True
+    earthwork_fields = {"excavation_volume", "fill_volume", "borrow_volume", "spoil_volume"}
+    for check in rule.get("formula_checks", []):
+        if not isinstance(check, dict):
+            continue
+        configured = set(_string_list_for_structured_rule(check.get("left_fields"))) | set(_string_list_for_structured_rule(check.get("right_fields")))
+        if configured.intersection(earthwork_fields):
+            return True
+    return False
+
+
+def _string_list_for_structured_rule(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
+
+
+def _structured_issue_reason(
+    missing_slot_ids: list[str],
+    missing_formula_ids: list[str],
+    failed_formula_ids: list[str],
+    missing_audit_ids: list[str],
+) -> tuple[str, str]:
+    if missing_slot_ids:
+        return "缺失必填 evidence_slots：" + "、".join(missing_slot_ids), "必填证据槽位缺失"
+    if missing_formula_ids:
+        return "公式校验缺少必要字段或单位不支持：" + "、".join(item for item in missing_formula_ids if item), "公式校验证据缺失"
+    if failed_formula_ids:
+        return "公式校验未通过：" + "、".join(item for item in failed_formula_ids if item), "公式校验未通过"
+    if missing_audit_ids:
+        return "土石方结构化审计缺项：" + "、".join(item for item in missing_audit_ids if item), "土石方结构化审计缺项"
+    return "配置化审查命中待复核条件", "配置化审查需复核"
+
+
+def _structured_issue_keywords(rule: dict[str, Any], evidence_slot_package: dict[str, Any]) -> list[str]:
+    keywords: list[str] = []
+    for slot in evidence_slot_package.get("slots", []):
+        if not isinstance(slot, dict):
+            continue
+        keywords.extend(str(term) for term in slot.get("matched_expected_terms", []) if str(term).strip())
+        keywords.extend(str(term) for term in slot.get("expected_terms", []) if str(term).strip())
+    keywords.extend(str(item) for item in rule.get("target_fields", []) if str(item).strip())
+    return keywords or [str(rule.get("rule_name") or rule.get("review_sub_type") or "")]
 
 
 def _severity_from_policy(policy: str) -> str:

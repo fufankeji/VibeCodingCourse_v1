@@ -338,6 +338,7 @@ def facts_to_extracted_fields(
                 "char_end": interval.get("end_pos") or 0,
             },
             "section": fact.get("section", ""),
+            "unit": fact.get("unit", ""),
             "confidence": fact.get("confidence", 80),
             "source_evidence_text": fact.get("source_text", ""),
             "source_page_number": page_range[0] if page_range else 1,
