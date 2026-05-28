@@ -32,6 +32,34 @@ def test_default_config_contains_manual_basic_and_no_synthetic_check_items(isola
     assert review_config_service.list_check_item_specs() == []
 
 
+def test_distributed_seed_config_contains_v1_evidence_slots_and_formula_checks():
+    payload = json.loads(review_config_service.CONFIG_PATH.read_text(encoding="utf-8"))
+    items = {item["id"]: item for item in payload["check_items"]}
+
+    project = items["v1-project-composition-consistency"]
+    assert project["rule_id"] == "SCMC-V1-PROJECT-COMPOSITION-001"
+    assert [slot["id"] for slot in project["evidence_slots"]] == [
+        "project_overview_content",
+        "approval_or_design_content",
+    ]
+    assert all(slot["required"] is True for slot in project["evidence_slots"])
+
+    earthwork = items["v1-earthwork-and-topsoil-balance"]
+    assert earthwork["rule_id"] == "SCMC-V1-EARTHWORK-TOPSOIL-001"
+    assert {slot["id"] for slot in earthwork["evidence_slots"]} >= {
+        "earthwork_volumes",
+        "earthwork_table",
+        "topsoil_balance",
+        "borrow_source",
+        "spoil_destination",
+        "allocation_explanation",
+    }
+    assert {check["id"] for check in earthwork["formula_checks"]} == {
+        "earthwork_total_balance",
+        "topsoil_standalone_balance",
+    }
+
+
 def test_crud_executor_type_and_check_item_via_api(isolated_config):
     app = FastAPI()
     app.include_router(api_router)

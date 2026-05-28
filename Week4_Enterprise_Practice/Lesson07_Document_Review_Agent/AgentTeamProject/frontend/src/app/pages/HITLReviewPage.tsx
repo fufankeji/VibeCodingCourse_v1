@@ -1763,7 +1763,25 @@ function RightPane({ item, conditionA, evidenceRef, sessionId, ruleTopics }: {
 
   const primaryEvidence = item.risk_evidence.find((e) => e.is_primary);
   void primaryEvidence; // used for future full-text pane integration
-  const reasoning = parseReasoning(item.ai_reasoning);
+  const parsedReasoning = parseReasoning(item.ai_reasoning);
+  const reasoning = parsedReasoning
+    ? {
+        ...parsedReasoning,
+        evidence_slot_package: item.evidence_slot_package ?? parsedReasoning.evidence_slot_package,
+        formula_check_results: item.formula_check_results ?? parsedReasoning.formula_check_results,
+        earthwork_audit_results: item.earthwork_audit_results ?? parsedReasoning.earthwork_audit_results,
+        review_status: item.review_status ?? parsedReasoning.review_status,
+        conclusion_type: item.conclusion_type ?? parsedReasoning.conclusion_type,
+      }
+    : item.evidence_slot_package || item.formula_check_results || item.earthwork_audit_results
+      ? {
+          evidence_slot_package: item.evidence_slot_package,
+          formula_check_results: item.formula_check_results,
+          earthwork_audit_results: item.earthwork_audit_results,
+          review_status: item.review_status,
+          conclusion_type: item.conclusion_type,
+        }
+      : null;
   const ruleContext = findReviewRuleContext(ruleTopics, reasoning?.rule_id, item.id);
   const isRagIssue = item.source_type === 'hybrid';
   const structuredFacts = Array.isArray(reasoning?.structured_facts) ? reasoning.structured_facts : [];
@@ -1776,6 +1794,9 @@ function RightPane({ item, conditionA, evidenceRef, sessionId, ruleTopics }: {
   const evidenceScope = reasoning?.evidence_scope || ruleContext?.checkItem.evidence_scope || {};
   const ruleExecution = reasoning?.rule_execution || (ruleContext?.checkItem.reasoning_process ? { plan: ruleContext.checkItem.reasoning_process } : null);
   const executionResult = ruleExecution?.result;
+  const evidenceSlotPackage = reasoning?.evidence_slot_package as EvidenceSlotPackage | undefined;
+  const formulaCheckResults = reasoning?.formula_check_results as FormulaCheckResults | undefined;
+  const earthworkAuditChecks = toRecordArray(reasoning?.earthwork_audit_results?.checks);
 
   return (
     <div className="p-5 space-y-4">
@@ -1921,6 +1942,29 @@ function RightPane({ item, conditionA, evidenceRef, sessionId, ruleTopics }: {
                   </div>
                 ))}
               </div>
+            )}
+            {evidenceSlotPackage && (
+              <EvidenceSlotPackagePanel
+                packageData={evidenceSlotPackage}
+                onSelectEvidenceMatch={() => undefined}
+              />
+            )}
+            {formulaCheckResults && (
+              <FormulaCheckResultsPanel results={formulaCheckResults} />
+            )}
+            {earthworkAuditChecks.length > 0 && (
+              <PreviewSection title={`土石方结构化审计 (${earthworkAuditChecks.length})`}>
+                {earthworkAuditChecks.map((check, index) => (
+                  <div key={String(check.audit_check_id || index)} className="rounded bg-slate-50 px-2 py-1.5 text-[11px] leading-4 text-slate-600">
+                    <span className="font-medium text-slate-700">{String(check.label || check.audit_check_id || '-')}</span>
+                    <span className={`ml-1 rounded px-1.5 py-0.5 text-[10px] ${statusClassName(String(check.status || ''))}`}>
+                      {String(check.status || '-')}
+                    </span>
+                    <KeyValue label="缺字段" value={toStringArray(check.missing_fields).join('、') || '-'} />
+                    <KeyValue label="来源事实" value={toStringArray(check.source_fact_ids).join('、') || '-'} />
+                  </div>
+                ))}
+              </PreviewSection>
             )}
           </div>
         ) : (

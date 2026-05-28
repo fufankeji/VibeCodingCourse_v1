@@ -17,6 +17,11 @@ interface BackendReviewItem {
   risk_category: string;
   ai_finding: string;
   ai_reasoning: string;
+  evidence_slot_package?: Record<string, unknown> | null;
+  formula_check_results?: Record<string, unknown> | null;
+  earthwork_audit_results?: Record<string, unknown> | null;
+  review_status?: string | null;
+  conclusion_type?: string | null;
   suggested_revision: string | null;
   human_decision: string;
   human_note: string | null;
@@ -50,6 +55,11 @@ function transformItem(raw: BackendReviewItem): ReviewItem {
     risk_category: raw.risk_category,
     ai_finding: raw.ai_finding,
     ai_reasoning: raw.ai_reasoning,
+    evidence_slot_package: raw.evidence_slot_package ?? null,
+    formula_check_results: raw.formula_check_results ?? null,
+    earthwork_audit_results: raw.earthwork_audit_results ?? null,
+    review_status: raw.review_status ?? null,
+    conclusion_type: raw.conclusion_type ?? null,
     suggested_revision: raw.suggested_revision ?? '',
     human_decision: mapDecision(raw.human_decision) as any,
     human_note: raw.human_note,

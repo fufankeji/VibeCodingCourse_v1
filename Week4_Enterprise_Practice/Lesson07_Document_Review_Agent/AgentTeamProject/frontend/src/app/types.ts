@@ -101,6 +101,11 @@ export interface ReviewItem {
   risk_category: string;
   ai_finding: string;
   ai_reasoning: string;
+  evidence_slot_package?: Record<string, unknown> | null;
+  formula_check_results?: Record<string, unknown> | null;
+  earthwork_audit_results?: Record<string, unknown> | null;
+  review_status?: string | null;
+  conclusion_type?: string | null;
   suggested_revision: string;
   human_decision: HumanDecision;
   human_note: string | null;

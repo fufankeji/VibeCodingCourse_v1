@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from app.schemas.item import ReviewItemResponse
 from app.services import review_agent_service
 from app.services.langextract_service import facts_to_extracted_fields
 from app.services.mineru_table_fact_service import extract_table_facts
@@ -447,3 +448,56 @@ def test_formal_review_earthwork_audit_blocks_missing_borrow_source_and_spoil_de
     assert reasoning["formula_check_results"]["checks"][0]["status"] == "pass"
     assert "borrow_source" in missing_audits
     assert "spoil_destination" in missing_audits
+
+
+def test_review_item_response_exposes_structured_review_payloads():
+    class Row:
+        id = "item-structured"
+        session_id = "session-structured"
+        clause_text = "土石方平衡证据"
+        page_number = 12
+        paragraph_index = 0
+        highlight_anchor = "chunk-1"
+        char_offset_start = 0
+        char_offset_end = 8
+        risk_level = "HIGH"
+        confidence_score = 76
+        source_type = "rule_engine"
+        risk_category = "土石方专项审查"
+        ai_finding = "土石方平衡：公式校验未通过。"
+        ai_reasoning = json.dumps(
+            {
+                "evidence_slot_package": {
+                    "source": "evidence_slots",
+                    "missing_required_slot_ids": ["topsoil_balance"],
+                },
+                "formula_check_results": {
+                    "source": "formula_checks",
+                    "checks": [{"formula_check_id": "earthwork_total_balance", "status": "fail"}],
+                },
+                "earthwork_audit_results": {
+                    "source": "earthwork_audit",
+                    "checks": [{"audit_check_id": "borrow_source", "status": "missing"}],
+                },
+                "review_status": "needs_evidence",
+                "conclusion_type": "needs_evidence",
+            },
+            ensure_ascii=False,
+        )
+        suggested_revision = "补齐证据后复核。"
+        human_decision = "pending"
+        human_note = None
+        human_edited_risk_level = None
+        human_edited_finding = None
+        is_false_positive = False
+        decided_by = None
+        decided_at = None
+        created_at = "2026-05-29T00:00:00"
+        updated_at = "2026-05-29T00:00:00"
+
+    data = ReviewItemResponse.model_validate(Row()).model_dump()
+
+    assert data["evidence_slot_package"]["missing_required_slot_ids"] == ["topsoil_balance"]
+    assert data["formula_check_results"]["checks"][0]["formula_check_id"] == "earthwork_total_balance"
+    assert data["earthwork_audit_results"]["checks"][0]["audit_check_id"] == "borrow_source"
+    assert data["review_status"] == "needs_evidence"

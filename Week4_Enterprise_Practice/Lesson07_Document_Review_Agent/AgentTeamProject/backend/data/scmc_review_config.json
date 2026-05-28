@@ -93,6 +93,203 @@
         "normalized_from_expert_brief": true
       },
       "enabled": true
+    },
+    {
+      "id": "v1-project-composition-consistency",
+      "topic_id": "scmc-003",
+      "rule_id": "SCMC-V1-PROJECT-COMPOSITION-001",
+      "executor_type_id": "cross_reference",
+      "review_type": "项目组成一致性审查",
+      "review_sub_type": "项目组成及建设内容应与立项文件或主体设计文件一致",
+      "status": "pending",
+      "conclusion": "待按 Evidence Slots 执行审查。",
+      "evidence_scope": {
+        "instructions": "读取项目概要章节的项目组成与建设内容，读取同一审查对象内已解析出的附件、立项文件或主体设计文件内容，比较两侧建设内容是否一致。",
+        "sections": ["项目概况", "项目组成", "建设内容"],
+        "attachments": ["立项文件", "初步设计批复", "主体设计文件", "设计说明"],
+        "tables": [],
+        "regulations": []
+      },
+      "target_fields": ["项目组成", "建设内容", "立项文件", "主体设计文件"],
+      "regulation_clauses": [],
+      "review_criteria": "读取项目概要章节的项目组成与建设内容，读取附件里的立项文件或所处阶段的主体设计文件内容，判断它们是否一致。缺失任一侧证据时不得给出一致性通过结论。",
+      "expected_result": "项目概要中的项目组成及建设内容应与立项文件或所处阶段的主体设计文件一致；两侧证据应可定位、可追溯。",
+      "failure_conditions": [
+        "项目概要章节未检索到项目组成或建设内容",
+        "同一审查对象内未检索到立项文件或主体设计文件建设内容",
+        "项目概要与立项或主体设计文件中的建设内容不一致"
+      ],
+      "evidence_slots": [
+        {
+          "id": "project_overview_content",
+          "label": "项目概要建设内容",
+          "required": true,
+          "min_matches": 1,
+          "queries": [
+            "项目概况 项目组成 建设内容 建设规模 总平面布置",
+            "建设内容 组成 住宅 地下车库 配套用房"
+          ],
+          "expected_terms": [],
+          "preferred_sections": ["项目概况", "项目组成", "建设内容"]
+        },
+        {
+          "id": "approval_or_design_content",
+          "label": "立项或主体设计建设内容",
+          "required": true,
+          "min_matches": 1,
+          "queries": [
+            "附件 立项文件 批复 初步设计 建设内容 建设规模",
+            "主体设计文件 立项 批复 建设内容 建筑面积"
+          ],
+          "expected_terms": [],
+          "preferred_sections": ["附件", "立项文件", "初步设计批复", "主体设计文件"]
+        }
+      ],
+      "formula_checks": [],
+      "source_rule_snapshot": {
+        "ai_or_human_source": "v1_seed_config",
+        "prd": "prd_evidence_slots_formula_checks_v1.md"
+      },
+      "enabled": true
+    },
+    {
+      "id": "v1-earthwork-and-topsoil-balance",
+      "topic_id": "scmc-002",
+      "rule_id": "SCMC-V1-EARTHWORK-TOPSOIL-001",
+      "executor_type_id": "cross_reference",
+      "review_type": "土石方专项审查",
+      "review_sub_type": "土石方平衡（含表土）完整性",
+      "status": "pending",
+      "conclusion": "待按 Evidence Slots 和 Formula Checks 执行审查。",
+      "evidence_scope": {
+        "instructions": "读取项目概要章节的土石方平衡文字和表格数据，优先使用 MinerU table html 抽取工程量，判断挖方、填方、借方、弃方、调配情况、表土单独平衡、借方来源和弃方去向是否完整。",
+        "sections": ["项目概况", "土石方平衡", "表土保护"],
+        "tables": ["土石方平衡表", "表土平衡表"],
+        "attachments": [],
+        "regulations": []
+      },
+      "target_fields": [
+        "挖方",
+        "填方",
+        "借方",
+        "弃方",
+        "调配说明",
+        "表土剥离",
+        "表土保存",
+        "表土回覆",
+        "借方来源",
+        "弃方去向"
+      ],
+      "regulation_clauses": [],
+      "review_criteria": "土石方平衡（含表土）应明确挖方、填方、借方、弃方和调配情况。表土应单独平衡。借方来源、弃方去向应明确。公式必须由程序执行，LLM 只解释 Evidence Slot Package 与 Formula Check 结果。",
+      "expected_result": "挖方、填方、借方、弃方、调配说明、表土剥离保存回覆、借方来源和弃方去向均应有可追溯证据；土石方总量平衡和表土单独平衡公式应通过或明确给出缺项/不支持单位。",
+      "failure_conditions": [
+        "缺少挖方、填方、借方或弃方任一关键工程量",
+        "土石方总量平衡公式不通过",
+        "缺少表土单独平衡证据",
+        "借方量大于0但未说明借方来源",
+        "弃方量大于0但未说明弃方去向",
+        "未说明土石方调配或综合利用情况"
+      ],
+      "evidence_slots": [
+        {
+          "id": "earthwork_volumes",
+          "label": "土石方工程量",
+          "required": true,
+          "min_matches": 1,
+          "queries": [
+            "土石方平衡 挖方 填方 借方 弃方",
+            "土石方总量 开挖 回填 外借 外弃"
+          ],
+          "expected_terms": ["挖方", "填方", "借方", "弃方"],
+          "preferred_sections": ["项目概况", "土石方平衡"]
+        },
+        {
+          "id": "earthwork_table",
+          "label": "土石方平衡表",
+          "required": true,
+          "min_matches": 1,
+          "queries": [
+            "土石方平衡表 挖方 填方 借方 弃方",
+            "表 土石方 数量 平衡 调配"
+          ],
+          "expected_terms": ["表", "挖方", "填方", "借方", "弃方"],
+          "preferred_sections": ["土石方平衡表"]
+        },
+        {
+          "id": "topsoil_balance",
+          "label": "表土单独平衡",
+          "required": true,
+          "min_matches": 1,
+          "queries": [
+            "表土 剥离 保存 回覆 平衡",
+            "表土保护 表土剥离 表土堆存 表土回填"
+          ],
+          "expected_terms": ["表土"],
+          "preferred_sections": ["表土保护", "土石方平衡"]
+        },
+        {
+          "id": "borrow_source",
+          "label": "借方来源",
+          "required": false,
+          "min_matches": 1,
+          "queries": [
+            "借方 来源 取土场 外借土石方",
+            "借方量 借方来源 合法来源 商品土"
+          ],
+          "expected_terms": [],
+          "preferred_sections": ["土石方平衡", "取土场"]
+        },
+        {
+          "id": "spoil_destination",
+          "label": "弃方去向",
+          "required": false,
+          "min_matches": 1,
+          "queries": [
+            "弃方 去向 弃土 弃渣 外运 综合利用",
+            "弃方量 弃方去向 消纳场 综合利用"
+          ],
+          "expected_terms": [],
+          "preferred_sections": ["土石方平衡", "弃渣场"]
+        },
+        {
+          "id": "allocation_explanation",
+          "label": "土石方调配说明",
+          "required": false,
+          "min_matches": 1,
+          "queries": [
+            "土石方 调配 综合利用 场内回填 外运",
+            "挖填 调配 利用 借方 弃方"
+          ],
+          "expected_terms": [],
+          "preferred_sections": ["项目概况", "土石方平衡"]
+        }
+      ],
+      "formula_checks": [
+        {
+          "id": "earthwork_total_balance",
+          "label": "土石方总量平衡",
+          "expression": "excavation_volume + borrow_volume == fill_volume + spoil_volume",
+          "left_fields": ["excavation_volume", "borrow_volume"],
+          "right_fields": ["fill_volume", "spoil_volume"],
+          "tolerance": {"type": "relative_or_absolute", "relative": 0.01, "absolute": 0.01, "unit": "万m3"},
+          "required": true
+        },
+        {
+          "id": "topsoil_standalone_balance",
+          "label": "表土单独平衡",
+          "expression": "topsoil_stripping == topsoil_backfill",
+          "left_fields": ["topsoil_stripping"],
+          "right_fields": ["topsoil_backfill"],
+          "tolerance": {"type": "relative_or_absolute", "relative": 0.01, "absolute": 0.01, "unit": "万m3"},
+          "required": true
+        }
+      ],
+      "source_rule_snapshot": {
+        "ai_or_human_source": "v1_seed_config",
+        "prd": "prd_evidence_slots_formula_checks_v1.md"
+      },
+      "enabled": true
     }
   ]
 }

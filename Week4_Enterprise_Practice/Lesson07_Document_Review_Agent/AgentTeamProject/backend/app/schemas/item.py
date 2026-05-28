@@ -1,7 +1,8 @@
 from datetime import datetime
-from typing import Optional
+import json
+from typing import Any, Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, computed_field, field_validator
 
 
 class ReviewItemResponse(BaseModel):
@@ -32,11 +33,46 @@ class ReviewItemResponse(BaseModel):
 
     model_config = {"from_attributes": True}
 
+    @computed_field
+    @property
+    def evidence_slot_package(self) -> Optional[dict[str, Any]]:
+        return _reasoning_dict(self.ai_reasoning).get("evidence_slot_package")
+
+    @computed_field
+    @property
+    def formula_check_results(self) -> Optional[dict[str, Any]]:
+        return _reasoning_dict(self.ai_reasoning).get("formula_check_results")
+
+    @computed_field
+    @property
+    def earthwork_audit_results(self) -> Optional[dict[str, Any]]:
+        return _reasoning_dict(self.ai_reasoning).get("earthwork_audit_results")
+
+    @computed_field
+    @property
+    def review_status(self) -> Optional[str]:
+        value = _reasoning_dict(self.ai_reasoning).get("review_status")
+        return str(value) if value is not None else None
+
+    @computed_field
+    @property
+    def conclusion_type(self) -> Optional[str]:
+        value = _reasoning_dict(self.ai_reasoning).get("conclusion_type")
+        return str(value) if value is not None else None
+
 
 class ReviewItemListResponse(BaseModel):
     items: list[ReviewItemResponse]
     total: int
     next_cursor: Optional[str] = None
+
+
+def _reasoning_dict(value: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 class HITLDecisionRequest(BaseModel):
