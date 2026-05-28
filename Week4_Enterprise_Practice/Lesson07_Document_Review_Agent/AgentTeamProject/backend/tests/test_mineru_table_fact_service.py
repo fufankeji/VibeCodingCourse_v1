@@ -1,7 +1,7 @@
 import json
 
 from app.config import settings
-from app.services import rag_service, water_review_service
+from app.services import rag_service, review_agent_service, review_config_service, water_review_service
 from app.services.langextract_service import facts_to_extracted_fields
 from app.services.mineru_table_fact_service import extract_table_facts
 from app.services.water_review_service import ParsedBlock, ReviewChunk
@@ -158,3 +158,146 @@ def test_run_pipeline_persists_mineru_table_facts_before_prose_fallback(tmp_path
     assert by_fact["excavation_volume"]["attributes"]["source"] == "mineru_table_html"
     assert by_fact["spoil_volume"]["block_ids"] == ["p1-b1"]
     assert by_field["excavation_volume"]["fact_id"].startswith("mineru-table-")
+
+
+def test_run_pipeline_reviews_configured_check_items_with_rag_evidence_store(tmp_path, monkeypatch):
+    source = tmp_path / "mineru.json"
+    artifact_dir = tmp_path / "artifacts"
+    vector_dir = tmp_path / "vectors"
+    source.write_text(
+        json.dumps(
+            {
+                "pdf_info": [
+                    {
+                        "page_idx": 0,
+                        "para_blocks": [
+                            {
+                                "bbox": [69, 120, 525, 168],
+                                "type": "text",
+                                "index": 1,
+                                "lines": [{"spans": [{"content": "项目概况：建设内容包括住宅楼和地下车库。"}]}],
+                            }
+                        ],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    store = object()
+    captured: dict[str, object] = {}
+
+    def fake_build_evidence_slot_package(check_item, chunks, passed_store, **kwargs):
+        captured["store"] = passed_store
+        captured["use_rerank"] = kwargs.get("use_rerank")
+        return {
+            "source": "evidence_slots",
+            "missing_required_slot_ids": ["approval_or_design_content"],
+            "slots": [],
+        }
+
+    monkeypatch.setattr(settings, "langextract_enabled", False)
+    monkeypatch.setattr(
+        rag_service,
+        "run_rag_review",
+        lambda session_id, chunks, rules, artifact_path, facts=None, findings=None: {
+            "issues": [],
+            "retrievals": [],
+            "index_manifest": {"vector_store": str(vector_dir)},
+        },
+    )
+    monkeypatch.setattr(water_review_service, "load_rule_set", lambda: [])
+    monkeypatch.setattr(water_review_service, "_pipeline_evidence_store", lambda session_id, rag_result: store)
+    monkeypatch.setattr(review_config_service, "list_check_item_specs", lambda: [
+        {
+            "rule_id": "PROJECT-COMPOSITION-PIPELINE-001",
+            "rule_name": "项目组成及建设内容一致性",
+            "category": "项目组成一致性",
+            "evidence_slots": [
+                {
+                    "id": "approval_or_design_content",
+                    "label": "立项或主体设计建设内容",
+                    "required": True,
+                    "queries": ["立项文件 主体设计 建设内容"],
+                }
+            ],
+        }
+    ])
+    monkeypatch.setattr(review_agent_service, "build_evidence_slot_package", fake_build_evidence_slot_package)
+
+    result = water_review_service.run_pipeline(str(source), str(artifact_dir), "pipeline-store-session")
+
+    assert captured == {"store": store, "use_rerank": True}
+    assert any(item["ai_finding"].startswith("项目组成及建设内容一致性") for item in result["review_items"])
+
+
+def test_run_pipeline_reviews_configured_check_items_without_rag_evidence_store(tmp_path, monkeypatch):
+    source = tmp_path / "mineru.json"
+    artifact_dir = tmp_path / "artifacts"
+    source.write_text(
+        json.dumps(
+            {
+                "pdf_info": [
+                    {
+                        "page_idx": 0,
+                        "para_blocks": [
+                            {
+                                "bbox": [69, 120, 525, 168],
+                                "type": "text",
+                                "index": 1,
+                                "lines": [{"spans": [{"content": "项目概况：建设内容包括住宅楼和地下车库。"}]}],
+                            }
+                        ],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_build_evidence_slot_package(check_item, chunks, passed_store, **kwargs):
+        captured["store"] = passed_store
+        captured["use_rerank"] = kwargs.get("use_rerank")
+        return {
+            "source": "evidence_slots",
+            "missing_required_slot_ids": ["approval_or_design_content"],
+            "slots": [],
+        }
+
+    monkeypatch.setattr(settings, "langextract_enabled", False)
+    monkeypatch.setattr(
+        rag_service,
+        "run_rag_review",
+        lambda session_id, chunks, rules, artifact_path, facts=None, findings=None: {
+            "issues": [],
+            "retrievals": [],
+            "index_manifest": {},
+        },
+    )
+    monkeypatch.setattr(water_review_service, "load_rule_set", lambda: [])
+    monkeypatch.setattr(review_config_service, "list_check_item_specs", lambda: [
+        {
+            "rule_id": "PROJECT-COMPOSITION-PIPELINE-DEGRADED",
+            "rule_name": "项目组成及建设内容一致性",
+            "category": "项目组成一致性",
+            "evidence_slots": [
+                {
+                    "id": "approval_or_design_content",
+                    "label": "立项或主体设计建设内容",
+                    "required": True,
+                    "queries": ["立项文件 主体设计 建设内容"],
+                }
+            ],
+        }
+    ])
+    monkeypatch.setattr(review_agent_service, "build_evidence_slot_package", fake_build_evidence_slot_package)
+
+    result = water_review_service.run_pipeline(str(source), str(artifact_dir), "pipeline-no-store-session")
+
+    assert captured == {"store": None, "use_rerank": False}
+    issue = next(item for item in result["review_items"] if item["ai_finding"].startswith("项目组成及建设内容一致性"))
+    reasoning = json.loads(issue["ai_reasoning"])
+    assert reasoning["retrieval_trace"]["requested_store"] is False

@@ -196,10 +196,20 @@ def run_pipeline(file_path: str, artifact_dir: str, session_id: str) -> dict[str
         facts=langextract_facts,
         findings=cross_chapter_findings,
     )
-    issues = rag_result["issues"]
     from app.services.review_config_service import list_check_item_specs
 
-    rule_topics = build_review_rule_topics(rules, issues, configured_check_items=list_check_item_specs())
+    configured_check_items = [item for item in list_check_item_specs() if item.get("enabled") is not False]
+    configured_issues = _issues_from_configured_rules(
+        session_id,
+        chunks,
+        "\n".join(chunk.text for chunk in chunks),
+        fields,
+        configured_check_items,
+        limit=len(configured_check_items),
+        evidence_store=_pipeline_evidence_store(session_id, rag_result) if configured_check_items else None,
+    )
+    issues = [*rag_result["issues"], *configured_issues]
+    rule_topics = build_review_rule_topics(rules, issues, configured_check_items=configured_check_items)
     _write_json(artifact_path / "parsed_blocks.json", [asdict(b) for b in blocks])
     _write_json(artifact_path / "review_chunks.json", [asdict(c) for c in chunks])
     _write_json(artifact_path / "extracted_fields.json", fields)
@@ -222,6 +232,21 @@ def run_pipeline(file_path: str, artifact_dir: str, session_id: str) -> dict[str
         "rag": rag_result,
         "artifact_dir": str(artifact_path),
     }
+
+
+def _pipeline_evidence_store(session_id: str, rag_result: dict[str, Any]) -> Any | None:
+    manifest = rag_result.get("index_manifest") if isinstance(rag_result, dict) else {}
+    if not isinstance(manifest, dict):
+        return None
+    vector_store = str(manifest.get("vector_store") or "").strip()
+    if not vector_store:
+        return None
+    try:
+        from app.services.rag_service import ChromaChunkStore, SiliconFlowEmbeddingProvider
+
+        return ChromaChunkStore(Path(vector_store), session_id, SiliconFlowEmbeddingProvider())
+    except Exception:
+        return None
 
 
 def parse_document(file_path: str | None = None) -> list[ParsedBlock]:
