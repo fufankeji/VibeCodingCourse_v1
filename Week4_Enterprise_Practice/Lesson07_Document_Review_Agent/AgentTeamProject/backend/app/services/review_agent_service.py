@@ -444,6 +444,7 @@ def _retrieve_single_evidence_slot(
             use_bm25=use_bm25,
             use_neighbors=use_neighbors,
             use_rerank=use_rerank,
+            rerank_top_n=EVIDENCE_SLOT_RETRIEVAL_DEFAULTS.rerank_candidate_top_n,
         )
         matches = [serialize_retrieval_match(match) for match in retrieval.get("matches", [])]
         query_results.append(

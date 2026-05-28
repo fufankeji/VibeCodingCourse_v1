@@ -35,6 +35,8 @@ def test_formula_check_converts_m3_to_wan_m3():
 
     check = result["checks"][0]
     assert check["status"] == "pass"
+    assert check["expression"] == "excavation_volume + borrow_volume == fill_volume + spoil_volume"
+    assert check["expected_relation"] == "left_equals_right"
     assert check["left_value"] == 12.0
     assert check["right_value"] == 12.0
     assert check["field_values"]["excavation_volume"]["normalized_value"] == 10.0
@@ -104,8 +106,10 @@ def test_formula_check_rejects_missing_or_unknown_units():
     )
 
     check = result["checks"][0]
-    assert check["status"] == "missing"
+    assert check["status"] == "unsupported"
     assert check["missing_fields"] == ["excavation_volume", "fill_volume"]
+    assert check["unsupported_fields"] == ["fill_volume"]
+    assert check["failure_reason"] == "unsupported_unit"
     assert check["skipped_candidates"]["excavation_volume"][0]["reason"] == "missing_unit"
     assert check["skipped_candidates"]["fill_volume"][0]["reason"] == "unsupported_unit"
 

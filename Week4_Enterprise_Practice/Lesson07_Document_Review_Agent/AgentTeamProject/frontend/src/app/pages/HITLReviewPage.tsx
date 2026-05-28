@@ -1247,7 +1247,7 @@ function RetrievalDebugPanel({
   onSelectMatch: (match: RetrievalMatch) => void;
 }) {
   const [query, setQuery] = useState('弃渣场 480m 截排水');
-  const [topK, setTopK] = useState(8);
+  const [topK, setTopK] = useState(50);
   const [useVector, setUseVector] = useState(true);
   const [useBm25, setUseBm25] = useState(true);
   const [useNeighbors, setUseNeighbors] = useState(true);
@@ -1258,6 +1258,7 @@ function RetrievalDebugPanel({
   const [expectedTerms, setExpectedTerms] = useState('');
   const canRun = query.trim().length > 0 && !isLoading && (useVector || useBm25);
   const matches = result?.matches ?? [];
+  const retrievalDefaults = (result?.trace.retrieval_defaults || result?.trace.evidence_slot_defaults || {}) as Record<string, unknown>;
   const statusClass = result?.status === 'ready'
     ? 'bg-emerald-50 text-emerald-700'
     : result?.status === 'degraded'
@@ -1326,7 +1327,7 @@ function RetrievalDebugPanel({
           <input
             type="number"
             min={1}
-            max={20}
+            max={50}
             value={topK}
             onChange={(event) => setTopK(Number(event.target.value) || 1)}
             className="h-6 w-12 rounded border border-slate-200 px-1 text-[10px] outline-none focus:border-blue-300"
@@ -1381,6 +1382,9 @@ function RetrievalDebugPanel({
           </p>
           <p>
             request: vector {result.trace.requested_use_vector ? 'on' : 'off'} · BM25 {result.trace.requested_use_bm25 ? 'on' : 'off'} · neighbor {result.trace.requested_use_neighbors ? 'on' : 'off'} · rerank {result.trace.requested_use_rerank ? 'on' : 'off'}
+          </p>
+          <p>
+            defaults: candidate {String(retrievalDefaults.candidate_top_k ?? '-')} · rerank candidates {String(retrievalDefaults.rerank_candidate_top_n ?? '-')} · final/slot {String(retrievalDefaults.final_top_k_per_slot ?? '-')}
           </p>
           {result.trace.top_k_clamped && (
             <p className="text-amber-600">top_k 已从 {result.trace.requested_top_k} 裁剪为 {result.trace.top_k}</p>
@@ -2646,7 +2650,7 @@ function EvidenceSlotCard({
 function FormulaCheckResultsPanel({ results }: { results: FormulaCheckResults }) {
   const checks = toRecordArray(results.checks);
   return (
-    <PreviewSection title={`公式校验 (${results.pass_count ?? 0} pass / ${results.fail_count ?? 0} fail / ${results.missing_count ?? 0} missing)`}>
+    <PreviewSection title={`公式校验 (${results.pass_count ?? 0} pass / ${results.fail_count ?? 0} fail / ${results.missing_count ?? 0} missing / ${results.unsupported_count ?? 0} unsupported)`}>
       {checks.length === 0 ? (
         <EmptyPreviewLine text="暂无 formula_checks" />
       ) : checks.map((check, index) => (
@@ -2668,10 +2672,13 @@ function FormulaCheckCard({ check }: { check: Record<string, unknown> }) {
           {String(check.status || '-')}
         </span>
       </div>
+      <KeyValue label="表达式" value={String(check.expression || '-')} />
+      <KeyValue label="失败原因" value={String(check.failure_reason || '-')} />
       <KeyValue label="左值" value={`${formatNullableNumber(check.left_value)} ${String(check.unit || '')}`} />
       <KeyValue label="右值" value={`${formatNullableNumber(check.right_value)} ${String(check.unit || '')}`} />
       <KeyValue label="差值" value={formatNullableNumber(check.difference)} />
       <KeyValue label="缺字段" value={toStringArray(check.missing_fields).join('、') || '-'} />
+      <KeyValue label="不支持单位字段" value={toStringArray(check.unsupported_fields).join('、') || '-'} />
       <KeyValue label="配置错误" value={toStringArray(check.config_errors).join('、') || '-'} />
       <div className="mt-1 space-y-1">
         {Object.keys(fieldValues).length === 0 ? (

@@ -43,9 +43,11 @@ def _field(field_name: str, value: str, unit: str = "万m3") -> dict:
 
 def test_evidence_slot_package_uses_shared_candidate_top_k_default(monkeypatch: pytest.MonkeyPatch):
     captured_top_k: list[int] = []
+    captured_rerank_top_n: list[int | None] = []
 
     def fake_retrieve_for_query(chunks, query, top_k, **kwargs):
         captured_top_k.append(top_k)
+        captured_rerank_top_n.append(kwargs.get("rerank_top_n"))
         return {
             "query": query,
             "retrieval_mode": "fake",
@@ -80,6 +82,7 @@ def test_evidence_slot_package_uses_shared_candidate_top_k_default(monkeypatch: 
 
     slot = package["slots"][0]
     assert captured_top_k == [50]
+    assert captured_rerank_top_n == [50]
     assert slot["candidate_top_k"] == 50
     assert slot["final_match_limit"] == 5
     assert slot["match_count"] == 5

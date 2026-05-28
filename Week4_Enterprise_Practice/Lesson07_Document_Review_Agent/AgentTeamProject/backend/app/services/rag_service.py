@@ -420,8 +420,10 @@ def retrieve_for_query(
     use_bm25: bool = True,
     use_neighbors: bool = True,
     use_rerank: bool = True,
+    rerank_top_n: int | None = None,
 ) -> dict[str, Any]:
     bm25 = BM25Index(chunks) if use_bm25 else None
+    effective_rerank_top_n = _positive_int(rerank_top_n, settings.rag_rerank_top_n)
     by_id = {_chunk_id(chunk): chunk for chunk in chunks}
     by_index = {_chunk_id(chunk): index for index, chunk in enumerate(chunks)}
     vector_matches: list[dict[str, Any]] = []
@@ -445,13 +447,13 @@ def retrieve_for_query(
             chunks,
             by_id,
             by_index,
-            limit=max(top_k, settings.rag_rerank_top_n),
+            limit=max(top_k, effective_rerank_top_n),
         )
     else:
         expanded = fused[:top_k]
     rerank_available = bool(vector_available and use_rerank and settings.siliconflow_reranker_model)
     if rerank_available:
-        matches = SiliconFlowRerankerProvider().rerank(query, expanded, top_n=min(top_k, settings.rag_rerank_top_n))
+        matches = SiliconFlowRerankerProvider().rerank(query, expanded, top_n=min(top_k, effective_rerank_top_n))
     else:
         matches = expanded[:top_k]
     matches = _with_final_ranks(matches)
@@ -463,6 +465,14 @@ def retrieve_for_query(
         "rerank_available": rerank_available,
         "retrieval_mode": _retrieval_mode(vector_available, use_bm25, use_neighbors, rerank_available),
     }
+
+
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(1, parsed)
 
 
 class BM25Index:

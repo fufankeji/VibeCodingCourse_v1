@@ -24,6 +24,7 @@ def evidence_slot_retrieval_defaults_trace() -> dict[str, int | bool]:
     defaults = asdict(EVIDENCE_SLOT_RETRIEVAL_DEFAULTS)
     applied_keys = {
         "candidate_top_k",
+        "rerank_candidate_top_n",
         "final_top_k_per_slot",
         "prompt_match_limit",
         "min_matches",

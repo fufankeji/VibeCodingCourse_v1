@@ -131,6 +131,7 @@ export interface FormulaCheckResults {
   pass_count?: number;
   fail_count?: number;
   missing_count?: number;
+  unsupported_count?: number;
   checks?: Array<Record<string, unknown>>;
 }
 

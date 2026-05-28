@@ -1211,9 +1211,11 @@ def test_preview_evidence_slot_retrieval_uses_candidate_top_k_not_rerank_top_n(
     monkeypatch: pytest.MonkeyPatch,
 ):
     captured_top_k: list[int] = []
+    captured_rerank_top_n: list[int | None] = []
 
     def fake_retrieve_for_query(chunks, query, top_k, **kwargs):
         captured_top_k.append(top_k)
+        captured_rerank_top_n.append(kwargs.get("rerank_top_n"))
         return {
             "query": query,
             "retrieval_mode": "fake",
@@ -1256,6 +1258,7 @@ def test_preview_evidence_slot_retrieval_uses_candidate_top_k_not_rerank_top_n(
 
     assert response.status_code == 200
     assert captured_top_k == [50]
+    assert captured_rerank_top_n == [50]
     assert response.json()["evidence_bundle"]["evidence_slot_package"]["missing_required_slot_ids"] == []
     assert not isolated_config.exists()
 
@@ -1389,10 +1392,10 @@ def test_retrieval_debug_can_run_evidence_slot_package(client: TestClient, monke
     assert data["trace"]["top_k"] == 50
     assert data["trace"]["slot_top_k"] == 50
     assert data["trace"]["evidence_slot_defaults"]["candidate_top_k"] == 50
+    assert data["trace"]["evidence_slot_defaults"]["rerank_candidate_top_n"] == 50
     assert data["trace"]["evidence_slot_defaults"]["final_top_k_per_slot"] == 5
     assert data["trace"]["evidence_slot_defaults"]["prompt_match_limit"] == 3
     assert data["trace"]["evidence_slot_defaults"]["min_matches"] == 1
-    assert "vector_top_k" not in data["trace"]["evidence_slot_defaults"]
     assert data["trace"]["top_k_clamped"] is False
     assert data["trace"]["requested_use_bm25"] is True
 
@@ -1404,9 +1407,11 @@ def test_retrieval_debug_query_uses_shared_default_top_k_when_omitted(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ):
     captured_top_k: list[int] = []
+    captured_rerank_top_n: list[int | None] = []
 
     def fake_retrieve_for_query(chunks, query, top_k, **kwargs):
         captured_top_k.append(top_k)
+        captured_rerank_top_n.append(kwargs.get("rerank_top_n"))
         return {
             "query": query,
             "retrieval_mode": "bm25_neighbor",
@@ -1441,8 +1446,10 @@ def test_retrieval_debug_query_uses_shared_default_top_k_when_omitted(
     assert response.status_code == 200
     data = response.json()
     assert captured_top_k == [50]
+    assert captured_rerank_top_n == [50]
     assert data["trace"]["top_k"] == 50
     assert data["trace"]["retrieval_defaults"]["candidate_top_k"] == 50
+    assert data["trace"]["retrieval_defaults"]["rerank_candidate_top_n"] == 50
     assert data["trace"]["top_k_clamped"] is False
 
 
@@ -1527,6 +1534,7 @@ def test_retrieval_debug_clamps_top_k_without_persisting(client: TestClient):
     data = response.json()
     assert data["trace"]["top_k"] == 50
     assert data["trace"]["retrieval_defaults"]["candidate_top_k"] == 50
+    assert data["trace"]["retrieval_defaults"]["rerank_candidate_top_n"] == 50
     assert data["trace"]["requested_top_k"] == 999
     assert data["trace"]["top_k_clamped"] is True
     assert data["trace"]["requested_use_rerank"] is False

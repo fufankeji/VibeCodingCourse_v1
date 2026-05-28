@@ -88,6 +88,7 @@ def run_retrieval_debug(
         use_bm25=use_bm25,
         use_neighbors=use_neighbors,
         use_rerank=use_rerank,
+        rerank_top_n=EVIDENCE_SLOT_RETRIEVAL_DEFAULTS.rerank_candidate_top_n,
     )
     status = "degraded" if use_vector and not retrieval["vector_available"] else "ready"
     return {

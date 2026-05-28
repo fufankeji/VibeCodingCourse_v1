@@ -15,6 +15,7 @@ def execute_formula_checks(formula_checks: list[dict[str, Any]], facts: list[dic
         "pass_count": sum(1 for item in results if item["status"] == "pass"),
         "fail_count": sum(1 for item in results if item["status"] == "fail"),
         "missing_count": sum(1 for item in results if item["status"] == "missing"),
+        "unsupported_count": sum(1 for item in results if item["status"] == "unsupported"),
         "checks": results,
     }
 
@@ -25,6 +26,7 @@ def _execute_single_formula_check(check: dict[str, Any], facts: list[dict[str, A
     unit = _target_unit(check)
     left_fields = _string_list(check.get("left_fields"))
     right_fields = _string_list(check.get("right_fields"))
+    expression = str(check.get("expression") or _default_expression(left_fields, right_fields))
     config_errors = _formula_config_errors(left_fields, right_fields, unit)
     required_fields = [*left_fields, *right_fields]
     resolved = {field: _field_value(field, facts, unit) for field in _unique(required_fields)}
@@ -35,9 +37,19 @@ def _execute_single_formula_check(check: dict[str, Any], facts: list[dict[str, A
         if result["skipped_candidates"]
     }
     missing_fields = [field for field, value in field_values.items() if value is None]
+    unsupported_fields = [
+        field
+        for field in missing_fields
+        if any(item.get("reason") == "unsupported_unit" for item in skipped_candidates.get(field, []))
+    ]
     tolerance = _absolute_tolerance(check)
 
     if config_errors:
+        status = "unsupported"
+        left_value = None
+        right_value = None
+        difference = None
+    elif unsupported_fields:
         status = "unsupported"
         left_value = None
         right_value = None
@@ -56,6 +68,8 @@ def _execute_single_formula_check(check: dict[str, Any], facts: list[dict[str, A
     return {
         "formula_check_id": check_id,
         "label": label,
+        "expression": expression,
+        "expected_relation": str(check.get("expected_relation") or "left_equals_right"),
         "status": status,
         "left_fields": left_fields,
         "right_fields": right_fields,
@@ -66,10 +80,37 @@ def _execute_single_formula_check(check: dict[str, Any], facts: list[dict[str, A
         "unit": unit,
         "config_errors": config_errors,
         "missing_fields": missing_fields,
+        "unsupported_fields": unsupported_fields,
+        "failure_reason": _failure_reason(status, config_errors, missing_fields, unsupported_fields),
         "field_values": {field: value for field, value in field_values.items() if value is not None},
         "skipped_candidates": skipped_candidates,
         "required": check.get("required") is True,
     }
+
+
+def _default_expression(left_fields: list[str], right_fields: list[str]) -> str:
+    if not left_fields or not right_fields:
+        return ""
+    return f"{' + '.join(left_fields)} == {' + '.join(right_fields)}"
+
+
+def _failure_reason(
+    status: str,
+    config_errors: list[str],
+    missing_fields: list[str],
+    unsupported_fields: list[str],
+) -> str:
+    if status == "pass":
+        return ""
+    if config_errors:
+        return "formula_config_error"
+    if unsupported_fields:
+        return "unsupported_unit"
+    if missing_fields:
+        return "missing_operand"
+    if status == "fail":
+        return "tolerance_exceeded"
+    return status
 
 
 def _formula_config_errors(left_fields: list[str], right_fields: list[str], unit: str) -> list[str]:
