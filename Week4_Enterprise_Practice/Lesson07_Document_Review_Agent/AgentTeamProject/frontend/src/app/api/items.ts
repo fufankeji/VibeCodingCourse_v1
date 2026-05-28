@@ -20,6 +20,7 @@ interface BackendReviewItem {
   evidence_slot_package?: Record<string, unknown> | null;
   formula_check_results?: Record<string, unknown> | null;
   earthwork_audit_results?: Record<string, unknown> | null;
+  project_composition_consistency?: Record<string, unknown> | null;
   review_status?: string | null;
   conclusion_type?: string | null;
   suggested_revision: string | null;
@@ -58,6 +59,7 @@ function transformItem(raw: BackendReviewItem): ReviewItem {
     evidence_slot_package: raw.evidence_slot_package ?? null,
     formula_check_results: raw.formula_check_results ?? null,
     earthwork_audit_results: raw.earthwork_audit_results ?? null,
+    project_composition_consistency: raw.project_composition_consistency ?? null,
     review_status: raw.review_status ?? null,
     conclusion_type: raw.conclusion_type ?? null,
     suggested_revision: raw.suggested_revision ?? '',

@@ -1770,6 +1770,7 @@ function RightPane({ item, conditionA, evidenceRef, sessionId, ruleTopics }: {
         evidence_slot_package: item.evidence_slot_package ?? parsedReasoning.evidence_slot_package,
         formula_check_results: item.formula_check_results ?? parsedReasoning.formula_check_results,
         earthwork_audit_results: item.earthwork_audit_results ?? parsedReasoning.earthwork_audit_results,
+        project_composition_consistency: item.project_composition_consistency ?? parsedReasoning.project_composition_consistency,
         review_status: item.review_status ?? parsedReasoning.review_status,
         conclusion_type: item.conclusion_type ?? parsedReasoning.conclusion_type,
       }
@@ -1778,6 +1779,7 @@ function RightPane({ item, conditionA, evidenceRef, sessionId, ruleTopics }: {
           evidence_slot_package: item.evidence_slot_package,
           formula_check_results: item.formula_check_results,
           earthwork_audit_results: item.earthwork_audit_results,
+          project_composition_consistency: item.project_composition_consistency,
           review_status: item.review_status,
           conclusion_type: item.conclusion_type,
         }
@@ -1796,6 +1798,7 @@ function RightPane({ item, conditionA, evidenceRef, sessionId, ruleTopics }: {
   const executionResult = ruleExecution?.result;
   const evidenceSlotPackage = reasoning?.evidence_slot_package as EvidenceSlotPackage | undefined;
   const formulaCheckResults = reasoning?.formula_check_results as FormulaCheckResults | undefined;
+  const projectComposition = reasoning?.project_composition_consistency as ProjectCompositionConsistency | undefined;
   const earthworkAuditChecks = toRecordArray(reasoning?.earthwork_audit_results?.checks);
 
   return (
@@ -1942,6 +1945,12 @@ function RightPane({ item, conditionA, evidenceRef, sessionId, ruleTopics }: {
                   </div>
                 ))}
               </div>
+            )}
+            {projectComposition && (
+              <ProjectCompositionComparisonPanel
+                comparison={projectComposition}
+                onSelectEvidenceMatch={() => undefined}
+              />
             )}
             {evidenceSlotPackage && (
               <EvidenceSlotPackagePanel

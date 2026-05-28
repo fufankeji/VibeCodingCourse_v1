@@ -143,6 +143,57 @@ def test_formal_review_configured_check_item_blocks_when_required_evidence_slot_
     assert reasoning["evidence_slot_package"]["slots"][1]["status"] == "missing"
 
 
+def test_formal_review_flags_project_composition_mismatch():
+    chunks = [
+        _chunk(
+            "project-body",
+            "1.1 项目概况 建设内容：项目建设内容包括住宅楼、地下车库。建设规模：总建筑面积81700.84平方米，其中地上建筑面积53250平方米，地下建筑面积28450.84平方米。",
+            section="1.1 项目概况",
+        ),
+        _chunk(
+            "project-approval",
+            "附件 初步设计批复：核定项目建筑面积为80836.65平方米，其中地上建筑面积53250平方米，地下建筑面积27586.65平方米。",
+            section="附件4 初步设计批复",
+        ),
+    ]
+    issues = review_rules(
+        "project-composition-mismatch-session",
+        chunks,
+        _empty_fields(),
+        [
+            {
+                "rule_id": "PROJECT-COMPOSITION-MISMATCH-001",
+                "rule_name": "项目组成及建设内容一致性",
+                "category": "项目组成一致性",
+                "review_type": "项目组成一致性审查",
+                "review_sub_type": "项目组成及建设内容应与立项文件或主体设计文件一致",
+                "target_fields": ["项目组成", "建设内容"],
+                "evidence_slots": [
+                    {
+                        "id": "project_overview_content",
+                        "label": "项目概要建设内容",
+                        "required": True,
+                        "queries": ["项目概况 建设内容 总建筑面积 地上建筑面积 地下建筑面积"],
+                    },
+                    {
+                        "id": "approval_or_design_content",
+                        "label": "立项或主体设计建设内容",
+                        "required": True,
+                        "queries": ["初步设计批复 项目建筑面积 地上建筑面积 地下建筑面积"],
+                    },
+                ],
+            }
+        ],
+    )
+
+    issue = next(item for item in issues if item["ai_finding"].startswith("项目组成及建设内容一致性"))
+    reasoning = json.loads(issue["ai_reasoning"])
+
+    assert reasoning["project_composition_consistency"]["status"] == "mismatch"
+    assert reasoning["review_status"] == "issue"
+    assert "项目组成一致性不通过" in issue["ai_finding"]
+
+
 def test_formal_review_structured_issue_reuses_available_store_with_rerank(monkeypatch: pytest.MonkeyPatch):
     captured: dict[str, object] = {}
     store = object()
@@ -479,6 +530,10 @@ def test_review_item_response_exposes_structured_review_payloads():
                     "source": "earthwork_audit",
                     "checks": [{"audit_check_id": "borrow_source", "status": "missing"}],
                 },
+                "project_composition_consistency": {
+                    "status": "mismatch",
+                    "field_comparisons": [{"field": "total_building_area", "status": "mismatch"}],
+                },
                 "review_status": "needs_evidence",
                 "conclusion_type": "needs_evidence",
             },
@@ -500,4 +555,5 @@ def test_review_item_response_exposes_structured_review_payloads():
     assert data["evidence_slot_package"]["missing_required_slot_ids"] == ["topsoil_balance"]
     assert data["formula_check_results"]["checks"][0]["formula_check_id"] == "earthwork_total_balance"
     assert data["earthwork_audit_results"]["checks"][0]["audit_check_id"] == "borrow_source"
+    assert data["project_composition_consistency"]["status"] == "mismatch"
     assert data["review_status"] == "needs_evidence"

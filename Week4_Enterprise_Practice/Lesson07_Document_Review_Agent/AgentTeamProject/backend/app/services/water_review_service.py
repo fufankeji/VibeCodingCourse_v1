@@ -682,6 +682,14 @@ def _issue_from_structured_check_item(
         fields,
     )
     earthwork_audit_results = _earthwork_audit_results(rule, fields)
+    from app.services.project_composition_service import analyze_project_composition_consistency
+
+    project_comparison = analyze_project_composition_consistency(chunks, rule)
+    project_comparison_status = (
+        str(project_comparison.get("status") or "")
+        if isinstance(project_comparison, dict)
+        else ""
+    )
     missing_slot_ids = [
         str(slot_id)
         for slot_id in evidence_slot_package.get("missing_required_slot_ids", [])
@@ -703,15 +711,22 @@ def _issue_from_structured_check_item(
         for item in earthwork_audit_results.get("checks", [])
         if isinstance(item, dict) and item.get("status") == "missing"
     ]
-    if not missing_slot_ids and not failed_formula_ids and not missing_formula_ids and not missing_audit_ids:
+    project_comparison_blocks = project_comparison_status in {"mismatch", "needs_review"}
+    if (
+        not missing_slot_ids
+        and not failed_formula_ids
+        and not missing_formula_ids
+        and not missing_audit_ids
+        and not project_comparison_blocks
+    ):
         return None
 
     if missing_slot_ids or missing_formula_ids:
         status = "needs_evidence"
-    elif failed_formula_ids:
+    elif failed_formula_ids or project_comparison_status == "mismatch":
         status = "issue"
     else:
-        status = "needs_evidence" if missing_audit_ids else "issue"
+        status = "needs_evidence" if missing_audit_ids or project_comparison_status == "needs_review" else "issue"
     chunk = _best_chunk(chunks, _structured_issue_keywords(rule, evidence_slot_package))
     page = chunk.page_range[0] if chunk else 1
     evidence = chunk.text[:500] if chunk else ""
@@ -723,6 +738,7 @@ def _issue_from_structured_check_item(
         missing_formula_ids,
         failed_formula_ids,
         missing_audit_ids,
+        project_comparison_status,
     )
     reasoning = {
         "issue_type": category,
@@ -736,6 +752,7 @@ def _issue_from_structured_check_item(
         "retrieval_trace": retrieval_trace,
         "formula_check_results": formula_check_results,
         "earthwork_audit_results": earthwork_audit_results,
+        "project_composition_consistency": project_comparison,
         "review_status": status,
         "conclusion_type": status,
     }
@@ -809,6 +826,7 @@ def _structured_issue_reason(
     missing_formula_ids: list[str],
     failed_formula_ids: list[str],
     missing_audit_ids: list[str],
+    project_comparison_status: str = "",
 ) -> tuple[str, str]:
     if missing_slot_ids:
         return "缺失必填 evidence_slots：" + "、".join(missing_slot_ids), "必填证据槽位缺失"
@@ -818,6 +836,10 @@ def _structured_issue_reason(
         return "公式校验未通过：" + "、".join(item for item in failed_formula_ids if item), "公式校验未通过"
     if missing_audit_ids:
         return "土石方结构化审计缺项：" + "、".join(item for item in missing_audit_ids if item), "土石方结构化审计缺项"
+    if project_comparison_status == "mismatch":
+        return "项目概要与立项或主体设计文件存在关键建设规模差异", "项目组成一致性不通过"
+    if project_comparison_status == "needs_review":
+        return "项目概要或立项/主体设计文件缺少可结构化比较字段", "项目组成一致性证据不足"
     return "配置化审查命中待复核条件", "配置化审查需复核"
 
 

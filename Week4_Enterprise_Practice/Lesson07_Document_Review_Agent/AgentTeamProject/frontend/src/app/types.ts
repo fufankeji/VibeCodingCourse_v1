@@ -104,6 +104,7 @@ export interface ReviewItem {
   evidence_slot_package?: Record<string, unknown> | null;
   formula_check_results?: Record<string, unknown> | null;
   earthwork_audit_results?: Record<string, unknown> | null;
+  project_composition_consistency?: Record<string, unknown> | null;
   review_status?: string | null;
   conclusion_type?: string | null;
   suggested_revision: string;

@@ -50,6 +50,11 @@ class ReviewItemResponse(BaseModel):
 
     @computed_field
     @property
+    def project_composition_consistency(self) -> Optional[dict[str, Any]]:
+        return _reasoning_dict(self.ai_reasoning).get("project_composition_consistency")
+
+    @computed_field
+    @property
     def review_status(self) -> Optional[str]:
         value = _reasoning_dict(self.ai_reasoning).get("review_status")
         return str(value) if value is not None else None
