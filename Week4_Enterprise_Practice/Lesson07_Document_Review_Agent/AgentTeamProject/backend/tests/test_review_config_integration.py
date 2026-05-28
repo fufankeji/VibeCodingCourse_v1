@@ -659,6 +659,218 @@ def test_preview_evidence_slot_retrieval_limits_queries_and_marks_unconfigured_s
     assert not isolated_config.exists()
 
 
+def test_preview_evidence_slot_package_separates_prompt_and_trace_matches(
+    isolated_config,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def fake_retrieve_for_query(chunks, query, top_k, **kwargs):
+        return {
+            "query": query,
+            "retrieval_mode": "fake",
+            "matches": [
+                {
+                    "chunk_id": f"slot-match-{index}",
+                    "document": f"植物措施 乔木 灌木 第 {index} 条证据",
+                    "metadata": {"page_start": index, "page_end": index, "section": "植物措施"},
+                    "score": 1.0 / index,
+                    "retrieval_sources": ["bm25"],
+                    "source_ranks": {"bm25": index},
+                }
+                for index in range(1, 6)
+            ],
+        }
+
+    monkeypatch.setattr(review_agent_service, "retrieve_for_query", fake_retrieve_for_query)
+
+    response = client.post(
+        "/api/v1/review-config/check-items/preview",
+        json={
+            "session_id": "task5-session",
+            "topic_id": "scmc-010",
+            "rule_id": "PLANT-SLOT-PROMPT-TRACE-001",
+            "executor_type_id": "evidence_presence",
+            "review_type": "证据槽位核验",
+            "review_sub_type": "槽位 prompt 与 trace 分离",
+            "target_fields": ["植物措施"],
+            "evidence_slots": [
+                {
+                    "id": "plant_prompt_trace",
+                    "label": "植物措施 prompt evidence",
+                    "required": True,
+                    "queries": ["植物措施 乔木 灌木"],
+                    "expected_terms": ["乔木", "灌木"],
+                    "min_matches": 2,
+                }
+            ],
+            "enabled": True,
+        },
+    )
+
+    assert response.status_code == 200
+    slot = response.json()["evidence_bundle"]["evidence_slot_package"]["slots"][0]
+    assert slot["status"] == "matched"
+    assert slot["min_matches"] == 2
+    assert slot["match_count"] == 5
+    assert [match["chunk_id"] for match in slot["prompt_matches"]] == [
+        "slot-match-1",
+        "slot-match-2",
+        "slot-match-3",
+    ]
+    assert [match["chunk_id"] for match in slot["trace_matches"]] == [
+        "slot-match-4",
+        "slot-match-5",
+    ]
+    assert slot["prompt_match_limit"] == 3
+    assert response.json()["evidence_bundle"]["evidence_slot_package"]["missing_required_slot_ids"] == []
+    assert not isolated_config.exists()
+
+
+def test_preview_llm_prompt_receives_only_prompt_slot_matches(
+    isolated_config,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured_prompt: dict = {}
+
+    def fake_retrieve_for_query(chunks, query, top_k, **kwargs):
+        return {
+            "query": query,
+            "retrieval_mode": "fake",
+            "matches": [
+                {
+                    "chunk_id": f"slot-prompt-{index}",
+                    "document": f"植物措施 乔木 灌木 第 {index} 条证据",
+                    "metadata": {"page_start": index, "page_end": index, "section": "植物措施"},
+                    "score": 1.0 / index,
+                    "retrieval_sources": ["bm25"],
+                    "source_ranks": {"bm25": index},
+                }
+                for index in range(1, 6)
+            ],
+        }
+
+    class CapturingLLM:
+        def invoke(self, messages):
+            captured_prompt.update(json.loads(messages[-1].content))
+
+            class Response:
+                content = json.dumps(
+                    {
+                        "status": "pass",
+                        "summary": "已基于槽位证据判断。",
+                        "actual_value": "已见乔木和灌木证据。",
+                        "expected_value": "植物措施配置完整。",
+                        "fix_suggestion": "",
+                        "confidence": 80,
+                        "next_action": "专家复核。",
+                    },
+                    ensure_ascii=False,
+                )
+
+            return Response()
+
+    monkeypatch.setattr(review_agent_service, "retrieve_for_query", fake_retrieve_for_query)
+    monkeypatch.setattr(review_agent_service, "get_llm", lambda: CapturingLLM())
+
+    response = client.post(
+        "/api/v1/review-config/check-items/preview",
+        json={
+            "session_id": "task5-session",
+            "topic_id": "scmc-010",
+            "rule_id": "PLANT-SLOT-PROMPT-BOUND-001",
+            "executor_type_id": "evidence_presence",
+            "review_type": "证据槽位核验",
+            "review_sub_type": "槽位 prompt 证据上限",
+            "target_fields": ["植物措施"],
+            "evidence_slots": [
+                {
+                    "id": "plant_prompt_bound",
+                    "required": True,
+                    "queries": ["植物措施 乔木 灌木"],
+                    "expected_terms": ["乔木", "灌木"],
+                }
+            ],
+            "enabled": True,
+        },
+    )
+
+    assert response.status_code == 200
+    api_slot = response.json()["evidence_bundle"]["evidence_slot_package"]["slots"][0]
+    prompt_slot = captured_prompt["evidence_slot_package"]["slots"][0]
+    assert len(api_slot["matches"]) == 5
+    assert [match["chunk_id"] for match in api_slot["trace_matches"]] == ["slot-prompt-4", "slot-prompt-5"]
+    assert [match["chunk_id"] for match in prompt_slot["matches"]] == [
+        "slot-prompt-1",
+        "slot-prompt-2",
+        "slot-prompt-3",
+    ]
+    assert "trace_matches" not in prompt_slot
+    assert not isolated_config.exists()
+
+
+def test_preview_required_evidence_slot_respects_min_matches(
+    isolated_config,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def fail_if_called():
+        raise AssertionError("LLM should not run when required slot has fewer matches than min_matches")
+
+    def fake_retrieve_for_query(chunks, query, top_k, **kwargs):
+        return {
+            "query": query,
+            "retrieval_mode": "fake",
+            "matches": [
+                {
+                    "chunk_id": "single-slot-match",
+                    "document": "植物措施 乔木 灌木 只有一条证据",
+                    "metadata": {"page_start": 1, "page_end": 1, "section": "植物措施"},
+                    "score": 1.0,
+                    "retrieval_sources": ["bm25"],
+                    "source_ranks": {"bm25": 1},
+                }
+            ],
+        }
+
+    monkeypatch.setattr(review_agent_service, "get_llm", fail_if_called)
+    monkeypatch.setattr(review_agent_service, "retrieve_for_query", fake_retrieve_for_query)
+
+    response = client.post(
+        "/api/v1/review-config/check-items/preview",
+        json={
+            "session_id": "task5-session",
+            "topic_id": "scmc-010",
+            "rule_id": "PLANT-SLOT-MIN-MATCHES-001",
+            "executor_type_id": "evidence_presence",
+            "review_type": "证据槽位核验",
+            "review_sub_type": "槽位最小命中数",
+            "target_fields": ["植物措施"],
+            "evidence_slots": [
+                {
+                    "id": "plant_min_matches",
+                    "required": True,
+                    "queries": ["植物措施 乔木 灌木"],
+                    "expected_terms": ["乔木", "灌木"],
+                    "min_matches": 2,
+                }
+            ],
+            "enabled": True,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    slot = data["evidence_bundle"]["evidence_slot_package"]["slots"][0]
+    assert slot["status"] == "missing"
+    assert slot["min_matches"] == 2
+    assert slot["match_count"] == 1
+    assert data["evidence_bundle"]["evidence_slot_package"]["missing_required_slot_ids"] == ["plant_min_matches"]
+    assert data["review_conclusion"]["status"] == "needs_evidence"
+    assert data["agent_trace"]["llm_skipped"] is True
+    assert not isolated_config.exists()
+
+
 def test_preview_missing_required_evidence_slot_blocks_llm_judgment(
     isolated_config,
     client: TestClient,

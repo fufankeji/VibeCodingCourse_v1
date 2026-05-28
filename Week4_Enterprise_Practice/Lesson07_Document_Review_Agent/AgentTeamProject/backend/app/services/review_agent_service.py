@@ -30,6 +30,7 @@ from app.services.water_review_service import ReviewChunk, build_chunks, parse_d
 MAX_EVIDENCE_SLOTS = 8
 MAX_EVIDENCE_SLOT_QUERIES = 3
 MAX_EVIDENCE_SLOT_QUERY_LENGTH = 240
+MAX_EVIDENCE_SLOT_PROMPT_MATCHES = 3
 
 
 class ReviewAgentBadRequest(ValueError):
@@ -103,7 +104,7 @@ def preview_check_item_with_agent(session_id: str, check_item: dict[str, Any], d
             cross_findings,
             precheck_result,
             evidence_bundle["regulation_context"],
-            evidence_bundle["evidence_slot_package"],
+            _prompt_evidence_slot_package(evidence_bundle["evidence_slot_package"]),
             evidence_bundle["formula_check_results"],
         )
         review_conclusion = _apply_formula_conclusion_guard(review_conclusion, formula_precheck)
@@ -435,21 +436,28 @@ def _retrieve_single_evidence_slot(
                 by_chunk_id[chunk_id] = match
 
     matches = list(by_chunk_id.values())
+    min_matches = _positive_int(slot.get("min_matches"), 1)
+    prompt_matches = matches[:MAX_EVIDENCE_SLOT_PROMPT_MATCHES]
+    trace_matches = matches[MAX_EVIDENCE_SLOT_PROMPT_MATCHES:]
     expected_terms = _string_list(slot.get("expected_terms"))
     haystack = "\n".join(str(match.get("text") or "") for match in matches)
     matched_terms = [term for term in expected_terms if term in haystack]
     missing_terms = [term for term in expected_terms if term not in matched_terms]
-    status = "not_configured" if not raw_queries else "matched" if matches and not missing_terms else "missing"
+    status = "not_configured" if not raw_queries else "matched" if len(matches) >= min_matches and not missing_terms else "missing"
     return {
         "slot_id": slot_id,
         "label": label,
         "required": required,
         "status": status,
+        "min_matches": min_matches,
         "queries": query_results,
         "query_count": len(query_results),
         "query_limit": MAX_EVIDENCE_SLOT_QUERIES,
         "truncated_queries": len(raw_queries) > len(queries),
         "matches": matches,
+        "prompt_matches": prompt_matches,
+        "trace_matches": trace_matches,
+        "prompt_match_limit": MAX_EVIDENCE_SLOT_PROMPT_MATCHES,
         "match_count": len(matches),
         "expected_terms": expected_terms,
         "matched_expected_terms": matched_terms,
@@ -477,6 +485,14 @@ def _string_list(value: Any) -> list[str]:
     if isinstance(value, str) and value.strip():
         return [value.strip()]
     return []
+
+
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(1, parsed)
 
 
 def _build_evidence_bundle(
@@ -678,6 +694,32 @@ def _apply_formula_conclusion_guard(
         "actual_value": review_conclusion.get("actual_value") or formula_summary,
         "next_action": review_conclusion.get("next_action") or "按公式校验结果补充或修正文档证据。",
     }
+
+
+def _prompt_evidence_slot_package(evidence_slot_package: dict[str, Any]) -> dict[str, Any]:
+    prompt_package = {key: value for key, value in evidence_slot_package.items() if key != "slots"}
+    prompt_slots: list[dict[str, Any]] = []
+    for slot in evidence_slot_package.get("slots", []):
+        if not isinstance(slot, dict):
+            continue
+        prompt_slot = {
+            key: value
+            for key, value in slot.items()
+            if key not in {"matches", "prompt_matches", "trace_matches", "queries"}
+        }
+        prompt_slot["matches"] = slot.get("prompt_matches", [])
+        prompt_slot["queries"] = [
+            {
+                key: value
+                for key, value in query.items()
+                if key != "matches"
+            }
+            for query in slot.get("queries", [])
+            if isinstance(query, dict)
+        ]
+        prompt_slots.append(prompt_slot)
+    prompt_package["slots"] = prompt_slots
+    return prompt_package
 
 
 def _regulation_context(check_item: dict[str, Any]) -> list[dict[str, Any]]:

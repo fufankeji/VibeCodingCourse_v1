@@ -2485,7 +2485,10 @@ function EvidenceSlotCard({
   onSelectEvidenceMatch: (match: RetrievalMatch) => void;
 }) {
   const matches = toRecordArray(slot.matches) as RetrievalMatch[];
+  const promptMatches = toRecordArray(slot.prompt_matches) as RetrievalMatch[];
+  const traceMatches = toRecordArray(slot.trace_matches) as RetrievalMatch[];
   const queries = toRecordArray(slot.queries);
+  const visiblePromptMatches = promptMatches.length > 0 ? promptMatches : matches.slice(0, 3);
   return (
     <div className="rounded bg-slate-50 px-2 py-1.5 text-[11px] leading-4 text-slate-600">
       <div className="mb-1 flex flex-wrap items-center gap-1.5">
@@ -2498,19 +2501,31 @@ function EvidenceSlotCard({
       </div>
       <KeyValue label="命中词" value={toStringArray(slot.matched_expected_terms).join('、') || '-'} />
       <KeyValue label="缺失词" value={toStringArray(slot.missing_expected_terms).join('、') || '-'} />
+      <KeyValue label="命中数" value={`${String(slot.match_count ?? matches.length)} / 最少 ${String(slot.min_matches ?? 1)}`} />
+      <KeyValue label="prompt" value={`${visiblePromptMatches.length} 条；trace ${traceMatches.length} 条`} />
       <KeyValue label="query" value={queries.map((item) => String(item.query || '')).filter(Boolean).join('；') || '-'} />
-      {matches.length === 0 ? (
+      {visiblePromptMatches.length === 0 ? (
         <div className="mt-1 rounded bg-white px-2 py-1 ring-1 ring-slate-100">
           <EmptyPreviewLine text="暂无命中 chunk" />
         </div>
-      ) : matches.slice(0, 3).map((match, index) => (
+      ) : visiblePromptMatches.map((match, index) => (
         <button
           key={`${match.chunk_id || index}`}
           type="button"
           onClick={() => onSelectEvidenceMatch(match)}
           className="mt-1 w-full rounded bg-white px-2 py-1 text-left text-[10px] text-slate-500 ring-1 ring-slate-100 hover:bg-blue-50 hover:ring-blue-100"
         >
-          {String(match.chunk_id || '-')} · p.{match.page || '-'} · {toStringArray(match.retrieval_sources).join('+') || '-'} · {String(match.text || '').slice(0, 90)}
+          prompt · {String(match.chunk_id || '-')} · p.{match.page || '-'} · {toStringArray(match.retrieval_sources).join('+') || '-'} · {String(match.text || '').slice(0, 90)}
+        </button>
+      ))}
+      {traceMatches.slice(0, 2).map((match, index) => (
+        <button
+          key={`trace-${match.chunk_id || index}`}
+          type="button"
+          onClick={() => onSelectEvidenceMatch(match)}
+          className="mt-1 w-full rounded bg-white/70 px-2 py-1 text-left text-[10px] text-slate-400 ring-1 ring-slate-100 hover:bg-blue-50 hover:text-slate-500 hover:ring-blue-100"
+        >
+          trace · {String(match.chunk_id || '-')} · p.{match.page || '-'} · {toStringArray(match.retrieval_sources).join('+') || '-'} · {String(match.text || '').slice(0, 90)}
         </button>
       ))}
     </div>
