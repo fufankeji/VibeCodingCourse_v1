@@ -77,6 +77,27 @@ export interface RetrievalMatch {
   [key: string]: unknown;
 }
 
+export interface ProjectCompositionSource extends RetrievalMatch {
+  material_type?: string;
+}
+
+export interface ProjectCompositionFieldComparison {
+  field?: string;
+  label?: string;
+  status?: 'match' | 'mismatch' | 'missing' | string;
+  body_value?: number | null;
+  reference_value?: number | null;
+  difference?: number | null;
+}
+
+export interface ProjectCompositionConsistency {
+  status?: 'match' | 'mismatch' | 'needs_review' | string;
+  reason?: string;
+  body_source?: ProjectCompositionSource | null;
+  reference_source?: ProjectCompositionSource | null;
+  field_comparisons?: ProjectCompositionFieldComparison[];
+}
+
 export interface PreviewAgentTrace {
   query?: string;
   retrieval_mode?: string;
@@ -100,6 +121,7 @@ export interface PreviewCheckItemResponse {
     missing_target_fields?: string[];
     structured_facts?: unknown[];
     cross_reference_findings?: unknown[];
+    project_composition_consistency?: ProjectCompositionConsistency;
     langextract_grounding?: unknown[] | Record<string, unknown>;
     regulation_context?: Array<Record<string, unknown>>;
     retrieval_score?: number;

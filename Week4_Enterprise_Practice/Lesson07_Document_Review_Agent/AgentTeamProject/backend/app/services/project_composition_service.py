@@ -160,11 +160,19 @@ def _comparison_reason(status: str) -> str:
 
 
 def _source_summary(chunk: Any, material_type: str | None = None) -> dict[str, Any]:
+    anchors = _anchors(chunk)
+    page_range = _chunk_page_range(chunk)
     return {
         "chunk_id": _chunk_id(chunk),
         "section": _chunk_section(chunk),
-        "page_range": _chunk_page_range(chunk),
+        "page": page_range[0] if page_range else None,
+        "page_end": page_range[-1] if page_range else None,
+        "primary_page": page_range[0] if page_range else None,
+        "page_range": page_range,
         "material_type": material_type or _reference_material_type(chunk),
+        "anchors": anchors,
+        "block_ids": [anchor["block_id"] for anchor in anchors if anchor.get("block_id")],
+        "bbox_count": len(anchors),
         "text": _chunk_text(chunk)[:800],
     }
 
@@ -184,6 +192,29 @@ def _chunk_section(chunk: Any) -> str:
 def _chunk_page_range(chunk: Any) -> list[int]:
     value = getattr(chunk, "page_range", []) or []
     return [int(page) for page in value]
+
+
+def _anchors(chunk: Any) -> list[dict[str, Any]]:
+    raw_bboxes = getattr(chunk, "bbox_list", []) or []
+    anchors: list[dict[str, Any]] = []
+    for raw in raw_bboxes:
+        if not isinstance(raw, dict):
+            continue
+        raw_page = raw.get("page")
+        bbox = raw.get("bbox")
+        if not isinstance(raw_page, (int, float)) or not isinstance(bbox, list):
+            continue
+        anchors.append(
+            {
+                "page": int(raw_page),
+                "block_id": raw.get("block_id"),
+                "bbox": bbox,
+                "coordinate_mode": "page_coordinate",
+                "page_width": raw.get("page_width"),
+                "page_height": raw.get("page_height"),
+            }
+        )
+    return anchors
 
 
 def _normalize_text(text: str) -> str:

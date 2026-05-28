@@ -532,8 +532,10 @@ def test_preview_project_composition_consistency_returns_structured_comparison(i
     comparison = data["evidence_bundle"]["project_composition_consistency"]
     assert comparison["status"] == "mismatch"
     assert comparison["body_source"]["chunk_id"] == "rag-project-body-001"
+    assert comparison["body_source"]["anchors"][0]["block_id"] == "p10-b01"
     assert comparison["reference_source"]["chunk_id"] == "rag-project-approval-001"
     assert comparison["reference_source"]["material_type"] == "preliminary_design_reply"
+    assert comparison["reference_source"]["anchors"][0]["block_id"] == "p136-b02"
     fields = {field["field"]: field for field in comparison["field_comparisons"]}
     assert fields["above_ground_building_area"]["status"] == "match"
     assert fields["total_building_area"]["status"] == "mismatch"

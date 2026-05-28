@@ -29,6 +29,8 @@ import {
   type ExpertReviewBrief,
   type PreviewAgentTrace,
   type PreviewCheckItemResponse,
+  type ProjectCompositionConsistency,
+  type ProjectCompositionSource,
   type RetrievalMatch,
 } from '../api/reviewConfig';
 import { subscribeSSE } from '../api/sse';
@@ -2164,6 +2166,7 @@ function PreviewResultPanel({
   const retrievalMatches = toRecordArray(evidence.retrieval_matches) as RetrievalMatch[];
   const structuredFacts = toUnknownArray(evidence.structured_facts);
   const crossReferenceFindings = toUnknownArray(evidence.cross_reference_findings);
+  const projectComposition = evidence.project_composition_consistency;
   const langextractGrounding = toUnknownArray(evidence.langextract_grounding);
   const regulationContext = toRecordArray(evidence.regulation_context);
   const checks = toRecordArray(precheck.checks);
@@ -2201,6 +2204,13 @@ function PreviewResultPanel({
         <KeyValue label="已命中" value={toStringArray(evidence.matched_target_fields).join('、') || '-'} />
         <KeyValue label="缺失字段" value={toStringArray(evidence.missing_target_fields).join('、') || '-'} />
       </PreviewSection>
+
+      {projectComposition && (
+        <ProjectCompositionComparisonPanel
+          comparison={projectComposition}
+          onSelectEvidenceMatch={onSelectEvidenceMatch}
+        />
+      )}
 
       <PreviewSection title={`RAG 证据 chunk (${retrievalMatches.length})`}>
         {retrievalMatches.length === 0 ? (
@@ -2262,6 +2272,96 @@ function PreviewResultPanel({
         ))}
       </PreviewSection>
     </div>
+  );
+}
+
+function ProjectCompositionComparisonPanel({
+  comparison,
+  onSelectEvidenceMatch,
+}: {
+  comparison: ProjectCompositionConsistency;
+  onSelectEvidenceMatch: (match: RetrievalMatch) => void;
+}) {
+  const fields = Array.isArray(comparison.field_comparisons) ? comparison.field_comparisons : [];
+  return (
+    <PreviewSection title="项目组成一致性">
+      <div className="flex flex-wrap items-center gap-2 text-[11px]">
+        <span className={`rounded px-1.5 py-0.5 text-[10px] ${statusClassName(comparison.status)}`}>
+          {comparison.status || 'needs_review'}
+        </span>
+        <span className="min-w-0 flex-1 text-slate-600">{comparison.reason || '待复核项目组成与建设内容。'}</span>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <ProjectCompositionSourceButton
+          label="正文项目概况"
+          source={comparison.body_source}
+          onSelectEvidenceMatch={onSelectEvidenceMatch}
+        />
+        <ProjectCompositionSourceButton
+          label="附件/设计文件"
+          source={comparison.reference_source}
+          onSelectEvidenceMatch={onSelectEvidenceMatch}
+        />
+      </div>
+      {fields.length === 0 ? (
+        <EmptyPreviewLine text="暂无字段级比较" />
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[420px] border-collapse text-[11px]">
+            <thead>
+              <tr className="border-b border-slate-100 text-left text-slate-400">
+                <th className="py-1 pr-2 font-medium">字段</th>
+                <th className="py-1 pr-2 font-medium">正文</th>
+                <th className="py-1 pr-2 font-medium">附件</th>
+                <th className="py-1 pr-2 font-medium">差异</th>
+                <th className="py-1 font-medium">状态</th>
+              </tr>
+            </thead>
+            <tbody>
+              {fields.map((field) => (
+                <tr key={field.field || field.label} className="border-b border-slate-50 text-slate-600">
+                  <td className="py-1 pr-2">{field.label || field.field || '-'}</td>
+                  <td className="py-1 pr-2">{formatNullableNumber(field.body_value)}</td>
+                  <td className="py-1 pr-2">{formatNullableNumber(field.reference_value)}</td>
+                  <td className="py-1 pr-2">{formatNullableNumber(field.difference)}</td>
+                  <td className="py-1">
+                    <span className={`rounded px-1.5 py-0.5 text-[10px] ${statusClassName(field.status)}`}>
+                      {field.status || '-'}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </PreviewSection>
+  );
+}
+
+function ProjectCompositionSourceButton({
+  label,
+  source,
+  onSelectEvidenceMatch,
+}: {
+  label: string;
+  source?: ProjectCompositionSource | null;
+  onSelectEvidenceMatch: (match: RetrievalMatch) => void;
+}) {
+  if (!source) {
+    return <div className="rounded bg-slate-50 px-2 py-1.5 text-[11px] text-slate-400">{label}：未定位</div>;
+  }
+  const match = source as RetrievalMatch;
+  return (
+    <button
+      type="button"
+      onClick={() => onSelectEvidenceMatch(match)}
+      className="rounded bg-slate-50 px-2 py-1.5 text-left text-[11px] leading-4 text-slate-600 ring-1 ring-transparent hover:bg-blue-50 hover:ring-blue-100"
+    >
+      <span className="block text-[10px] text-slate-400">{label} · {source.material_type || '-'}</span>
+      <span className="block font-medium text-slate-700">{String(source.chunk_id || '-')} · p.{source.page || '-'}</span>
+      <span className="line-clamp-2 break-words">{String(source.text || '')}</span>
+    </button>
   );
 }
 
@@ -2726,6 +2826,13 @@ function formatScore(value: unknown): string {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return '-';
   return numeric.toFixed(3);
+}
+
+function formatNullableNumber(value: unknown): string {
+  if (value === null || value === undefined || value === '') return '-';
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return String(value);
+  return Number.isInteger(numeric) ? String(numeric) : numeric.toFixed(2);
 }
 
 function getRetrievalContributionBadges(match: RetrievalMatch, fallbackIndex: number): string[] {
