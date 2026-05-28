@@ -14,6 +14,7 @@ from app.config import get_llm, settings
 from app.models.contract import Contract
 from app.models.session import ReviewSession
 from app.services.review_executor_service import execute_check_item_precheck
+from app.services.project_composition_service import analyze_project_composition_consistency
 from app.services.review_rule_schema import SCMC_TOPIC_SPECS, execute_rule_precheck
 from app.services.rag_service import (
     ChromaChunkStore,
@@ -59,7 +60,7 @@ def preview_check_item_with_agent(session_id: str, check_item: dict[str, Any], d
     structured_facts = retrieval.get("structured_facts", []) or []
     cross_findings = retrieval.get("cross_chapter_findings", []) or []
     rule_precheck = execute_rule_precheck(rule, evidence, structured_facts, cross_findings)
-    evidence_bundle = _build_evidence_bundle(check_item, retrieval, evidence, structured_facts, cross_findings)
+    evidence_bundle = _build_evidence_bundle(check_item, chunks, retrieval, evidence, structured_facts, cross_findings)
     executor_precheck = execute_check_item_precheck(check_item, evidence_bundle)
     precheck_result = {
         **executor_precheck,
@@ -316,6 +317,7 @@ def _retrieve_for_check_item(
 
 def _build_evidence_bundle(
     check_item: dict[str, Any],
+    chunks: list[ReviewChunk],
     retrieval: dict[str, Any],
     evidence: list[dict[str, Any]],
     structured_facts: list[dict[str, Any]],
@@ -334,7 +336,7 @@ def _build_evidence_bundle(
     matched_fields = [field for field in target_fields if field and field in haystack]
     missing_fields = [field for field in target_fields if field and field not in matched_fields]
     retrieval_matches = [serialize_retrieval_match(match) for match in evidence]
-    return {
+    bundle = {
         "evidence_texts": [item["text"] for item in retrieval_matches],
         "evidence_locations": [serialize_retrieval_location(match) for match in evidence],
         "retrieval_matches": retrieval_matches,
@@ -351,6 +353,10 @@ def _build_evidence_bundle(
         "retrieval_score": retrieval.get("candidate_score", 0),
         "source": "rag_agent",
     }
+    project_comparison = analyze_project_composition_consistency(chunks, check_item)
+    if project_comparison:
+        bundle["project_composition_consistency"] = project_comparison
+    return bundle
 
 def _regulation_context(check_item: dict[str, Any]) -> list[dict[str, Any]]:
     clauses = [str(item) for item in check_item.get("regulation_clauses", []) if str(item).strip()]

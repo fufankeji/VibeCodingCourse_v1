@@ -58,6 +58,36 @@ def _write_review_artifacts(artifact_dir: Path) -> None:
                     "char_start": 55,
                     "char_end": 90,
                 },
+                {
+                    "chunk_id": "rag-project-body-001",
+                    "text": (
+                        "1.1 项目概况 建设内容：项目建设内容包括1-5#共5栋高层住宅楼、"
+                        "1栋2层配套用房、地下2层车库及设备用房。建设规模：总建筑面积81700.84平方米，"
+                        "其中地上建筑面积53250.00平方米，地下建筑面积28450.84平方米。"
+                    ),
+                    "section": "1.1 项目概况",
+                    "page_range": [10, 11],
+                    "bbox_list": [{"block_id": "p10-b01", "page": 10, "bbox": [86.0, 120.0, 506.0, 220.0]}],
+                    "table_refs": [],
+                    "metadata": {"block_type": "text"},
+                    "char_start": 91,
+                    "char_end": 180,
+                },
+                {
+                    "chunk_id": "rag-project-approval-001",
+                    "text": (
+                        "国家新闻出版广电总局关于朝阳区百子湾职工住宅项目初步设计的批复。"
+                        "核定项目建筑面积为80836.65平方米，其中地上建筑面积53250平方米，"
+                        "地下建筑面积27586.65平方米。"
+                    ),
+                    "section": "附件4 初步设计批复",
+                    "page_range": [136, 137],
+                    "bbox_list": [{"block_id": "p136-b02", "page": 136, "bbox": [80.0, 140.0, 510.0, 260.0]}],
+                    "table_refs": [],
+                    "metadata": {"block_type": "text"},
+                    "char_start": 181,
+                    "char_end": 260,
+                },
             ],
             ensure_ascii=False,
         ),
@@ -473,6 +503,46 @@ def test_preview_check_item_uses_rag_agent_without_saving_config(isolated_config
     assert data["suggested_rule_improvements"]
     assert not isolated_config.exists()
     assert review_config_service.list_check_item_specs() == []
+
+
+def test_preview_project_composition_consistency_returns_structured_comparison(isolated_config, client: TestClient):
+    response = client.post(
+        "/api/v1/review-config/check-items/preview",
+        json={
+            "session_id": "task5-session",
+            "topic_id": "scmc-003",
+            "rule_id": "PROJECT-COMPOSITION-001",
+            "executor_type_id": "cross_reference",
+            "review_type": "项目组成一致性审查",
+            "review_sub_type": "项目组成及建设内容与立项文件一致性",
+            "evidence_scope": {
+                "sections": ["项目概况"],
+                "attachments": ["立项文件", "初步设计批复"],
+            },
+            "target_fields": ["项目组成", "建设内容", "总建筑面积", "地上建筑面积", "地下建筑面积"],
+            "review_criteria": "读取项目概要章节的项目组成与建设内容，读取附件里的立项文件内容，判断它们是否一致。",
+            "expected_result": "项目组成及建设内容应与立项文件或所处阶段的主体设计文件一致。",
+            "failure_conditions": ["正文建设规模与立项或主体设计文件不一致"],
+            "enabled": True,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    comparison = data["evidence_bundle"]["project_composition_consistency"]
+    assert comparison["status"] == "mismatch"
+    assert comparison["body_source"]["chunk_id"] == "rag-project-body-001"
+    assert comparison["reference_source"]["chunk_id"] == "rag-project-approval-001"
+    assert comparison["reference_source"]["material_type"] == "preliminary_design_reply"
+    fields = {field["field"]: field for field in comparison["field_comparisons"]}
+    assert fields["above_ground_building_area"]["status"] == "match"
+    assert fields["total_building_area"]["status"] == "mismatch"
+    assert fields["total_building_area"]["body_value"] == 81700.84
+    assert fields["total_building_area"]["reference_value"] == 80836.65
+    assert fields["underground_building_area"]["status"] == "mismatch"
+    precheck = data["precheck_result"]
+    assert precheck["project_composition_consistency"]["status"] == "mismatch"
+    assert any(check["type"] == "project_composition_consistency" for check in precheck["checks"])
 
 
 def test_retrieval_debug_returns_non_persistent_matches_with_anchors(client: TestClient):

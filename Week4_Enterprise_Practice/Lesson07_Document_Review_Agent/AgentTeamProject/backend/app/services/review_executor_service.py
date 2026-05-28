@@ -115,17 +115,30 @@ def _cross_reference_handler(check_item: dict[str, Any], evidence_bundle: dict[s
         findings = []
     evidence_texts = _evidence_texts(evidence_bundle)
     has_cross_evidence = len(evidence_texts) >= 2 or bool(findings)
+    project_comparison = evidence_bundle.get("project_composition_consistency")
+    checks = [
+        {
+            "type": "cross_reference_evidence",
+            "status": "needs_review" if has_cross_evidence else "pending",
+            "reason": "已发现跨章节/跨表证据，需要进一步判断口径是否一致。" if has_cross_evidence else "尚未提供足够跨章节证据，等待证据定位。",
+            "evidence_text_count": len(evidence_texts),
+            "finding_count": len(findings),
+        }
+    ]
+    if isinstance(project_comparison, dict):
+        comparison_status = str(project_comparison.get("status") or "needs_review")
+        checks.append(
+            {
+                "type": "project_composition_consistency",
+                "status": "pass" if comparison_status == "match" else "needs_review",
+                "reason": str(project_comparison.get("reason") or "项目组成一致性需复核。"),
+                "comparison_status": comparison_status,
+            }
+        )
     return {
         "execution_status": "needs_review",
-        "checks": [
-            {
-                "type": "cross_reference_evidence",
-                "status": "needs_review" if has_cross_evidence else "pending",
-                "reason": "已发现跨章节/跨表证据，需要进一步判断口径是否一致。" if has_cross_evidence else "尚未提供足够跨章节证据，等待证据定位。",
-                "evidence_text_count": len(evidence_texts),
-                "finding_count": len(findings),
-            }
-        ],
+        "checks": checks,
+        "project_composition_consistency": project_comparison if isinstance(project_comparison, dict) else None,
         "llm_required": True,
         "next_action": "对跨章节字段、表格和附件进行一致性复核。",
         "summary": "跨章节引用核验需要人工/LLM 进一步判断。",
