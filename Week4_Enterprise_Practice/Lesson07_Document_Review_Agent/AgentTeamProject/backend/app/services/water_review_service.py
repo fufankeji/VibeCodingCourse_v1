@@ -345,6 +345,7 @@ def review_rules(
     chunks: list[ReviewChunk],
     fields: list[dict[str, Any]],
     rules: list[dict[str, Any]] | None = None,
+    evidence_store: Any | None = None,
 ) -> list[dict[str, Any]]:
     text = "\n".join(chunk.text for chunk in chunks)
     by_name = {field["field_name"]: field for field in fields}
@@ -364,6 +365,7 @@ def review_rules(
             fields,
             configured_rules,
             limit=QUICK_VALIDATION_ISSUE_COUNT - len(issues),
+            evidence_store=evidence_store,
         )
     )
 
@@ -549,6 +551,7 @@ def _issues_from_configured_rules(
     fields: list[dict[str, Any]],
     rules: list[dict[str, Any]],
     limit: int = 12,
+    evidence_store: Any | None = None,
 ) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     if limit <= 0:
@@ -556,7 +559,7 @@ def _issues_from_configured_rules(
     for rule in rules:
         if not isinstance(rule, dict):
             continue
-        structured_issue = _issue_from_structured_check_item(session_id, chunks, fields, rule)
+        structured_issue = _issue_from_structured_check_item(session_id, chunks, fields, rule, evidence_store)
         if structured_issue:
             issues.append(structured_issue)
             if len(issues) >= limit:
@@ -608,21 +611,47 @@ def _issue_from_structured_check_item(
     chunks: list[ReviewChunk],
     fields: list[dict[str, Any]],
     rule: dict[str, Any],
+    evidence_store: Any | None = None,
 ) -> dict[str, Any] | None:
     if not isinstance(rule.get("evidence_slots"), list) and not isinstance(rule.get("formula_checks"), list):
         return None
 
     from app.services.review_agent_service import build_evidence_slot_package
     from app.services.review_formula_service import execute_formula_checks
+    from app.services.rag_service import RAGReviewError
 
-    evidence_slot_package = build_evidence_slot_package(
-        rule,
-        chunks,
-        None,
-        use_bm25=True,
-        use_neighbors=True,
-        use_rerank=False,
-    )
+    retrieval_trace = {
+        "requested_store": evidence_store is not None,
+        "used_store": evidence_store is not None,
+        "degraded": False,
+        "reason_type": "",
+    }
+    try:
+        evidence_slot_package = build_evidence_slot_package(
+            rule,
+            chunks,
+            evidence_store,
+            use_bm25=True,
+            use_neighbors=True,
+            use_rerank=evidence_store is not None,
+        )
+    except RAGReviewError as exc:
+        if evidence_store is None or not _is_vector_retrieval_failure(exc):
+            raise
+        retrieval_trace = {
+            "requested_store": True,
+            "used_store": False,
+            "degraded": True,
+            "reason_type": "vector_retrieval_failed",
+        }
+        evidence_slot_package = build_evidence_slot_package(
+            rule,
+            chunks,
+            None,
+            use_bm25=True,
+            use_neighbors=True,
+            use_rerank=False,
+        )
     formula_check_results = execute_formula_checks(
         [item for item in rule.get("formula_checks", []) if isinstance(item, dict)],
         fields,
@@ -679,6 +708,7 @@ def _issue_from_structured_check_item(
         "evidence_nodes": [item.get("block_id") for item in (chunk.bbox_list if chunk else [])],
         "source_bbox_list": chunk.bbox_list if chunk else [],
         "evidence_slot_package": evidence_slot_package,
+        "retrieval_trace": retrieval_trace,
         "formula_check_results": formula_check_results,
         "earthwork_audit_results": earthwork_audit_results,
         "review_status": status,
@@ -702,6 +732,10 @@ def _issue_from_structured_check_item(
         "suggested_revision": "补齐配置项所需证据或修正文档数据后重新审查。",
         "human_decision": "pending",
     }
+
+
+def _is_vector_retrieval_failure(exc: Exception) -> bool:
+    return str(exc).startswith("vector retrieval failed:")
 
 
 def _earthwork_audit_results(rule: dict[str, Any], fields: list[dict[str, Any]]) -> dict[str, Any]:

@@ -142,6 +142,140 @@ def test_formal_review_configured_check_item_blocks_when_required_evidence_slot_
     assert reasoning["evidence_slot_package"]["slots"][1]["status"] == "missing"
 
 
+def test_formal_review_structured_issue_reuses_available_store_with_rerank(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, object] = {}
+    store = object()
+
+    def fake_build_evidence_slot_package(check_item, chunks, passed_store, **kwargs):
+        captured["store"] = passed_store
+        captured["use_rerank"] = kwargs.get("use_rerank")
+        return {
+            "source": "evidence_slots",
+            "missing_required_slot_ids": ["approval_or_design_content"],
+            "slots": [
+                {
+                    "slot_id": "approval_or_design_content",
+                    "required": True,
+                    "status": "missing",
+                    "matches": [],
+                }
+            ],
+        }
+
+    monkeypatch.setattr(review_agent_service, "build_evidence_slot_package", fake_build_evidence_slot_package)
+
+    issues = review_rules(
+        "slot-vector-session",
+        [_chunk("project-overview", "项目概况：建设内容包括住宅楼和地下车库。")],
+        _empty_fields(),
+        [
+            {
+                "rule_id": "PROJECT-COMPOSITION-VECTOR-001",
+                "rule_name": "项目组成及建设内容一致性",
+                "category": "项目组成一致性",
+                "evidence_slots": [
+                    {
+                        "id": "approval_or_design_content",
+                        "label": "立项或主体设计建设内容",
+                        "required": True,
+                        "queries": ["立项文件 主体设计 建设内容"],
+                        "expected_terms": ["立项文件"],
+                    }
+                ],
+            }
+        ],
+        evidence_store=store,
+    )
+
+    assert captured == {"store": store, "use_rerank": True}
+    issue = next(item for item in issues if item["ai_finding"].startswith("项目组成及建设内容一致性"))
+    reasoning = json.loads(issue["ai_reasoning"])
+    assert reasoning["evidence_slot_package"]["missing_required_slot_ids"] == ["approval_or_design_content"]
+
+
+def test_formal_review_structured_issue_falls_back_when_store_is_unavailable():
+    class UnavailableStore:
+        def query(self, query, top_k):
+            raise RuntimeError("vector store unavailable")
+
+    issues = review_rules(
+        "slot-unavailable-store-session",
+        [_chunk("project-overview", "项目概况：建设内容包括住宅楼和地下车库。")],
+        _empty_fields(),
+        [
+            {
+                "rule_id": "PROJECT-COMPOSITION-DEGRADED-001",
+                "rule_name": "项目组成及建设内容一致性",
+                "category": "项目组成一致性",
+                "evidence_slots": [
+                    {
+                        "id": "approval_or_design_content",
+                        "label": "立项或主体设计建设内容",
+                        "required": True,
+                        "queries": ["立项文件 主体设计 建设内容"],
+                        "expected_terms": ["立项文件"],
+                    }
+                ],
+            }
+        ],
+        evidence_store=UnavailableStore(),
+    )
+
+    issue = next(item for item in issues if item["ai_finding"].startswith("项目组成及建设内容一致性"))
+    reasoning = json.loads(issue["ai_reasoning"])
+    assert reasoning["review_status"] == "needs_evidence"
+    assert reasoning["retrieval_trace"] == {
+        "requested_store": True,
+        "used_store": False,
+        "degraded": True,
+        "reason_type": "vector_retrieval_failed",
+    }
+    assert reasoning["evidence_slot_package"]["missing_required_slot_ids"] == ["approval_or_design_content"]
+
+
+def test_formal_review_structured_issue_does_not_swallow_non_vector_rag_error(monkeypatch: pytest.MonkeyPatch):
+    from app.services.rag_service import RAGReviewError
+
+    store = object()
+    calls: list[object] = []
+
+    def fake_build_evidence_slot_package(check_item, chunks, passed_store, **kwargs):
+        calls.append(passed_store)
+        if len(calls) == 1:
+            raise RAGReviewError("SiliconFlow reranker response shape is invalid")
+        return {
+            "source": "evidence_slots",
+            "missing_required_slot_ids": ["approval_or_design_content"],
+            "slots": [],
+        }
+
+    monkeypatch.setattr(review_agent_service, "build_evidence_slot_package", fake_build_evidence_slot_package)
+
+    with pytest.raises(RAGReviewError, match="reranker"):
+        review_rules(
+            "slot-rerank-error-session",
+            [_chunk("project-overview", "项目概况：建设内容包括住宅楼和地下车库。")],
+            _empty_fields(),
+            [
+                {
+                    "rule_id": "PROJECT-COMPOSITION-RERANK-ERROR",
+                    "rule_name": "项目组成及建设内容一致性",
+                    "category": "项目组成一致性",
+                    "evidence_slots": [
+                        {
+                            "id": "approval_or_design_content",
+                            "label": "立项或主体设计建设内容",
+                            "required": True,
+                            "queries": ["立项文件 主体设计 建设内容"],
+                        }
+                    ],
+                }
+            ],
+            evidence_store=store,
+        )
+    assert calls == [store]
+
+
 def test_formal_review_configured_formula_missing_fields_is_needs_evidence():
     fields = [
         *_empty_fields(),
