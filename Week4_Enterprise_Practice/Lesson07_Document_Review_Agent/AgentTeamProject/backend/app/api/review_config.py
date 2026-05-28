@@ -35,6 +35,8 @@ class CheckItemPayload(BaseModel):
     review_criteria: Optional[str] = None
     expected_result: Optional[str] = None
     failure_conditions: Optional[list[str]] = Field(default_factory=list)
+    evidence_slots: Optional[list[dict[str, Any]]] = Field(default_factory=list)
+    formula_checks: Optional[list[dict[str, Any]]] = Field(default_factory=list)
     source_rule_snapshot: Optional[dict[str, Any]] = Field(default_factory=dict)
     expert_brief: Optional[dict[str, Any]] = None
     enabled: Optional[bool] = True

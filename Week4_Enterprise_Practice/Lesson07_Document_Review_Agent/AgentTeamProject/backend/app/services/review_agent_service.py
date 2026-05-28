@@ -15,15 +15,21 @@ from app.models.contract import Contract
 from app.models.session import ReviewSession
 from app.services.review_executor_service import execute_check_item_precheck
 from app.services.project_composition_service import analyze_project_composition_consistency
+from app.services.review_formula_service import execute_formula_checks
 from app.services.review_rule_schema import SCMC_TOPIC_SPECS, execute_rule_precheck
 from app.services.rag_service import (
     ChromaChunkStore,
     RAGReviewError,
     SiliconFlowEmbeddingProvider,
+    retrieve_for_query,
     retrieve_for_rules,
 )
 from app.services.retrieval_match_serializer import serialize_retrieval_location, serialize_retrieval_match
 from app.services.water_review_service import ReviewChunk, build_chunks, parse_document
+
+MAX_EVIDENCE_SLOTS = 8
+MAX_EVIDENCE_SLOT_QUERIES = 3
+MAX_EVIDENCE_SLOT_QUERY_LENGTH = 240
 
 
 class ReviewAgentBadRequest(ValueError):
@@ -36,7 +42,7 @@ class ReviewAgentUnavailable(RuntimeError):
 
 def preview_check_item_with_agent(session_id: str, check_item: dict[str, Any], db: Session) -> dict[str, Any]:
     """Run a non-persistent RAG + LLM preview for a draft review check item."""
-    _ensure_agent_dependencies()
+    _ensure_retrieval_dependencies()
     session = db.query(ReviewSession).filter(ReviewSession.id == session_id).first()
     if not session:
         raise ReviewAgentBadRequest("当前 session 不存在")
@@ -53,27 +59,54 @@ def preview_check_item_with_agent(session_id: str, check_item: dict[str, Any], d
     findings = _load_json_list(artifact_dir / "cross_chapter_findings.json")
     rule = _check_item_to_agent_rule(check_item)
     try:
-        retrieval = _retrieve_for_check_item(session_id, chunks, rule, facts, findings)
+        store = _build_chunk_store(session_id, chunks)
+        retrieval = _retrieve_for_check_item(store, chunks, rule, facts, findings)
+        evidence_slot_package = _retrieve_evidence_slot_package(check_item, chunks, store)
     except RAGReviewError as exc:
         raise ReviewAgentUnavailable(f"RAG 召回失败: {exc}") from exc
     evidence = retrieval.get("matches", [])[:8]
     structured_facts = retrieval.get("structured_facts", []) or []
     cross_findings = retrieval.get("cross_chapter_findings", []) or []
     rule_precheck = execute_rule_precheck(rule, evidence, structured_facts, cross_findings)
-    evidence_bundle = _build_evidence_bundle(check_item, chunks, retrieval, evidence, structured_facts, cross_findings)
+    evidence_bundle = _build_evidence_bundle(
+        check_item,
+        chunks,
+        retrieval,
+        evidence,
+        structured_facts,
+        facts,
+        cross_findings,
+        evidence_slot_package,
+    )
     executor_precheck = execute_check_item_precheck(check_item, evidence_bundle)
     precheck_result = {
         **executor_precheck,
         "rule_execution_result": rule_precheck,
     }
-    review_conclusion = _call_preview_llm(
-        rule,
-        evidence,
-        structured_facts,
-        cross_findings,
-        precheck_result,
-        evidence_bundle["regulation_context"],
-    )
+    formula_precheck = _formula_precheck(evidence_bundle["formula_check_results"])
+    if formula_precheck:
+        precheck_result = _apply_formula_precheck(
+            precheck_result,
+            formula_precheck,
+            evidence_bundle["formula_check_results"],
+        )
+    evidence_slot_blocker = _evidence_slot_blocker(evidence_slot_package)
+    if evidence_slot_blocker:
+        precheck_result = _apply_evidence_slot_blocker(precheck_result, evidence_slot_blocker)
+        review_conclusion = _missing_evidence_review_conclusion(evidence_slot_blocker)
+    else:
+        _ensure_llm_dependencies()
+        review_conclusion = _call_preview_llm(
+            rule,
+            evidence,
+            structured_facts,
+            cross_findings,
+            precheck_result,
+            evidence_bundle["regulation_context"],
+            evidence_bundle["evidence_slot_package"],
+            evidence_bundle["formula_check_results"],
+        )
+        review_conclusion = _apply_formula_conclusion_guard(review_conclusion, formula_precheck)
     return {
         "check_item": check_item,
         "evidence_bundle": evidence_bundle,
@@ -90,13 +123,17 @@ def preview_check_item_with_agent(session_id: str, check_item: dict[str, Any], d
             "facts_available": bool(facts),
             "cross_chapter_findings_available": bool(findings),
             "vector_store": str(Path(settings.storage_path) / "vector_stores" / "water_review" / session_id),
+            "llm_skipped": bool(evidence_slot_blocker),
         },
     }
 
 
-def _ensure_agent_dependencies() -> None:
+def _ensure_retrieval_dependencies() -> None:
     if not settings.siliconflow_api_key:
         raise ReviewAgentUnavailable("SILICONFLOW_API_KEY 缺失，无法执行向量召回")
+
+
+def _ensure_llm_dependencies() -> None:
     if not (settings.review_llm_api_key or settings.deepseek_api_key):
         raise ReviewAgentUnavailable("REVIEW_LLM_API_KEY 或 DEEPSEEK_API_KEY 缺失，无法执行 LLM 试审")
 
@@ -300,19 +337,146 @@ def _review_logic_from_snapshot(source_snapshot: dict[str, Any]) -> list[dict[st
     return []
 
 
+def _build_chunk_store(session_id: str, chunks: list[ReviewChunk]) -> ChromaChunkStore:
+    vector_dir = Path(settings.storage_path) / "vector_stores" / "water_review" / session_id
+    vector_dir.mkdir(parents=True, exist_ok=True)
+    store = ChromaChunkStore(vector_dir, session_id, SiliconFlowEmbeddingProvider())
+    store.rebuild(chunks)
+    return store
+
+
 def _retrieve_for_check_item(
-    session_id: str,
+    store: ChromaChunkStore,
     chunks: list[ReviewChunk],
     rule: dict[str, Any],
     facts: list[dict[str, Any]],
     findings: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    vector_dir = Path(settings.storage_path) / "vector_stores" / "water_review" / session_id
-    vector_dir.mkdir(parents=True, exist_ok=True)
-    store = ChromaChunkStore(vector_dir, session_id, SiliconFlowEmbeddingProvider())
-    store.rebuild(chunks)
     retrievals = retrieve_for_rules(store, chunks, [rule], top_k=settings.rag_top_k, facts=facts, findings=findings)
     return retrievals[0] if retrievals else {"matches": [], "query": ""}
+
+
+def _retrieve_evidence_slot_package(
+    check_item: dict[str, Any],
+    chunks: list[ReviewChunk],
+    store: ChromaChunkStore,
+) -> dict[str, Any]:
+    raw_slots = [slot for slot in check_item.get("evidence_slots", []) if isinstance(slot, dict)]
+    slots = raw_slots[:MAX_EVIDENCE_SLOTS]
+    if not slots:
+        return {
+            "source": "evidence_slots",
+            "slot_count": 0,
+            "required_slot_count": 0,
+            "matched_required_slot_count": 0,
+            "missing_required_slot_ids": [],
+            "truncated": len(raw_slots) > MAX_EVIDENCE_SLOTS,
+            "slot_limit": MAX_EVIDENCE_SLOTS,
+            "slots": [],
+        }
+
+    packaged_slots = [_retrieve_single_evidence_slot(slot, chunks, store) for slot in slots]
+    truncated_required_slot_ids = [
+        _slot_id(slot)
+        for slot in raw_slots[MAX_EVIDENCE_SLOTS:]
+        if slot.get("required") is True
+    ]
+    required_slots = [slot for slot in packaged_slots if slot["required"]]
+    missing_required_slot_ids = [
+        *[slot["slot_id"] for slot in required_slots if slot["status"] != "matched"],
+        *truncated_required_slot_ids,
+    ]
+    return {
+        "source": "evidence_slots",
+        "slot_count": len(packaged_slots),
+        "required_slot_count": len(required_slots) + len(truncated_required_slot_ids),
+        "matched_required_slot_count": sum(1 for slot in required_slots if slot["status"] == "matched"),
+        "missing_required_slot_ids": missing_required_slot_ids,
+        "truncated": len(raw_slots) > len(slots),
+        "slot_limit": MAX_EVIDENCE_SLOTS,
+        "truncated_required_slot_ids": truncated_required_slot_ids,
+        "slots": packaged_slots,
+    }
+
+
+def _retrieve_single_evidence_slot(
+    slot: dict[str, Any],
+    chunks: list[ReviewChunk],
+    store: ChromaChunkStore,
+) -> dict[str, Any]:
+    slot_id = _slot_id(slot)
+    label = str(slot.get("label") or slot_id)
+    required = slot.get("required") is True
+    raw_queries = _slot_queries(slot)
+    queries = raw_queries[:MAX_EVIDENCE_SLOT_QUERIES]
+    query_results: list[dict[str, Any]] = []
+    by_chunk_id: dict[str, dict[str, Any]] = {}
+    for query in queries:
+        retrieval = retrieve_for_query(
+            chunks,
+            query,
+            top_k=settings.rag_top_k,
+            store=store,
+            use_bm25=True,
+            use_neighbors=True,
+            use_rerank=True,
+        )
+        matches = [serialize_retrieval_match(match) for match in retrieval.get("matches", [])]
+        query_results.append(
+            {
+                "query": query,
+                "retrieval_mode": retrieval.get("retrieval_mode", ""),
+                "matches": matches,
+            }
+        )
+        for match in matches:
+            chunk_id = str(match.get("chunk_id") or "")
+            if chunk_id and chunk_id not in by_chunk_id:
+                by_chunk_id[chunk_id] = match
+
+    matches = list(by_chunk_id.values())
+    expected_terms = _string_list(slot.get("expected_terms"))
+    haystack = "\n".join(str(match.get("text") or "") for match in matches)
+    matched_terms = [term for term in expected_terms if term in haystack]
+    missing_terms = [term for term in expected_terms if term not in matched_terms]
+    status = "not_configured" if not raw_queries else "matched" if matches and not missing_terms else "missing"
+    return {
+        "slot_id": slot_id,
+        "label": label,
+        "required": required,
+        "status": status,
+        "queries": query_results,
+        "query_count": len(query_results),
+        "query_limit": MAX_EVIDENCE_SLOT_QUERIES,
+        "truncated_queries": len(raw_queries) > len(queries),
+        "matches": matches,
+        "match_count": len(matches),
+        "expected_terms": expected_terms,
+        "matched_expected_terms": matched_terms,
+        "missing_expected_terms": missing_terms,
+        "preferred_sections": _string_list(slot.get("preferred_sections")),
+    }
+
+
+def _slot_queries(slot: dict[str, Any]) -> list[str]:
+    queries: list[str] = []
+    for query in _string_list(slot.get("queries")):
+        trimmed = query[:MAX_EVIDENCE_SLOT_QUERY_LENGTH].strip()
+        if trimmed:
+            queries.append(trimmed)
+    return queries
+
+
+def _slot_id(slot: dict[str, Any]) -> str:
+    return str(slot.get("id") or slot.get("slot_id") or "").strip() or "unnamed_slot"
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
 
 
 def _build_evidence_bundle(
@@ -321,7 +485,9 @@ def _build_evidence_bundle(
     retrieval: dict[str, Any],
     evidence: list[dict[str, Any]],
     structured_facts: list[dict[str, Any]],
+    facts: list[dict[str, Any]],
     cross_findings: list[dict[str, Any]],
+    evidence_slot_package: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     target_fields = [str(item) for item in check_item.get("target_fields", []) if str(item).strip()]
     evidence_text = "\n".join(str(match.get("document", "")) for match in evidence)
@@ -336,10 +502,23 @@ def _build_evidence_bundle(
     matched_fields = [field for field in target_fields if field and field in haystack]
     missing_fields = [field for field in target_fields if field and field not in matched_fields]
     retrieval_matches = [serialize_retrieval_match(match) for match in evidence]
+    formula_check_results = execute_formula_checks(
+        [item for item in check_item.get("formula_checks", []) if isinstance(item, dict)],
+        _formula_facts(check_item, facts, structured_facts),
+    )
     bundle = {
         "evidence_texts": [item["text"] for item in retrieval_matches],
         "evidence_locations": [serialize_retrieval_location(match) for match in evidence],
         "retrieval_matches": retrieval_matches,
+        "evidence_slot_package": evidence_slot_package or {
+            "source": "evidence_slots",
+            "slot_count": 0,
+            "required_slot_count": 0,
+            "matched_required_slot_count": 0,
+            "missing_required_slot_ids": [],
+            "slots": [],
+        },
+        "formula_check_results": formula_check_results,
         "matched_target_fields": matched_fields,
         "missing_target_fields": missing_fields,
         "structured_facts": structured_facts,
@@ -357,6 +536,149 @@ def _build_evidence_bundle(
     if project_comparison:
         bundle["project_composition_consistency"] = project_comparison
     return bundle
+
+
+def _formula_facts(
+    check_item: dict[str, Any],
+    facts: list[dict[str, Any]],
+    structured_facts: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    configured_fields: set[str] = set()
+    for check in check_item.get("formula_checks", []):
+        if not isinstance(check, dict):
+            continue
+        configured_fields.update(_string_list(check.get("left_fields")))
+        configured_fields.update(_string_list(check.get("right_fields")))
+    if not configured_fields:
+        return structured_facts
+
+    selected: list[dict[str, Any]] = []
+    seen_ids: set[int] = set()
+    for fact in [*facts, *structured_facts]:
+        if not isinstance(fact, dict):
+            continue
+        if str(fact.get("field_name") or "") not in configured_fields:
+            continue
+        identity = id(fact)
+        if identity in seen_ids:
+            continue
+        seen_ids.add(identity)
+        selected.append(fact)
+    return selected
+
+
+def _evidence_slot_blocker(evidence_slot_package: dict[str, Any]) -> dict[str, Any] | None:
+    missing_slot_ids = [
+        str(slot_id)
+        for slot_id in evidence_slot_package.get("missing_required_slot_ids", [])
+        if str(slot_id).strip()
+    ]
+    if not missing_slot_ids:
+        return None
+    return {
+        "type": "evidence_slot_required_presence",
+        "status": "needs_evidence",
+        "reason": "必填证据槽位未命中，已跳过 LLM 试审判断。",
+        "missing_required_slot_ids": missing_slot_ids,
+    }
+
+
+def _apply_evidence_slot_blocker(
+    precheck_result: dict[str, Any],
+    blocker: dict[str, Any],
+) -> dict[str, Any]:
+    checks = precheck_result.get("checks")
+    if not isinstance(checks, list):
+        checks = []
+    return {
+        **precheck_result,
+        "execution_status": "needs_evidence",
+        "checks": [*checks, blocker],
+        "llm_required": False,
+        "next_action": "先补齐必填证据槽位，再执行 LLM 试审判断。",
+        "summary": "必填证据槽位缺失，Rule Preview 已阻断判断。",
+        "evidence_slot_precheck": blocker,
+    }
+
+
+def _formula_precheck(formula_check_results: dict[str, Any]) -> dict[str, Any] | None:
+    checks = [item for item in formula_check_results.get("checks", []) if isinstance(item, dict)]
+    if not checks:
+        return None
+    failed_ids = [str(item.get("formula_check_id") or "") for item in checks if item.get("status") == "fail"]
+    missing_ids = [str(item.get("formula_check_id") or "") for item in checks if item.get("status") == "missing"]
+    unsupported_ids = [str(item.get("formula_check_id") or "") for item in checks if item.get("status") == "unsupported"]
+    if failed_ids:
+        status = "issue"
+        reason = "公式校验未通过，程序计算结果已约束审查结论。"
+    elif missing_ids or unsupported_ids:
+        status = "needs_evidence"
+        reason = "公式校验缺少必要字段或配置不支持，需补齐后再判断。"
+    else:
+        status = "pass"
+        reason = "公式校验通过。"
+    return {
+        "type": "formula_checks",
+        "status": status,
+        "reason": reason,
+        "failed_formula_check_ids": [item for item in failed_ids if item],
+        "missing_formula_check_ids": [item for item in missing_ids if item],
+        "unsupported_formula_check_ids": [item for item in unsupported_ids if item],
+        "check_count": len(checks),
+    }
+
+
+def _apply_formula_precheck(
+    precheck_result: dict[str, Any],
+    formula_precheck: dict[str, Any],
+    formula_check_results: dict[str, Any],
+) -> dict[str, Any]:
+    checks = precheck_result.get("checks")
+    if not isinstance(checks, list):
+        checks = []
+    execution_status = precheck_result.get("execution_status")
+    if formula_precheck["status"] in {"issue", "needs_evidence"}:
+        execution_status = formula_precheck["status"]
+    return {
+        **precheck_result,
+        "execution_status": execution_status,
+        "checks": [*checks, formula_precheck],
+        "formula_precheck": formula_precheck,
+        "formula_check_results": formula_check_results,
+    }
+
+
+def _missing_evidence_review_conclusion(blocker: dict[str, Any]) -> dict[str, Any]:
+    missing_slot_ids = blocker.get("missing_required_slot_ids", [])
+    return {
+        "status": "needs_evidence",
+        "summary": "必填证据槽位缺失，未执行 LLM 试审判断。",
+        "actual_value": f"缺失证据槽位：{'、'.join(missing_slot_ids)}" if missing_slot_ids else "",
+        "expected_value": "补齐必填 evidence_slots 后再判断规则是否通过。",
+        "fix_suggestion": "调整 evidence_slots.queries 或补充解析/索引内容后重新试审。",
+        "confidence": 0,
+        "next_action": "补齐必填证据槽位。",
+        "llm_required": False,
+    }
+
+
+def _apply_formula_conclusion_guard(
+    review_conclusion: dict[str, Any],
+    formula_precheck: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not formula_precheck or formula_precheck.get("status") == "pass":
+        return review_conclusion
+    deterministic_status = str(formula_precheck.get("status") or "needs_review")
+    summary = str(review_conclusion.get("summary") or "")
+    formula_summary = str(formula_precheck.get("reason") or "")
+    return {
+        **review_conclusion,
+        "status": deterministic_status,
+        "summary": f"{formula_summary} {summary}".strip(),
+        "actual_value": review_conclusion.get("actual_value") or formula_summary,
+        "next_action": review_conclusion.get("next_action") or "按公式校验结果补充或修正文档证据。",
+    }
+
 
 def _regulation_context(check_item: dict[str, Any]) -> list[dict[str, Any]]:
     clauses = [str(item) for item in check_item.get("regulation_clauses", []) if str(item).strip()]
@@ -386,6 +708,8 @@ def _call_preview_llm(
     cross_findings: list[dict[str, Any]],
     precheck_result: dict[str, Any],
     regulation_context: list[dict[str, Any]],
+    evidence_slot_package: dict[str, Any],
+    formula_check_results: dict[str, Any],
 ) -> dict[str, Any]:
     prompt = {
         "review_check_item": {
@@ -401,6 +725,8 @@ def _call_preview_llm(
             "failure_conditions": rule.get("failure_conditions", []),
         },
         "regulation_context": regulation_context,
+        "evidence_slot_package": evidence_slot_package,
+        "formula_check_results": formula_check_results,
         "precheck_result": precheck_result,
         "evidence": [
             {
@@ -429,6 +755,7 @@ def _call_preview_llm(
             content=(
                 "你是水土保持方案审查专家。只基于提供的审查项、法规上下文、"
                 "召回证据、LangExtract事实和预检查结果输出 JSON。不得新增证据外事实，"
+                "formula_check_results 是程序计算结果；若公式失败、缺失或不支持，不得判断为通过，"
                 "不得输出 markdown。"
             )
         ),

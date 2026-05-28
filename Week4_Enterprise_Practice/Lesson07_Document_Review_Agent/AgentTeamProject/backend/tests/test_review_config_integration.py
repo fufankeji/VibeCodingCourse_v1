@@ -88,6 +88,20 @@ def _write_review_artifacts(artifact_dir: Path) -> None:
                     "char_start": 181,
                     "char_end": 260,
                 },
+                {
+                    "chunk_id": "rag-earthwork-001",
+                    "text": (
+                        "1.3.2 土石方平衡：本项目挖方10.00万m3，填方8.00万m3，"
+                        "借方2.00万m3，弃方4.00万m3，借方来源为合法商品土，弃方外运综合利用。"
+                    ),
+                    "section": "1.3.2 土石方平衡",
+                    "page_range": [22, 22],
+                    "bbox_list": [{"block_id": "p22-b01", "page": 22, "bbox": [86.0, 220.0, 506.0, 300.0]}],
+                    "table_refs": ["土石方平衡表"],
+                    "metadata": {"block_type": "table"},
+                    "char_start": 261,
+                    "char_end": 360,
+                },
             ],
             ensure_ascii=False,
         ),
@@ -106,6 +120,54 @@ def _write_review_artifacts(artifact_dir: Path) -> None:
                     "chunk_id": "rag-plant-001",
                     "page_range": [12, 12],
                     "source_text": "主体工程区设置乔木120株、灌木800株",
+                    "confidence": 91,
+                },
+                {
+                    "fact_id": "fact-earthwork-excavation",
+                    "field_name": "excavation_volume",
+                    "value": "10.00万m3",
+                    "normalized_value": "10.00",
+                    "unit": "万m3",
+                    "section": "1.3.2 土石方平衡",
+                    "chunk_id": "rag-earthwork-001",
+                    "page_range": [22, 22],
+                    "source_text": "挖方10.00万m3",
+                    "confidence": 91,
+                },
+                {
+                    "fact_id": "fact-earthwork-fill",
+                    "field_name": "fill_volume",
+                    "value": "8.00万m3",
+                    "normalized_value": "8.00",
+                    "unit": "万m3",
+                    "section": "1.3.2 土石方平衡",
+                    "chunk_id": "rag-earthwork-001",
+                    "page_range": [22, 22],
+                    "source_text": "填方8.00万m3",
+                    "confidence": 91,
+                },
+                {
+                    "fact_id": "fact-earthwork-borrow",
+                    "field_name": "borrow_volume",
+                    "value": "2.00万m3",
+                    "normalized_value": "2.00",
+                    "unit": "万m3",
+                    "section": "1.3.2 土石方平衡",
+                    "chunk_id": "rag-earthwork-001",
+                    "page_range": [22, 22],
+                    "source_text": "借方2.00万m3",
+                    "confidence": 91,
+                },
+                {
+                    "fact_id": "fact-earthwork-spoil",
+                    "field_name": "spoil_volume",
+                    "value": "4.00万m3",
+                    "normalized_value": "4.00",
+                    "unit": "万m3",
+                    "section": "1.3.2 土石方平衡",
+                    "chunk_id": "rag-earthwork-001",
+                    "page_range": [22, 22],
+                    "source_text": "弃方4.00万m3",
                     "confidence": 91,
                 }
             ],
@@ -452,6 +514,16 @@ def test_preview_check_item_uses_rag_agent_without_saving_config(isolated_config
             "expected_result": "植物措施配置完整且有表格支撑。",
             "failure_conditions": ["未见乔木配置", "未见灌木配置"],
             "regulation_clauses": ["水土保持方案审查要点-植物措施"],
+            "evidence_slots": [
+                {
+                    "id": "plant_measure_text",
+                    "label": "植物措施文字和表格",
+                    "required": True,
+                    "queries": ["植物措施 乔木 灌木 工程量表"],
+                    "expected_terms": ["乔木", "灌木"],
+                    "preferred_sections": ["植物措施"],
+                }
+            ],
             "enabled": True,
         },
     )
@@ -490,6 +562,16 @@ def test_preview_check_item_uses_rag_agent_without_saving_config(isolated_config
     assert bundle["evidence_locations"][0]["anchors"] == first_match["anchors"]
     assert "乔木120株" in first_match["text"]
     assert "植物措施" in bundle["matched_target_fields"]
+    slot_package = bundle["evidence_slot_package"]
+    assert slot_package["source"] == "evidence_slots"
+    assert slot_package["slot_count"] == 1
+    assert slot_package["missing_required_slot_ids"] == []
+    assert slot_package["slots"][0]["slot_id"] == "plant_measure_text"
+    assert slot_package["slots"][0]["status"] == "matched"
+    assert slot_package["slots"][0]["matched_expected_terms"] == ["乔木", "灌木"]
+    assert slot_package["slots"][0]["matches"][0]["chunk_id"] == "rag-plant-001"
+    assert "bm25" in slot_package["slots"][0]["matches"][0]["retrieval_sources"]
+    assert slot_package["slots"][0]["queries"][0]["query"] == "植物措施 乔木 灌木 工程量表"
     assert bundle["structured_facts"][0]["fact_id"] == "fact-plant-001"
     assert bundle["cross_reference_findings"][0]["finding_id"] == "finding-plant-001"
     assert bundle["regulation_context"][0]["text"] == "水土保持方案审查要点-植物措施"
@@ -503,6 +585,191 @@ def test_preview_check_item_uses_rag_agent_without_saving_config(isolated_config
     assert data["suggested_rule_improvements"]
     assert not isolated_config.exists()
     assert review_config_service.list_check_item_specs() == []
+
+
+def test_preview_evidence_slot_retrieval_limits_queries_and_marks_unconfigured_slots(
+    isolated_config,
+    client: TestClient,
+):
+    response = client.post(
+        "/api/v1/review-config/check-items/preview",
+        json={
+            "session_id": "task5-session",
+            "topic_id": "scmc-010",
+            "rule_id": "PLANT-SLOT-LIMIT-001",
+            "executor_type_id": "evidence_presence",
+            "review_type": "证据槽位核验",
+            "review_sub_type": "植物措施槽位召回",
+            "evidence_scope": {"sections": ["植物措施"]},
+            "target_fields": ["植物措施", "乔木", "灌木"],
+            "evidence_slots": [
+                {
+                    "id": "too_many_queries",
+                    "label": "多 query 截断",
+                    "queries": [
+                        "植物措施 乔木",
+                        "植物措施 灌木",
+                        "植物措施 草籽",
+                        "植物措施 第四条不应执行",
+                    ],
+                    "expected_terms": ["乔木", "灌木", "不存在的植物措施术语"],
+                },
+                {
+                    "id": "missing_queries",
+                    "label": "缺少 queries 的槽位",
+                    "required": True,
+                    "expected_terms": ["乔木"],
+                },
+                *[
+                    {
+                        "id": f"overflow_{index}",
+                        "label": f"溢出槽位 {index}",
+                        "queries": ["植物措施"],
+                        "required": index == 8,
+                    }
+                    for index in range(9)
+                ],
+            ],
+            "enabled": True,
+        },
+    )
+
+    assert response.status_code == 200
+    package = response.json()["evidence_bundle"]["evidence_slot_package"]
+    assert package["slot_count"] == 8
+    assert package["slot_limit"] == 8
+    assert package["truncated"] is True
+    assert package["required_slot_count"] == 2
+    assert package["matched_required_slot_count"] == 0
+
+    too_many_queries = next(slot for slot in package["slots"] if slot["slot_id"] == "too_many_queries")
+    assert too_many_queries["query_count"] == 3
+    assert too_many_queries["query_limit"] == 3
+    assert too_many_queries["truncated_queries"] is True
+    assert too_many_queries["status"] == "missing"
+    assert too_many_queries["missing_expected_terms"] == ["不存在的植物措施术语"]
+
+    missing_queries = next(slot for slot in package["slots"] if slot["slot_id"] == "missing_queries")
+    assert missing_queries["status"] == "not_configured"
+    assert missing_queries["queries"] == []
+    assert missing_queries["matches"] == []
+    assert package["truncated_required_slot_ids"] == ["overflow_8"]
+    assert package["missing_required_slot_ids"] == ["missing_queries", "overflow_8"]
+    assert response.json()["evidence_bundle"]["retrieval_matches"][0]["chunk_id"] == "rag-plant-001"
+    assert not isolated_config.exists()
+
+
+def test_preview_missing_required_evidence_slot_blocks_llm_judgment(
+    isolated_config,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def fail_if_called():
+        raise AssertionError("LLM should not be called when required evidence slots are missing")
+
+    monkeypatch.setattr(review_agent_service, "get_llm", fail_if_called)
+
+    response = client.post(
+        "/api/v1/review-config/check-items/preview",
+        json={
+            "session_id": "task5-session",
+            "topic_id": "scmc-010",
+            "rule_id": "PLANT-MISSING-SLOT-001",
+            "executor_type_id": "evidence_presence",
+            "review_type": "证据槽位核验",
+            "review_sub_type": "植物措施缺证据阻断",
+            "evidence_scope": {"sections": ["植物措施"]},
+            "target_fields": ["植物措施", "乔木", "灌木"],
+            "evidence_slots": [
+                {
+                    "id": "missing_required_slot",
+                    "label": "必填但缺失的槽位",
+                    "required": True,
+                    "queries": ["植物措施 乔木"],
+                    "expected_terms": ["不存在的必填证据术语"],
+                }
+            ],
+            "enabled": True,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["evidence_bundle"]["evidence_slot_package"]["missing_required_slot_ids"] == ["missing_required_slot"]
+    assert data["precheck_result"]["execution_status"] == "needs_evidence"
+    assert data["precheck_result"]["llm_required"] is False
+    assert any(check["type"] == "evidence_slot_required_presence" for check in data["precheck_result"]["checks"])
+    assert data["review_conclusion"]["status"] == "needs_evidence"
+    assert data["review_conclusion"]["llm_required"] is False
+    assert data["agent_trace"]["llm_skipped"] is True
+    assert not isolated_config.exists()
+
+
+def test_preview_missing_required_evidence_slot_does_not_require_llm_key(
+    isolated_config,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(settings, "review_llm_api_key", "")
+    monkeypatch.setattr(settings, "deepseek_api_key", "")
+
+    response = client.post(
+        "/api/v1/review-config/check-items/preview",
+        json={
+            "session_id": "task5-session",
+            "topic_id": "scmc-010",
+            "rule_id": "PLANT-MISSING-SLOT-NO-LLM-001",
+            "executor_type_id": "evidence_presence",
+            "review_type": "证据槽位核验",
+            "review_sub_type": "植物措施缺证据无需 LLM",
+            "evidence_scope": {"sections": ["植物措施"]},
+            "target_fields": ["植物措施", "乔木", "灌木"],
+            "evidence_slots": [
+                {
+                    "id": "missing_required_slot",
+                    "label": "必填但缺失的槽位",
+                    "required": True,
+                    "queries": ["植物措施 乔木"],
+                    "expected_terms": ["不存在的必填证据术语"],
+                }
+            ],
+            "enabled": True,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["precheck_result"]["execution_status"] == "needs_evidence"
+    assert data["review_conclusion"]["status"] == "needs_evidence"
+    assert data["agent_trace"]["llm_skipped"] is True
+    assert not isolated_config.exists()
+
+
+def test_preview_without_evidence_blocker_still_requires_llm_key(
+    isolated_config,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(settings, "review_llm_api_key", "")
+    monkeypatch.setattr(settings, "deepseek_api_key", "")
+
+    response = client.post(
+        "/api/v1/review-config/check-items/preview",
+        json={
+            "session_id": "task5-session",
+            "topic_id": "scmc-010",
+            "executor_type_id": "evidence_presence",
+            "review_type": "证据存在性核验",
+            "review_sub_type": "植物措施配置完整性",
+            "evidence_scope": {"sections": ["植物措施"], "tables": ["植物措施工程量表"]},
+            "target_fields": ["植物措施", "乔木", "灌木"],
+            "enabled": True,
+        },
+    )
+
+    assert response.status_code == 503
+    assert "LLM" in response.json()["detail"]["message"]
+    assert not isolated_config.exists()
 
 
 def test_preview_project_composition_consistency_returns_structured_comparison(isolated_config, client: TestClient):
@@ -523,6 +790,24 @@ def test_preview_project_composition_consistency_returns_structured_comparison(i
             "review_criteria": "读取项目概要章节的项目组成与建设内容，读取附件里的立项文件内容，判断它们是否一致。",
             "expected_result": "项目组成及建设内容应与立项文件或所处阶段的主体设计文件一致。",
             "failure_conditions": ["正文建设规模与立项或主体设计文件不一致"],
+            "evidence_slots": [
+                {
+                    "id": "project_summary",
+                    "label": "项目概要章节的项目组成与建设内容",
+                    "required": True,
+                    "queries": ["项目概况 建设内容 总建筑面积 地上建筑面积 地下建筑面积"],
+                    "expected_terms": ["建设内容", "总建筑面积"],
+                    "preferred_sections": ["项目概况"],
+                },
+                {
+                    "id": "approval_or_design_attachment",
+                    "label": "立项文件或主体设计附件内容",
+                    "required": True,
+                    "queries": ["初步设计批复 项目建筑面积 地上建筑面积 地下建筑面积"],
+                    "expected_terms": ["初步设计", "建筑面积"],
+                    "preferred_sections": ["附件", "初步设计批复"],
+                },
+            ],
             "enabled": True,
         },
     )
@@ -536,6 +821,10 @@ def test_preview_project_composition_consistency_returns_structured_comparison(i
     assert comparison["reference_source"]["chunk_id"] == "rag-project-approval-001"
     assert comparison["reference_source"]["material_type"] == "preliminary_design_reply"
     assert comparison["reference_source"]["anchors"][0]["block_id"] == "p136-b02"
+    slot_package = data["evidence_bundle"]["evidence_slot_package"]
+    assert slot_package["missing_required_slot_ids"] == []
+    assert {slot["slot_id"] for slot in slot_package["slots"]} == {"project_summary", "approval_or_design_attachment"}
+    assert all(slot["status"] == "matched" for slot in slot_package["slots"])
     fields = {field["field"]: field for field in comparison["field_comparisons"]}
     assert fields["above_ground_building_area"]["status"] == "match"
     assert fields["total_building_area"]["status"] == "mismatch"
@@ -545,6 +834,218 @@ def test_preview_project_composition_consistency_returns_structured_comparison(i
     precheck = data["precheck_result"]
     assert precheck["project_composition_consistency"]["status"] == "mismatch"
     assert any(check["type"] == "project_composition_consistency" for check in precheck["checks"])
+
+
+def test_preview_earthwork_formula_check_uses_langextract_facts(isolated_config, client: TestClient):
+    response = client.post(
+        "/api/v1/review-config/check-items/preview",
+        json={
+            "session_id": "task5-session",
+            "topic_id": "scmc-002",
+            "rule_id": "EARTHWORK-BALANCE-001",
+            "executor_type_id": "evidence_presence",
+            "review_type": "土石方专项审查",
+            "review_sub_type": "土石方平衡（含表土）完整性",
+            "evidence_scope": {"sections": ["项目概况", "土石方平衡"], "tables": ["土石方平衡表"]},
+            "target_fields": ["土石方", "挖方", "填方", "借方", "弃方"],
+            "review_criteria": "读取项目概要章节的土石方平衡文字及表格数据，判断挖方、填方、借方、弃方是否平衡。",
+            "expected_result": "土石方平衡应明确挖方、填方、借方、弃方和调配情况。",
+            "evidence_slots": [
+                {
+                    "id": "earthwork_quantities",
+                    "label": "土石方工程量",
+                    "required": True,
+                    "queries": ["土石方平衡 挖方 填方 借方 弃方"],
+                    "expected_terms": ["挖方", "填方", "借方", "弃方"],
+                }
+            ],
+            "formula_checks": [
+                {
+                    "id": "earthwork_total_balance",
+                    "label": "土石方总量平衡",
+                    "left_fields": ["excavation_volume", "borrow_volume"],
+                    "right_fields": ["fill_volume", "spoil_volume"],
+                    "tolerance": {"absolute": 0.01, "unit": "万m3"},
+                    "required": True,
+                }
+            ],
+            "enabled": True,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    results = data["evidence_bundle"]["formula_check_results"]
+    assert results["source"] == "formula_checks"
+    assert results["check_count"] == 1
+    check = results["checks"][0]
+    assert check["formula_check_id"] == "earthwork_total_balance"
+    assert check["status"] == "pass"
+    assert check["left_value"] == 12.0
+    assert check["right_value"] == 12.0
+    assert check["unit"] == "万m3"
+    assert check["field_values"]["excavation_volume"]["fact_id"] == "fact-earthwork-excavation"
+    assert data["evidence_bundle"]["evidence_slot_package"]["missing_required_slot_ids"] == []
+    assert not isolated_config.exists()
+
+
+def test_preview_formula_checks_use_full_langextract_facts_for_explicit_fields(isolated_config, client: TestClient):
+    response = client.post(
+        "/api/v1/review-config/check-items/preview",
+        json={
+            "session_id": "task5-session",
+            "topic_id": "scmc-002",
+            "rule_id": "EARTHWORK-FORMULA-FIELDS-001",
+            "executor_type_id": "evidence_presence",
+            "review_type": "土石方专项审查",
+            "review_sub_type": "显式公式字段校验",
+            "target_fields": ["土石方总量"],
+            "review_criteria": "按显式 formula_checks 字段执行程序计算。",
+            "expected_result": "显式公式字段应可从 LangExtract facts 中取数。",
+            "formula_checks": [
+                {
+                    "id": "earthwork_total_balance",
+                    "left_fields": ["excavation_volume", "borrow_volume"],
+                    "right_fields": ["fill_volume", "spoil_volume"],
+                    "tolerance": {"absolute": 0.01, "unit": "万m3"},
+                    "required": True,
+                }
+            ],
+            "enabled": True,
+        },
+    )
+
+    assert response.status_code == 200
+    check = response.json()["evidence_bundle"]["formula_check_results"]["checks"][0]
+    assert check["status"] == "pass"
+    assert set(check["field_values"]) == {
+        "excavation_volume",
+        "borrow_volume",
+        "fill_volume",
+        "spoil_volume",
+    }
+    assert response.json()["precheck_result"]["formula_check_results"]["check_count"] == 1
+    assert not isolated_config.exists()
+
+
+def test_preview_formula_failure_constrains_llm_pass_and_enters_prompt(
+    isolated_config,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured_prompt: dict = {}
+
+    class PassingLLM:
+        def invoke(self, messages):
+            captured_prompt.update(json.loads(messages[-1].content))
+
+            class Response:
+                content = json.dumps(
+                    {
+                        "status": "pass",
+                        "summary": "LLM 错误判断为通过。",
+                        "actual_value": "LLM 未执行程序计算。",
+                        "expected_value": "应由公式结果约束。",
+                        "fix_suggestion": "",
+                        "confidence": 90,
+                        "next_action": "无",
+                    },
+                    ensure_ascii=False,
+                )
+
+            return Response()
+
+    monkeypatch.setattr(review_agent_service, "get_llm", lambda: PassingLLM())
+
+    response = client.post(
+        "/api/v1/review-config/check-items/preview",
+        json={
+            "session_id": "task5-session",
+            "topic_id": "scmc-002",
+            "rule_id": "EARTHWORK-FORMULA-FAIL-001",
+            "executor_type_id": "evidence_presence",
+            "review_type": "土石方专项审查",
+            "review_sub_type": "公式失败状态约束",
+            "target_fields": ["土石方", "挖方", "填方"],
+            "review_criteria": "公式失败时 LLM 不得覆盖程序结论。",
+            "expected_result": "挖方应等于填方。",
+            "formula_checks": [
+                {
+                    "id": "excavation_equals_fill",
+                    "left_fields": ["excavation_volume"],
+                    "right_fields": ["fill_volume"],
+                    "tolerance": {"absolute": 0.01, "unit": "万m3"},
+                    "required": True,
+                }
+            ],
+            "enabled": True,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["evidence_bundle"]["formula_check_results"]["checks"][0]["status"] == "fail"
+    assert data["precheck_result"]["formula_precheck"]["status"] == "issue"
+    assert data["review_conclusion"]["status"] == "issue"
+    assert "公式校验未通过" in data["review_conclusion"]["summary"]
+    assert captured_prompt["formula_check_results"]["checks"][0]["status"] == "fail"
+    assert captured_prompt["evidence_slot_package"]["source"] == "evidence_slots"
+    assert not isolated_config.exists()
+
+
+def test_preview_evidence_slot_retrieval_uses_candidate_top_k_not_rerank_top_n(
+    isolated_config,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured_top_k: list[int] = []
+
+    def fake_retrieve_for_query(chunks, query, top_k, **kwargs):
+        captured_top_k.append(top_k)
+        return {
+            "query": query,
+            "retrieval_mode": "fake",
+            "matches": [
+                {
+                    "chunk_id": "slot-candidate",
+                    "document": "候选召回命中远端 chunk",
+                    "metadata": {"page_start": 1, "page_end": 1, "section": "测试"},
+                    "score": 0.5,
+                    "retrieval_sources": ["bm25"],
+                    "source_ranks": {"bm25": 9},
+                }
+            ],
+        }
+
+    monkeypatch.setattr(settings, "rag_top_k", 50)
+    monkeypatch.setattr(settings, "rag_rerank_top_n", 5)
+    monkeypatch.setattr(review_agent_service, "retrieve_for_query", fake_retrieve_for_query)
+
+    response = client.post(
+        "/api/v1/review-config/check-items/preview",
+        json={
+            "session_id": "task5-session",
+            "topic_id": "scmc-010",
+            "rule_id": "SLOT-TOPK-001",
+            "executor_type_id": "evidence_presence",
+            "review_type": "证据槽位核验",
+            "review_sub_type": "槽位召回候选上限",
+            "target_fields": ["植物措施"],
+            "evidence_slots": [
+                {
+                    "id": "candidate_depth",
+                    "required": True,
+                    "queries": ["需要完整候选召回"],
+                }
+            ],
+            "enabled": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured_top_k == [50]
+    assert response.json()["evidence_bundle"]["evidence_slot_package"]["missing_required_slot_ids"] == []
+    assert not isolated_config.exists()
 
 
 def test_retrieval_debug_returns_non_persistent_matches_with_anchors(client: TestClient):

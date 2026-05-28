@@ -27,6 +27,8 @@ import {
   type EvidenceAnchor,
   type ExecutorType,
   type ExpertReviewBrief,
+  type EvidenceSlotPackage,
+  type FormulaCheckResults,
   type PreviewAgentTrace,
   type PreviewCheckItemResponse,
   type ProjectCompositionConsistency,
@@ -56,6 +58,8 @@ type ConfigDraft = {
   reviewCriteria: string;
   expectedResult: string;
   failureConditionsInput: string;
+  evidenceSlotsJson: string;
+  formulaChecksJson: string;
   expertBrief: ExpertReviewBrief;
   sourceRuleSnapshot: Record<string, unknown>;
   advancedDirty: boolean;
@@ -285,6 +289,8 @@ export function HITLReviewPage() {
       reviewCriteria: '',
       expectedResult: '',
       failureConditionsInput: '',
+      evidenceSlotsJson: '[]',
+      formulaChecksJson: '[]',
       expertBrief: createEmptyExpertBrief(`${activeRuleTopic.topic_name}审查项`),
       sourceRuleSnapshot: {},
       advancedDirty: false,
@@ -2133,6 +2139,26 @@ function CheckItemDraftModal({
                 </label>
 
                 <ListDraftField label="错误条件" value={draft.failureConditionsInput} onChange={(value) => patchAdvancedDraft({ failureConditionsInput: value })} />
+
+                <label className="block text-[11px] text-slate-500">
+                  Evidence Slots JSON
+                  <textarea
+                    value={draft.evidenceSlotsJson}
+                    onChange={(event) => patchAdvancedDraft({ evidenceSlotsJson: event.target.value })}
+                    className="mt-1 h-28 w-full resize-none rounded border border-blue-100 bg-white px-2 py-1 font-mono text-[11px] leading-4 text-slate-700"
+                    placeholder='[{"id":"project_overview","label":"项目概要建设内容","required":true}]'
+                  />
+                </label>
+
+                <label className="block text-[11px] text-slate-500">
+                  Formula Checks JSON
+                  <textarea
+                    value={draft.formulaChecksJson}
+                    onChange={(event) => patchAdvancedDraft({ formulaChecksJson: event.target.value })}
+                    className="mt-1 h-28 w-full resize-none rounded border border-blue-100 bg-white px-2 py-1 font-mono text-[11px] leading-4 text-slate-700"
+                    placeholder='[{"id":"earthwork_total_balance","left_fields":["excavation_volume"],"right_fields":["fill_volume"]}]'
+                  />
+                </label>
               </div>
             </details>
           </div>
@@ -2215,6 +2241,8 @@ function PreviewResultPanel({
   const structuredFacts = toUnknownArray(evidence.structured_facts);
   const crossReferenceFindings = toUnknownArray(evidence.cross_reference_findings);
   const projectComposition = evidence.project_composition_consistency;
+  const evidenceSlotPackage = evidence.evidence_slot_package;
+  const formulaCheckResults = evidence.formula_check_results;
   const langextractGrounding = toUnknownArray(evidence.langextract_grounding);
   const regulationContext = toRecordArray(evidence.regulation_context);
   const checks = toRecordArray(precheck.checks);
@@ -2258,6 +2286,17 @@ function PreviewResultPanel({
           comparison={projectComposition}
           onSelectEvidenceMatch={onSelectEvidenceMatch}
         />
+      )}
+
+      {evidenceSlotPackage && (
+        <EvidenceSlotPackagePanel
+          packageData={evidenceSlotPackage}
+          onSelectEvidenceMatch={onSelectEvidenceMatch}
+        />
+      )}
+
+      {formulaCheckResults && (
+        <FormulaCheckResultsPanel results={formulaCheckResults} />
       )}
 
       <PreviewSection title={`RAG 证据 chunk (${retrievalMatches.length})`}>
@@ -2413,6 +2452,116 @@ function ProjectCompositionSourceButton({
   );
 }
 
+function EvidenceSlotPackagePanel({
+  packageData,
+  onSelectEvidenceMatch,
+}: {
+  packageData: EvidenceSlotPackage;
+  onSelectEvidenceMatch: (match: RetrievalMatch) => void;
+}) {
+  const slots = toRecordArray(packageData.slots);
+  return (
+    <PreviewSection title={`证据槽位 (${packageData.matched_required_slot_count ?? 0}/${packageData.required_slot_count ?? 0})`}>
+      <KeyValue label="缺失必填" value={toStringArray(packageData.missing_required_slot_ids).join('、') || '-'} />
+      <KeyValue label="截断" value={packageData.truncated ? `是，最多 ${packageData.slot_limit ?? '-'}` : '否'} />
+      {slots.length === 0 ? (
+        <EmptyPreviewLine text="暂无 evidence_slots" />
+      ) : slots.map((slot, index) => (
+        <EvidenceSlotCard
+          key={String(slot.slot_id || index)}
+          slot={slot}
+          onSelectEvidenceMatch={onSelectEvidenceMatch}
+        />
+      ))}
+    </PreviewSection>
+  );
+}
+
+function EvidenceSlotCard({
+  slot,
+  onSelectEvidenceMatch,
+}: {
+  slot: Record<string, unknown>;
+  onSelectEvidenceMatch: (match: RetrievalMatch) => void;
+}) {
+  const matches = toRecordArray(slot.matches) as RetrievalMatch[];
+  const queries = toRecordArray(slot.queries);
+  return (
+    <div className="rounded bg-slate-50 px-2 py-1.5 text-[11px] leading-4 text-slate-600">
+      <div className="mb-1 flex flex-wrap items-center gap-1.5">
+        <span className="font-medium text-slate-700">{String(slot.label || slot.slot_id || '-')}</span>
+        <span className={`rounded px-1.5 py-0.5 text-[10px] ${statusClassName(String(slot.status || ''))}`}>
+          {String(slot.status || '-')}
+        </span>
+        {slot.required === true && <span className="rounded bg-rose-50 px-1.5 py-0.5 text-[10px] text-rose-700">必填</span>}
+        {slot.truncated_queries === true && <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700">query 已截断</span>}
+      </div>
+      <KeyValue label="命中词" value={toStringArray(slot.matched_expected_terms).join('、') || '-'} />
+      <KeyValue label="缺失词" value={toStringArray(slot.missing_expected_terms).join('、') || '-'} />
+      <KeyValue label="query" value={queries.map((item) => String(item.query || '')).filter(Boolean).join('；') || '-'} />
+      {matches.length === 0 ? (
+        <div className="mt-1 rounded bg-white px-2 py-1 ring-1 ring-slate-100">
+          <EmptyPreviewLine text="暂无命中 chunk" />
+        </div>
+      ) : matches.slice(0, 3).map((match, index) => (
+        <button
+          key={`${match.chunk_id || index}`}
+          type="button"
+          onClick={() => onSelectEvidenceMatch(match)}
+          className="mt-1 w-full rounded bg-white px-2 py-1 text-left text-[10px] text-slate-500 ring-1 ring-slate-100 hover:bg-blue-50 hover:ring-blue-100"
+        >
+          {String(match.chunk_id || '-')} · p.{match.page || '-'} · {toStringArray(match.retrieval_sources).join('+') || '-'} · {String(match.text || '').slice(0, 90)}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function FormulaCheckResultsPanel({ results }: { results: FormulaCheckResults }) {
+  const checks = toRecordArray(results.checks);
+  return (
+    <PreviewSection title={`公式校验 (${results.pass_count ?? 0} pass / ${results.fail_count ?? 0} fail / ${results.missing_count ?? 0} missing)`}>
+      {checks.length === 0 ? (
+        <EmptyPreviewLine text="暂无 formula_checks" />
+      ) : checks.map((check, index) => (
+        <FormulaCheckCard key={String(check.formula_check_id || index)} check={check} />
+      ))}
+    </PreviewSection>
+  );
+}
+
+function FormulaCheckCard({ check }: { check: Record<string, unknown> }) {
+  const fieldValues = check.field_values && typeof check.field_values === 'object' && !Array.isArray(check.field_values)
+    ? check.field_values as Record<string, unknown>
+    : {};
+  return (
+    <div className="rounded bg-slate-50 px-2 py-1.5 text-[11px] leading-4 text-slate-600">
+      <div className="mb-1 flex flex-wrap items-center gap-1.5">
+        <span className="font-medium text-slate-700">{String(check.label || check.formula_check_id || '-')}</span>
+        <span className={`rounded px-1.5 py-0.5 text-[10px] ${statusClassName(String(check.status || ''))}`}>
+          {String(check.status || '-')}
+        </span>
+      </div>
+      <KeyValue label="左值" value={`${formatNullableNumber(check.left_value)} ${String(check.unit || '')}`} />
+      <KeyValue label="右值" value={`${formatNullableNumber(check.right_value)} ${String(check.unit || '')}`} />
+      <KeyValue label="差值" value={formatNullableNumber(check.difference)} />
+      <KeyValue label="缺字段" value={toStringArray(check.missing_fields).join('、') || '-'} />
+      <KeyValue label="配置错误" value={toStringArray(check.config_errors).join('、') || '-'} />
+      <div className="mt-1 space-y-1">
+        {Object.keys(fieldValues).length === 0 ? (
+          <div className="rounded bg-white px-2 py-1 ring-1 ring-slate-100">
+            <EmptyPreviewLine text="暂无 field_values" />
+          </div>
+        ) : Object.entries(fieldValues).map(([field, value]) => (
+          <div key={field} className="rounded bg-white px-2 py-1 text-[10px] text-slate-500 ring-1 ring-slate-100">
+            {field}: {formatCompactJson(value)}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function PreviewSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="space-y-2 rounded border border-slate-200 bg-white px-3 py-2">
@@ -2484,6 +2633,12 @@ function buildCheckItemPayload(configDraft: ConfigDraft): CheckItemPayload {
 
     const failureConditions = parseListInput(configDraft.failureConditionsInput);
     if (failureConditions.length > 0) payload.failure_conditions = failureConditions;
+
+    const evidenceSlots = parseJsonRecordList(configDraft.evidenceSlotsJson, 'Evidence Slots JSON');
+    payload.evidence_slots = evidenceSlots;
+
+    const formulaChecks = parseJsonRecordList(configDraft.formulaChecksJson, 'Formula Checks JSON');
+    payload.formula_checks = formulaChecks;
   }
 
   return payload;
@@ -2533,6 +2688,27 @@ function isMeaningfulEvidenceValue(value: unknown): boolean {
   return value !== null && value !== undefined;
 }
 
+function parseJsonRecordList(value: string, fieldLabel: string): Array<Record<string, unknown>> {
+  const text = value.trim();
+  if (!text) {
+    throw new Error(`${fieldLabel} 必须是 JSON 数组；如需清空请填写 []`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error(`${fieldLabel} 不是合法 JSON 数组；如需清空请填写 []`);
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(`${fieldLabel} 必须是 JSON 数组`);
+  }
+  const invalidIndex = parsed.findIndex((item) => !item || typeof item !== 'object' || Array.isArray(item));
+  if (invalidIndex >= 0) {
+    throw new Error(`${fieldLabel} 第 ${invalidIndex + 1} 项必须是 JSON 对象`);
+  }
+  return parsed as Array<Record<string, unknown>>;
+}
+
 function parseListInput(value: string): string[] {
   return value
     .split(/[\n,，]+/)
@@ -2542,6 +2718,10 @@ function parseListInput(value: string): string[] {
 
 function joinListInput(values?: string[]): string {
   return (values ?? []).join('\n');
+}
+
+function formatJsonRecordList(value: unknown): string {
+  return JSON.stringify(Array.isArray(value) ? value : [], null, 2);
 }
 
 function createEmptyExpertBrief(itemName = ''): ExpertReviewBrief {
@@ -2636,6 +2816,8 @@ function draftFromItem(item: ReviewCheckItem): ConfigDraft {
     reviewCriteria: item.review_criteria ?? getReasoningString(item.reasoning_process, 'criteria'),
     expectedResult: item.expected_result ?? getReasoningString(item.reasoning_process, 'expected_result'),
     failureConditionsInput: joinListInput(item.failure_conditions),
+    evidenceSlotsJson: formatJsonRecordList(item.evidence_slots),
+    formulaChecksJson: formatJsonRecordList(item.formula_checks),
     expertBrief,
     sourceRuleSnapshot: item.source_rule_snapshot ?? {},
     advancedDirty: false,
@@ -2663,9 +2845,11 @@ function draftFromRuleTemplate(topic: ReviewRuleTopic, item: ReviewCheckItem, ex
     reviewCriteria: item.review_criteria || getReasoningString(item.reasoning_process, 'criteria') || item.conclusion || '',
     expectedResult: item.expected_result || getReasoningString(item.reasoning_process, 'expected_result') || item.conclusion || '',
     failureConditionsInput: joinListInput(item.failure_conditions),
+    evidenceSlotsJson: formatJsonRecordList(item.evidence_slots),
+    formulaChecksJson: formatJsonRecordList(item.formula_checks),
     expertBrief: expertBrief.item_name ? expertBrief : { ...expertBrief, item_name: `${topic.topic_name}审查项` },
     sourceRuleSnapshot,
-    advancedDirty: false,
+    advancedDirty: true,
     enabled: true,
   };
 }
@@ -2688,9 +2872,11 @@ function applyRuleTemplateToDraft(draft: ConfigDraft, item: ReviewCheckItem): Co
     reviewCriteria: item.review_criteria || getReasoningString(item.reasoning_process, 'criteria') || item.conclusion || draft.reviewCriteria,
     expectedResult: item.expected_result || getReasoningString(item.reasoning_process, 'expected_result') || item.conclusion || draft.expectedResult,
     failureConditionsInput: joinListInput(item.failure_conditions),
+    evidenceSlotsJson: formatJsonRecordList(item.evidence_slots),
+    formulaChecksJson: formatJsonRecordList(item.formula_checks),
     expertBrief,
     sourceRuleSnapshot,
-    advancedDirty: false,
+    advancedDirty: true,
   };
 }
 
@@ -2707,6 +2893,8 @@ function buildSourceRuleSnapshot(item: ReviewCheckItem): Record<string, unknown>
     review_criteria: item.review_criteria ?? '',
     expected_result: item.expected_result ?? '',
     failure_conditions: item.failure_conditions ?? [],
+    evidence_slots: item.evidence_slots ?? [],
+    formula_checks: item.formula_checks ?? [],
     expert_brief: getExpertBriefFromSnapshot(item.source_rule_snapshot) ?? buildExpertBriefFromStructured(item),
     reasoning_process: item.reasoning_process ?? {},
     ai_or_human_source: item.ai_or_human_source,

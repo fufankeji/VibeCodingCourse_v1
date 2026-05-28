@@ -107,6 +107,8 @@ export interface ReviewCheckItem {
   review_criteria?: string;
   expected_result?: string;
   failure_conditions?: string[];
+  evidence_slots?: Array<Record<string, unknown>>;
+  formula_checks?: Array<Record<string, unknown>>;
   source_rule_snapshot?: Record<string, unknown>;
   enabled?: boolean;
   risk_level?: string;

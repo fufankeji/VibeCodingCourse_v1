@@ -158,6 +158,112 @@ def test_patch_check_item_preserves_unsubmitted_fields(isolated_config):
     assert response.json()["source_rule_snapshot"] == {"rule_id": "PLANT-RULE-001", "copied": True}
 
 
+def test_check_item_api_round_trips_evidence_slots_and_formula_checks(isolated_config):
+    app = FastAPI()
+    app.include_router(api_router)
+    client = TestClient(app)
+    evidence_slots = [
+        {
+            "id": "earthwork_volumes",
+            "label": "土石方工程量",
+            "required": True,
+            "queries": ["土石方平衡 挖方 填方 借方 弃方"],
+            "expected_terms": ["挖方", "填方", "借方", "弃方"],
+            "preferred_sections": ["项目概况", "土石方平衡"],
+        }
+    ]
+    formula_checks = [
+        {
+            "id": "earthwork_total_balance",
+            "label": "土石方总量平衡",
+            "expression": "excavation_volume + borrow_volume == fill_volume + spoil_volume",
+            "left_fields": ["excavation_volume", "borrow_volume"],
+            "right_fields": ["fill_volume", "spoil_volume"],
+            "tolerance": {"type": "relative_or_absolute", "relative": 0.01, "absolute": 0.01, "unit": "万m3"},
+            "required": True,
+        }
+    ]
+
+    created = client.post(
+        "/api/v1/review-config/check-items",
+        json={
+            "id": "earthwork-slots",
+            "topic_id": "scmc-002",
+            "executor_type_id": "manual_basic",
+            "review_type": "土石方专项审查",
+            "review_sub_type": "土石方平衡（含表土）完整性",
+            "evidence_slots": evidence_slots,
+            "formula_checks": formula_checks,
+        },
+    )
+
+    assert created.status_code == 200
+    assert created.json()["evidence_slots"] == evidence_slots
+    assert created.json()["formula_checks"] == formula_checks
+
+    listed = client.get("/api/v1/review-config/check-items", params={"topic_id": "scmc-002"})
+    item = next(candidate for candidate in listed.json()["items"] if candidate["id"] == "earthwork-slots")
+    assert item["evidence_slots"] == evidence_slots
+    assert item["formula_checks"] == formula_checks
+
+    patched = client.patch(
+        "/api/v1/review-config/check-items/earthwork-slots",
+        json={
+            "review_sub_type": "土石方平衡与表土单独平衡",
+            "evidence_slots": [
+                *evidence_slots,
+                {
+                    "id": "topsoil_balance",
+                    "label": "表土单独平衡",
+                    "required": True,
+                    "queries": ["表土 剥离 保存 回覆 平衡"],
+                    "expected_terms": ["表土", "剥离", "回覆"],
+                },
+            ],
+        },
+    )
+
+    assert patched.status_code == 200
+    assert patched.json()["review_sub_type"] == "土石方平衡与表土单独平衡"
+    assert [slot["id"] for slot in patched.json()["evidence_slots"]] == ["earthwork_volumes", "topsoil_balance"]
+    assert patched.json()["formula_checks"] == formula_checks
+
+    cleared = client.patch(
+        "/api/v1/review-config/check-items/earthwork-slots",
+        json={
+            "evidence_slots": [],
+            "formula_checks": [],
+        },
+    )
+
+    assert cleared.status_code == 200
+    assert cleared.json()["evidence_slots"] == []
+    assert cleared.json()["formula_checks"] == []
+
+
+def test_check_item_defaults_structured_review_fields_to_empty_lists(isolated_config):
+    _write_config(
+        isolated_config,
+        {
+            "executor_types": [{"id": "manual_basic", "label": "人工基础核验", "enabled": True}],
+            "check_items": [
+                {
+                    "id": "legacy-no-structured-fields",
+                    "topic_id": "scmc-001",
+                    "executor_type_id": "manual_basic",
+                    "review_type": "人工基础核验",
+                    "review_sub_type": "旧配置项",
+                }
+            ],
+        },
+    )
+
+    item = review_config_service.list_check_item_specs()[0]
+
+    assert item["evidence_slots"] == []
+    assert item["formula_checks"] == []
+
+
 def test_create_check_item_normalizes_expert_brief(isolated_config):
     expert_brief = {
         "item_name": "土石方平衡与投资口径审查",

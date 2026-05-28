@@ -496,6 +496,8 @@ def _configured_check_item_to_result(item: dict[str, Any]) -> dict[str, Any]:
         "review_criteria": review_criteria,
         "expected_result": expected_result,
         "failure_conditions": failure_conditions,
+        "evidence_slots": item.get("evidence_slots") if isinstance(item.get("evidence_slots"), list) else [],
+        "formula_checks": item.get("formula_checks") if isinstance(item.get("formula_checks"), list) else [],
         "source_rule_snapshot": source_rule_snapshot,
         "enabled": enabled,
     }

@@ -307,6 +307,8 @@ def _normalize_check_item(item: dict[str, Any], executor_types: list[dict[str, A
         "review_criteria": str(item.get("review_criteria") or ""),
         "expected_result": str(item.get("expected_result") or ""),
         "failure_conditions": _string_list(item.get("failure_conditions")),
+        "evidence_slots": _record_list(item.get("evidence_slots")),
+        "formula_checks": _record_list(item.get("formula_checks")),
         "source_rule_snapshot": item.get("source_rule_snapshot") if isinstance(item.get("source_rule_snapshot"), dict) else {},
         "enabled": _parse_bool(item.get("enabled", True)),
     }
@@ -324,6 +326,12 @@ def _string_list(value: Any) -> list[str]:
     if isinstance(value, str) and value.strip():
         return [part.strip() for part in value.splitlines() if part.strip()]
     return []
+
+
+def _record_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [deepcopy(item) for item in value if isinstance(item, dict)]
 
 
 def _ensure_unique_ids(items: list[dict[str, Any]], label: str) -> None:

@@ -108,6 +108,20 @@ def test_build_review_rule_topics_uses_configured_check_items():
                 "review_criteria": "核查植物措施是否形成乔灌草配置闭环。",
                 "expected_result": "乔木、灌木、草种配置均有明确证据。",
                 "failure_conditions": ["缺少乔木配置", "缺少草种说明"],
+                "evidence_slots": [
+                    {
+                        "id": "plant_measure_text",
+                        "label": "植物措施文字",
+                        "queries": ["植物措施 乔木 灌木 草种"],
+                    }
+                ],
+                "formula_checks": [
+                    {
+                        "id": "plant_area_total",
+                        "label": "植物措施面积合计",
+                        "expression": "tree_area + shrub_area + grass_area == plant_area_total",
+                    }
+                ],
             }
         ],
     )
@@ -120,6 +134,8 @@ def test_build_review_rule_topics_uses_configured_check_items():
     assert plant["check_items"][0]["review_criteria"] == "核查植物措施是否形成乔灌草配置闭环。"
     assert plant["check_items"][0]["expected_result"] == "乔木、灌木、草种配置均有明确证据。"
     assert plant["check_items"][0]["failure_conditions"] == ["缺少乔木配置", "缺少草种说明"]
+    assert plant["check_items"][0]["evidence_slots"][0]["id"] == "plant_measure_text"
+    assert plant["check_items"][0]["formula_checks"][0]["id"] == "plant_area_total"
     assert plant["check_items"][0]["reasoning_process"]["review_rule"]["criteria"] == "核查植物措施是否形成乔灌草配置闭环。"
     assert plant["check_item_count"] == 15
     assert plant["configured_check_item_count"] == 1

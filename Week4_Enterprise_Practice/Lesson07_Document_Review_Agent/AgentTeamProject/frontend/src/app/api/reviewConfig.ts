@@ -32,6 +32,8 @@ export interface CheckItemPayload {
   review_criteria?: string;
   expected_result?: string;
   failure_conditions?: string[];
+  evidence_slots?: Array<Record<string, unknown>>;
+  formula_checks?: Array<Record<string, unknown>>;
   expert_brief?: ExpertReviewBrief;
   source_rule_snapshot?: Record<string, unknown>;
   enabled?: boolean;
@@ -111,6 +113,27 @@ export interface PreviewAgentTrace {
   [key: string]: unknown;
 }
 
+export interface EvidenceSlotPackage {
+  source?: string;
+  slot_count?: number;
+  required_slot_count?: number;
+  matched_required_slot_count?: number;
+  missing_required_slot_ids?: string[];
+  truncated?: boolean;
+  slot_limit?: number;
+  truncated_required_slot_ids?: string[];
+  slots?: Array<Record<string, unknown>>;
+}
+
+export interface FormulaCheckResults {
+  source?: string;
+  check_count?: number;
+  pass_count?: number;
+  fail_count?: number;
+  missing_count?: number;
+  checks?: Array<Record<string, unknown>>;
+}
+
 export interface PreviewCheckItemResponse {
   check_item: CheckItemSpec;
   evidence_bundle: {
@@ -122,6 +145,8 @@ export interface PreviewCheckItemResponse {
     structured_facts?: unknown[];
     cross_reference_findings?: unknown[];
     project_composition_consistency?: ProjectCompositionConsistency;
+    evidence_slot_package?: EvidenceSlotPackage;
+    formula_check_results?: FormulaCheckResults;
     langextract_grounding?: unknown[] | Record<string, unknown>;
     regulation_context?: Array<Record<string, unknown>>;
     retrieval_score?: number;
@@ -171,6 +196,8 @@ export interface CheckItemSpec {
   review_criteria: string;
   expected_result: string;
   failure_conditions: string[];
+  evidence_slots: Array<Record<string, unknown>>;
+  formula_checks: Array<Record<string, unknown>>;
   source_rule_snapshot: Record<string, unknown>;
   enabled: boolean;
 }
