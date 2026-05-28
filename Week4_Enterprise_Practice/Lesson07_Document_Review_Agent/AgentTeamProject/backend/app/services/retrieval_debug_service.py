@@ -12,6 +12,7 @@ from app.config import settings
 from app.models.contract import Contract
 from app.models.session import ReviewSession
 from app.services import rag_service
+from app.services.review_agent_service import build_evidence_slot_package
 from app.services.retrieval_match_serializer import serialize_retrieval_match
 from app.services.water_review_service import ReviewChunk
 
@@ -24,6 +25,7 @@ def run_retrieval_debug(
     session_id: str,
     query: str,
     db: Session,
+    evidence_slot: dict[str, Any] | None = None,
     top_k: int = 8,
     use_vector: bool = True,
     use_bm25: bool = True,
@@ -31,8 +33,8 @@ def run_retrieval_debug(
     use_rerank: bool = True,
 ) -> dict[str, Any]:
     normalized_query = query.strip()
-    if not normalized_query:
-        raise RetrievalDebugBadRequest("query 不能为空")
+    if not normalized_query and not evidence_slot:
+        raise RetrievalDebugBadRequest("query 或 evidence_slot 不能为空")
     if not use_vector and not use_bm25:
         raise RetrievalDebugBadRequest("至少启用 BM25 或向量检索")
     requested_top_k = int(top_k)
@@ -56,6 +58,21 @@ def run_retrieval_debug(
         if vector_available
         else None
     )
+    if evidence_slot:
+        return _run_evidence_slot_debug(
+            evidence_slot,
+            chunks,
+            store,
+            normalized_query,
+            requested_top_k,
+            artifact_dir,
+            vector_dir,
+            vector_available,
+            use_vector,
+            use_bm25,
+            use_neighbors,
+            use_rerank,
+        )
     bounded_top_k = max(1, min(requested_top_k, 20))
     retrieval = rag_service.retrieve_for_query(
         chunks,
@@ -73,6 +90,7 @@ def run_retrieval_debug(
         "matches": [serialize_retrieval_match(match) for match in retrieval["matches"]],
         "trace": {
             "persisted": False,
+            "debug_mode": "query",
             "artifact_dir": str(artifact_dir),
             "chunk_count": len(chunks),
             "vector_store": str(vector_dir),
@@ -83,6 +101,69 @@ def run_retrieval_debug(
             "top_k": bounded_top_k,
             "requested_top_k": requested_top_k,
             "top_k_clamped": requested_top_k != bounded_top_k,
+            "requested_use_vector": use_vector,
+            "requested_use_bm25": use_bm25,
+            "requested_use_neighbors": use_neighbors,
+            "requested_use_rerank": use_rerank,
+        },
+    }
+
+
+def _run_evidence_slot_debug(
+    evidence_slot: dict[str, Any],
+    chunks: list[ReviewChunk],
+    store: rag_service.ChromaChunkStore | None,
+    query: str,
+    requested_top_k: int,
+    artifact_dir: Path,
+    vector_dir: Path,
+    vector_available: bool,
+    use_vector: bool,
+    use_bm25: bool,
+    use_neighbors: bool,
+    use_rerank: bool,
+) -> dict[str, Any]:
+    slot = dict(evidence_slot)
+    if query and not slot.get("queries"):
+        slot["queries"] = [query]
+    package = build_evidence_slot_package(
+        {"evidence_slots": [slot]},
+        chunks,
+        store if use_vector else None,
+        use_bm25=use_bm25,
+        use_neighbors=use_neighbors,
+        use_rerank=use_rerank,
+    )
+    first_slot = package["slots"][0] if package.get("slots") else {}
+    first_query = ""
+    queries = first_slot.get("queries") if isinstance(first_slot, dict) else []
+    if isinstance(queries, list) and queries:
+        first_query = str(queries[0].get("query") or "") if isinstance(queries[0], dict) else ""
+    matches = first_slot.get("matches") if isinstance(first_slot, dict) else []
+    if not isinstance(matches, list):
+        matches = []
+    query_traces = [item for item in queries if isinstance(item, dict)] if isinstance(queries, list) else []
+    vector_used = bool(vector_available and use_vector)
+    rerank_available = any(bool(item.get("matches")) for item in query_traces) and vector_used and use_rerank and bool(settings.siliconflow_reranker_model)
+    return {
+        "status": "degraded" if use_vector and not vector_available else "ready",
+        "query": first_query or query,
+        "matches": matches,
+        "evidence_slot_package": package,
+        "trace": {
+            "persisted": False,
+            "debug_mode": "evidence_slot",
+            "artifact_dir": str(artifact_dir),
+            "chunk_count": len(chunks),
+            "vector_store": str(vector_dir),
+            "vector_available": vector_used,
+            "bm25_available": use_bm25,
+            "rerank_available": rerank_available,
+            "retrieval_mode": query_traces[0].get("retrieval_mode", "") if query_traces else "",
+            "top_k": settings.rag_top_k,
+            "slot_top_k": settings.rag_top_k,
+            "requested_top_k": requested_top_k,
+            "top_k_clamped": False,
             "requested_use_vector": use_vector,
             "requested_use_bm25": use_bm25,
             "requested_use_neighbors": use_neighbors,
@@ -150,6 +231,7 @@ def _unavailable_response(query: str, reason: str, artifact_dir: Path) -> dict[s
         "matches": [],
         "trace": {
             "persisted": False,
+            "debug_mode": "query",
             "artifact_dir": str(artifact_dir),
             "chunk_count": 0,
             "vector_available": False,

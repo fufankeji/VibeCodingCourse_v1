@@ -27,7 +27,8 @@ router = APIRouter()
 
 
 class RetrievalDebugRequest(BaseModel):
-    query: str = Field(min_length=1, max_length=500)
+    query: str = Field(default="", max_length=500)
+    evidence_slot: dict[str, Any] | None = None
     top_k: int = Field(default=8, ge=1)
     use_vector: bool = True
     use_bm25: bool = True
@@ -148,6 +149,7 @@ def run_retrieval_debug(
             session_id,
             payload.query,
             db,
+            evidence_slot=payload.evidence_slot,
             top_k=payload.top_k,
             use_vector=payload.use_vector,
             use_bm25=payload.use_bm25,

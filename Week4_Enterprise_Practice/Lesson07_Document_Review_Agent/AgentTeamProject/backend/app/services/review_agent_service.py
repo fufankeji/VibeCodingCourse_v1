@@ -62,7 +62,7 @@ def preview_check_item_with_agent(session_id: str, check_item: dict[str, Any], d
     try:
         store = _build_chunk_store(session_id, chunks)
         retrieval = _retrieve_for_check_item(store, chunks, rule, facts, findings)
-        evidence_slot_package = _retrieve_evidence_slot_package(check_item, chunks, store)
+        evidence_slot_package = build_evidence_slot_package(check_item, chunks, store)
     except RAGReviewError as exc:
         raise ReviewAgentUnavailable(f"RAG 召回失败: {exc}") from exc
     evidence = retrieval.get("matches", [])[:8]
@@ -357,10 +357,13 @@ def _retrieve_for_check_item(
     return retrievals[0] if retrievals else {"matches": [], "query": ""}
 
 
-def _retrieve_evidence_slot_package(
+def build_evidence_slot_package(
     check_item: dict[str, Any],
     chunks: list[ReviewChunk],
-    store: ChromaChunkStore,
+    store: ChromaChunkStore | None,
+    use_bm25: bool = True,
+    use_neighbors: bool = True,
+    use_rerank: bool = True,
 ) -> dict[str, Any]:
     raw_slots = [slot for slot in check_item.get("evidence_slots", []) if isinstance(slot, dict)]
     slots = raw_slots[:MAX_EVIDENCE_SLOTS]
@@ -376,7 +379,17 @@ def _retrieve_evidence_slot_package(
             "slots": [],
         }
 
-    packaged_slots = [_retrieve_single_evidence_slot(slot, chunks, store) for slot in slots]
+    packaged_slots = [
+        _retrieve_single_evidence_slot(
+            slot,
+            chunks,
+            store,
+            use_bm25=use_bm25,
+            use_neighbors=use_neighbors,
+            use_rerank=use_rerank,
+        )
+        for slot in slots
+    ]
     truncated_required_slot_ids = [
         _slot_id(slot)
         for slot in raw_slots[MAX_EVIDENCE_SLOTS:]
@@ -403,7 +416,10 @@ def _retrieve_evidence_slot_package(
 def _retrieve_single_evidence_slot(
     slot: dict[str, Any],
     chunks: list[ReviewChunk],
-    store: ChromaChunkStore,
+    store: ChromaChunkStore | None,
+    use_bm25: bool = True,
+    use_neighbors: bool = True,
+    use_rerank: bool = True,
 ) -> dict[str, Any]:
     slot_id = _slot_id(slot)
     label = str(slot.get("label") or slot_id)
@@ -418,9 +434,9 @@ def _retrieve_single_evidence_slot(
             query,
             top_k=settings.rag_top_k,
             store=store,
-            use_bm25=True,
-            use_neighbors=True,
-            use_rerank=True,
+            use_bm25=use_bm25,
+            use_neighbors=use_neighbors,
+            use_rerank=use_rerank,
         )
         matches = [serialize_retrieval_match(match) for match in retrieval.get("matches", [])]
         query_results.append(

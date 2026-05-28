@@ -14,7 +14,7 @@ from app.database import Base, get_db
 from app.models.contract import Contract
 from app.models.review_item import ReviewItem
 from app.models.session import ReviewSession
-from app.services import rag_service, review_agent_service, review_config_service, water_review_service
+from app.services import rag_service, retrieval_debug_service, review_agent_service, review_config_service, water_review_service
 from app.services.review_rule_schema import build_review_rule_topics
 
 
@@ -1313,6 +1313,86 @@ def test_retrieval_debug_returns_non_persistent_matches_with_anchors(client: Tes
         assert db.query(ReviewItem).count() == before_review_item_count
 
 
+def test_retrieval_debug_can_run_evidence_slot_package(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    captured_top_k: list[int] = []
+
+    def fake_retrieve_for_query(chunks, query, top_k, **kwargs):
+        captured_top_k.append(top_k)
+        return {
+            "query": query,
+            "retrieval_mode": "bm25_neighbor",
+            "matches": [
+                {
+                    "chunk_id": f"debug-slot-{index}",
+                    "document": f"植物措施 乔木 灌木 第 {index} 条证据",
+                    "metadata": {"page_start": index, "page_end": index, "section": "植物措施"},
+                    "score": 1.0 / index,
+                    "retrieval_sources": ["bm25"],
+                    "source_ranks": {"bm25": index},
+                }
+                for index in range(1, 6)
+            ],
+            "vector_available": False,
+            "bm25_available": True,
+            "rerank_available": False,
+        }
+
+    monkeypatch.setattr(settings, "rag_top_k", 50)
+    monkeypatch.setattr(review_agent_service, "retrieve_for_query", fake_retrieve_for_query)
+
+    with client.app.state.TestingSessionLocal() as db:
+        before_review_item_count = db.query(ReviewItem).count()
+
+    response = client.post(
+        "/api/v1/sessions/task5-session/retrieval-debug",
+        json={
+            "evidence_slot": {
+                "id": "debug_plant_slot",
+                "label": "植物措施槽位调试",
+                "required": True,
+                "queries": ["植物措施 乔木 灌木"],
+                "expected_terms": ["乔木", "灌木"],
+                "min_matches": 2,
+            },
+            "use_vector": False,
+            "use_bm25": True,
+            "use_neighbors": True,
+            "use_rerank": False,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert captured_top_k == [50]
+    assert data["status"] == "ready"
+    assert data["query"] == "植物措施 乔木 灌木"
+    package = data["evidence_slot_package"]
+    assert package["slot_count"] == 1
+    assert package["missing_required_slot_ids"] == []
+    slot = package["slots"][0]
+    assert slot["slot_id"] == "debug_plant_slot"
+    assert slot["status"] == "matched"
+    assert slot["min_matches"] == 2
+    assert slot["match_count"] == 5
+    assert [match["chunk_id"] for match in slot["prompt_matches"]] == ["debug-slot-1", "debug-slot-2", "debug-slot-3"]
+    assert [match["chunk_id"] for match in slot["trace_matches"]] == ["debug-slot-4", "debug-slot-5"]
+    assert [match["chunk_id"] for match in data["matches"]] == [
+        "debug-slot-1",
+        "debug-slot-2",
+        "debug-slot-3",
+        "debug-slot-4",
+        "debug-slot-5",
+    ]
+    assert data["trace"]["debug_mode"] == "evidence_slot"
+    assert data["trace"]["top_k"] == 50
+    assert data["trace"]["slot_top_k"] == 50
+    assert data["trace"]["top_k_clamped"] is False
+    assert data["trace"]["requested_use_bm25"] is True
+
+    with client.app.state.TestingSessionLocal() as db:
+        assert db.query(ReviewItem).count() == before_review_item_count
+
+
 def test_retrieval_debug_degrades_to_bm25_when_vector_index_is_missing(client: TestClient):
     with client.app.state.TestingSessionLocal() as db:
         before_review_item_count = db.query(ReviewItem).count()
@@ -1369,6 +1449,16 @@ def test_retrieval_debug_rejects_oversized_query(client: TestClient):
     )
 
     assert response.status_code == 422
+
+
+def test_retrieval_debug_rejects_when_query_and_slot_are_missing(client: TestClient):
+    response = client.post(
+        "/api/v1/sessions/task5-session/retrieval-debug",
+        json={"query": "", "use_vector": True, "use_bm25": True},
+    )
+
+    assert response.status_code == 400
+    assert "query 或 evidence_slot" in response.json()["detail"]["message"]
 
 
 def test_retrieval_debug_clamps_top_k_without_persisting(client: TestClient):

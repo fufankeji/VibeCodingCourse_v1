@@ -1,5 +1,5 @@
 import { apiClient } from './client';
-import type { RetrievalMatch } from './reviewConfig';
+import type { EvidenceSlotPackage, RetrievalMatch } from './reviewConfig';
 
 export interface ProgressSummary {
   total_high_risk: number;
@@ -159,6 +159,7 @@ export interface RetrievalDebugResponse {
   query: string;
   reason?: string;
   matches: RetrievalMatch[];
+  evidence_slot_package?: EvidenceSlotPackage;
   trace: {
     persisted?: boolean;
     artifact_dir?: string;
@@ -198,7 +199,8 @@ export function getReviewRuleTopics(sessionId: string): Promise<ReviewRuleTopics
 export function runRetrievalDebug(
   sessionId: string,
   body: {
-    query: string;
+    query?: string;
+    evidence_slot?: Record<string, unknown>;
     top_k?: number;
     use_vector?: boolean;
     use_bm25?: boolean;

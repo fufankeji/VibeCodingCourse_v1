@@ -364,7 +364,10 @@ export function HITLReviewPage() {
     setIsRetrievalDebugging(true);
     setRetrievalDebugError(null);
     try {
-      const result = await runRetrievalDebug(sessionId, { query, ...options });
+      const result = await runRetrievalDebug(sessionId, {
+        query,
+        ...options,
+      });
       setRetrievalDebugResult(result);
     } catch (err) {
       setRetrievalDebugError(getErrorMessage(err));
@@ -925,6 +928,7 @@ type RetrievalDebugOptions = {
   use_bm25: boolean;
   use_neighbors: boolean;
   use_rerank: boolean;
+  evidence_slot?: Record<string, unknown>;
 };
 type RetrievalContributionBadge = {
   key: string;
@@ -993,7 +997,7 @@ function ReviewIssuePanel({
   retrievalDebugResult: RetrievalDebugResponse | null;
   retrievalDebugError: string | null;
   isRetrievalDebugging: boolean;
-  onRunRetrievalDebug: (query: string) => void;
+  onRunRetrievalDebug: (query: string, options: RetrievalDebugOptions) => void;
   onSelectRetrievalDebugMatch: (match: RetrievalMatch) => void;
 }) {
   const [chapterFilter, setChapterFilter] = useState<ChapterFilter>('all');
@@ -1248,6 +1252,10 @@ function RetrievalDebugPanel({
   const [useBm25, setUseBm25] = useState(true);
   const [useNeighbors, setUseNeighbors] = useState(true);
   const [useRerank, setUseRerank] = useState(true);
+  const [debugMode, setDebugMode] = useState<'query' | 'slot'>('query');
+  const [slotId, setSlotId] = useState('debug_slot');
+  const [minMatches, setMinMatches] = useState(1);
+  const [expectedTerms, setExpectedTerms] = useState('');
   const canRun = query.trim().length > 0 && !isLoading && (useVector || useBm25);
   const matches = result?.matches ?? [];
   const statusClass = result?.status === 'ready'
@@ -1275,6 +1283,16 @@ function RetrievalDebugPanel({
               use_bm25: useBm25,
               use_neighbors: useNeighbors,
               use_rerank: useRerank,
+              evidence_slot: debugMode === 'slot'
+                ? {
+                    id: slotId.trim() || 'debug_slot',
+                    label: slotId.trim() || 'debug_slot',
+                    required: true,
+                    queries: [query.trim()],
+                    expected_terms: parseListInput(expectedTerms),
+                    min_matches: minMatches,
+                  }
+                : undefined,
             });
           }
         }}
@@ -1295,6 +1313,14 @@ function RetrievalDebugPanel({
         </button>
       </form>
       <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] text-slate-500">
+        <label className="inline-flex items-center gap-1">
+          <input
+            type="checkbox"
+            checked={debugMode === 'slot'}
+            onChange={(event) => setDebugMode(event.target.checked ? 'slot' : 'query')}
+          />
+          slot
+        </label>
         <label className="inline-flex items-center gap-1">
           top_k
           <input
@@ -1323,11 +1349,35 @@ function RetrievalDebugPanel({
           rerank
         </label>
       </div>
+      {debugMode === 'slot' && (
+        <div className="mt-2 grid grid-cols-[minmax(0,1fr)_56px] gap-1.5 text-[10px] text-slate-500">
+          <input
+            value={slotId}
+            onChange={(event) => setSlotId(event.target.value)}
+            className="h-7 rounded border border-slate-200 px-2 text-[10px] outline-none focus:border-blue-300"
+            placeholder="slot_id"
+          />
+          <input
+            type="number"
+            min={1}
+            value={minMatches}
+            onChange={(event) => setMinMatches(Math.max(1, Number(event.target.value) || 1))}
+            className="h-7 rounded border border-slate-200 px-1 text-[10px] outline-none focus:border-blue-300"
+            title="min_matches"
+          />
+          <input
+            value={expectedTerms}
+            onChange={(event) => setExpectedTerms(event.target.value)}
+            className="col-span-2 h-7 rounded border border-slate-200 px-2 text-[10px] outline-none focus:border-blue-300"
+            placeholder="expected_terms，用逗号或换行分隔"
+          />
+        </div>
+      )}
       {error && <p className="mt-2 text-[11px] leading-4 text-red-600">{error}</p>}
       {result && (
         <div className="mt-2 space-y-1 text-[10px] leading-4 text-slate-400">
           <p>
-            {result.trace.retrieval_mode || '-'} · chunks {result.trace.chunk_count ?? '-'} · vector {result.trace.vector_available ? 'on' : 'off'} · BM25 {result.trace.bm25_available ? 'on' : 'off'} · rerank {result.trace.rerank_available ? 'on' : 'off'}
+            {String(result.trace.debug_mode || 'query')} · {result.trace.retrieval_mode || '-'} · chunks {result.trace.chunk_count ?? '-'} · vector {result.trace.vector_available ? 'on' : 'off'} · BM25 {result.trace.bm25_available ? 'on' : 'off'} · rerank {result.trace.rerank_available ? 'on' : 'off'}
           </p>
           <p>
             request: vector {result.trace.requested_use_vector ? 'on' : 'off'} · BM25 {result.trace.requested_use_bm25 ? 'on' : 'off'} · neighbor {result.trace.requested_use_neighbors ? 'on' : 'off'} · rerank {result.trace.requested_use_rerank ? 'on' : 'off'}
@@ -1341,6 +1391,14 @@ function RetrievalDebugPanel({
           {result.status === 'unavailable' && (
             <p className="text-red-600">检索不可用：{result.reason || 'artifact 不完整'}</p>
           )}
+        </div>
+      )}
+      {result?.evidence_slot_package && (
+        <div className="mt-2">
+          <EvidenceSlotPackagePanel
+            packageData={result.evidence_slot_package}
+            onSelectEvidenceMatch={onSelectMatch}
+          />
         </div>
       )}
       {matches.length > 0 && (
