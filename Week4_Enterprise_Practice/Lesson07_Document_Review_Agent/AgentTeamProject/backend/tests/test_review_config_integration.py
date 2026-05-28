@@ -1400,6 +1400,52 @@ def test_retrieval_debug_can_run_evidence_slot_package(client: TestClient, monke
         assert db.query(ReviewItem).count() == before_review_item_count
 
 
+def test_retrieval_debug_query_uses_shared_default_top_k_when_omitted(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    captured_top_k: list[int] = []
+
+    def fake_retrieve_for_query(chunks, query, top_k, **kwargs):
+        captured_top_k.append(top_k)
+        return {
+            "query": query,
+            "retrieval_mode": "bm25_neighbor",
+            "matches": [
+                {
+                    "chunk_id": "debug-query-default",
+                    "document": "植物措施 乔木 灌木 默认召回证据",
+                    "metadata": {"page_start": 12, "page_end": 12, "section": "植物措施"},
+                    "score": 1.0,
+                    "retrieval_sources": ["bm25"],
+                    "source_ranks": {"bm25": 1},
+                }
+            ],
+            "vector_available": False,
+            "bm25_available": True,
+            "rerank_available": False,
+        }
+
+    monkeypatch.setattr(retrieval_debug_service.rag_service, "retrieve_for_query", fake_retrieve_for_query)
+
+    response = client.post(
+        "/api/v1/sessions/task5-session/retrieval-debug",
+        json={
+            "query": "植物措施 乔木 灌木",
+            "use_vector": False,
+            "use_bm25": True,
+            "use_neighbors": True,
+            "use_rerank": False,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert captured_top_k == [50]
+    assert data["trace"]["top_k"] == 50
+    assert data["trace"]["retrieval_defaults"]["candidate_top_k"] == 50
+    assert data["trace"]["top_k_clamped"] is False
+
+
 def test_retrieval_debug_degrades_to_bm25_when_vector_index_is_missing(client: TestClient):
     with client.app.state.TestingSessionLocal() as db:
         before_review_item_count = db.query(ReviewItem).count()
@@ -1479,7 +1525,8 @@ def test_retrieval_debug_clamps_top_k_without_persisting(client: TestClient):
 
     assert response.status_code == 200
     data = response.json()
-    assert data["trace"]["top_k"] == 20
+    assert data["trace"]["top_k"] == 50
+    assert data["trace"]["retrieval_defaults"]["candidate_top_k"] == 50
     assert data["trace"]["requested_top_k"] == 999
     assert data["trace"]["top_k_clamped"] is True
     assert data["trace"]["requested_use_rerank"] is False

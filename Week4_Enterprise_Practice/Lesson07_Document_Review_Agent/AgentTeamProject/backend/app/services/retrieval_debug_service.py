@@ -13,7 +13,10 @@ from app.models.contract import Contract
 from app.models.session import ReviewSession
 from app.services import rag_service
 from app.services.review_agent_service import build_evidence_slot_package
-from app.services.review_retrieval_defaults import evidence_slot_retrieval_defaults_trace
+from app.services.review_retrieval_defaults import (
+    EVIDENCE_SLOT_RETRIEVAL_DEFAULTS,
+    evidence_slot_retrieval_defaults_trace,
+)
 from app.services.retrieval_match_serializer import serialize_retrieval_match
 from app.services.water_review_service import ReviewChunk
 
@@ -27,7 +30,7 @@ def run_retrieval_debug(
     query: str,
     db: Session,
     evidence_slot: dict[str, Any] | None = None,
-    top_k: int = 8,
+    top_k: int | None = None,
     use_vector: bool = True,
     use_bm25: bool = True,
     use_neighbors: bool = True,
@@ -38,7 +41,8 @@ def run_retrieval_debug(
         raise RetrievalDebugBadRequest("query 或 evidence_slot 不能为空")
     if not use_vector and not use_bm25:
         raise RetrievalDebugBadRequest("至少启用 BM25 或向量检索")
-    requested_top_k = int(top_k)
+    default_top_k = EVIDENCE_SLOT_RETRIEVAL_DEFAULTS.candidate_top_k
+    requested_top_k = int(top_k) if top_k is not None else default_top_k
 
     session = db.query(ReviewSession).filter(ReviewSession.id == session_id).first()
     if not session:
@@ -74,7 +78,8 @@ def run_retrieval_debug(
             use_neighbors,
             use_rerank,
         )
-    bounded_top_k = max(1, min(requested_top_k, 20))
+    bounded_top_k = max(1, min(requested_top_k, default_top_k))
+    defaults = evidence_slot_retrieval_defaults_trace()
     retrieval = rag_service.retrieve_for_query(
         chunks,
         normalized_query,
@@ -100,6 +105,7 @@ def run_retrieval_debug(
             "rerank_available": retrieval["rerank_available"],
             "retrieval_mode": retrieval["retrieval_mode"],
             "top_k": bounded_top_k,
+            "retrieval_defaults": defaults,
             "requested_top_k": requested_top_k,
             "top_k_clamped": requested_top_k != bounded_top_k,
             "requested_use_vector": use_vector,

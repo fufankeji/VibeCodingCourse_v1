@@ -29,7 +29,7 @@ router = APIRouter()
 class RetrievalDebugRequest(BaseModel):
     query: str = Field(default="", max_length=500)
     evidence_slot: dict[str, Any] | None = None
-    top_k: int = Field(default=8, ge=1)
+    top_k: int | None = Field(default=None, ge=1)
     use_vector: bool = True
     use_bm25: bool = True
     use_neighbors: bool = True
