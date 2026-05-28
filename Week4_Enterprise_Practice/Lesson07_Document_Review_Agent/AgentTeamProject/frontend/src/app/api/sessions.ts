@@ -37,6 +37,8 @@ export interface ReviewDocumentBlock {
   page: number;
   type: string;
   text: string;
+  html?: string;
+  image_path?: string;
   bbox: number[];
   section_hint: string;
 }

@@ -170,6 +170,8 @@ def _normalize_document_block(block: Any, index: int) -> dict[str, Any]:
         "page": page,
         "type": block_type,
         "text": text,
+        "html": str(data.get("html") or ""),
+        "image_path": str(data.get("image_path") or ""),
         "bbox": bbox,
         "section_hint": str(data.get("section_hint") or ""),
     }

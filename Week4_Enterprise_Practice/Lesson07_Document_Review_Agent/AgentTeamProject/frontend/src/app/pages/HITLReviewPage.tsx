@@ -797,7 +797,8 @@ function DocumentPageView({
 }
 
 function DocumentBlockView({ block, highlighted }: { block: ReviewDocumentBlock; highlighted: boolean }) {
-  if (!block.text) return null;
+  const hasRenderableMedia = Boolean(block.html || block.image_path);
+  if (!block.text && !hasRenderableMedia) return null;
   const baseClass = highlighted
     ? 'rounded-sm bg-red-100 px-1 text-red-900 ring-1 ring-red-200'
     : 'text-slate-800';
@@ -811,14 +812,43 @@ function DocumentBlockView({ block, highlighted }: { block: ReviewDocumentBlock;
   }
 
   if (block.type === 'table') {
+    const sanitizedHtml = block.html ? sanitizeDocumentHtml(block.html) : '';
+    const hasVisibleHtml = htmlHasVisibleText(sanitizedHtml);
     return (
-      <div className={`whitespace-pre-wrap rounded border border-slate-200 bg-slate-50 px-2 py-2 font-mono text-[10px] leading-5 ${highlighted ? 'ring-1 ring-red-200' : ''}`}>
-        {block.text}
+      <div className={`space-y-2 rounded border border-slate-200 bg-slate-50 px-2 py-2 text-[10px] leading-5 ${highlighted ? 'ring-1 ring-red-200' : ''}`}>
+        {sanitizedHtml && hasVisibleHtml ? (
+          <div
+            className="overflow-x-auto [&_table]:w-full [&_table]:border-collapse [&_td]:border [&_td]:border-slate-200 [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:border-slate-200 [&_th]:bg-slate-100 [&_th]:px-2 [&_th]:py-1"
+            dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
+          />
+        ) : block.image_path ? null : (
+          <div className="whitespace-pre-wrap font-mono text-slate-600">{block.text}</div>
+        )}
+        {block.image_path && !hasVisibleHtml ? (
+          <img
+            src={block.image_path}
+            alt={block.text || 'MinerU table'}
+            loading="lazy"
+            className="max-h-[420px] w-full rounded border border-slate-200 bg-white object-contain"
+          />
+        ) : null}
       </div>
     );
   }
 
   if (block.type === 'image') {
+    if (block.image_path) {
+      return (
+        <div className={`rounded border border-slate-200 bg-slate-50 p-2 ${highlighted ? 'ring-1 ring-red-200' : ''}`}>
+          <img
+            src={block.image_path}
+            alt={block.text || 'MinerU image'}
+            loading="lazy"
+            className="max-h-[520px] w-full rounded bg-white object-contain"
+          />
+        </div>
+      );
+    }
     return (
       <div className="rounded border border-dashed border-slate-300 bg-slate-50 px-3 py-4 text-center text-[11px] text-slate-400">
         图像块：{truncateText(block.text, 80)}
@@ -856,6 +886,19 @@ function isActiveEvidenceBlock(block: ReviewDocumentBlock, activeItem?: ReviewIt
 
 function normalizeInlineText(value: string): string {
   return value.replace(/\s+/g, '');
+}
+
+function sanitizeDocumentHtml(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?>[\s\S]*?<\/style>/gi, '')
+    .replace(/\son\w+="[^"]*"/gi, '')
+    .replace(/\son\w+='[^']*'/gi, '')
+    .replace(/javascript:/gi, '');
+}
+
+function htmlHasVisibleText(html: string): boolean {
+  return html.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, '').length > 0;
 }
 
 type WorkbenchIssueRow = {

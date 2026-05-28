@@ -31,6 +31,51 @@ def _mineru_doc(text: str) -> dict:
     }
 
 
+def _mineru_doc_with_media() -> dict:
+    return {
+        "pdf_info": [
+            {
+                "page_idx": 0,
+                "para_blocks": [
+                    {
+                        "bbox": [69, 550, 525, 698],
+                        "type": "text",
+                        "index": 2,
+                        "lines": [
+                            {
+                                "spans": [
+                                    {
+                                        "bbox": [69, 550, 525, 698],
+                                        "type": "table",
+                                        "html": "<table><tr><td>项目组成</td><td>住宅楼</td></tr></table>",
+                                        "image_path": "https://example.com/table.jpg",
+                                    }
+                                ]
+                            }
+                        ],
+                    },
+                    {
+                        "bbox": [70, 100, 520, 420],
+                        "type": "text",
+                        "index": 3,
+                        "lines": [
+                            {
+                                "spans": [
+                                    {
+                                        "bbox": [70, 100, 520, 420],
+                                        "type": "image",
+                                        "image_path": "https://example.com/figure.jpg",
+                                    }
+                                ]
+                            }
+                        ],
+                    },
+                ],
+            }
+        ]
+    }
+
+
 def test_parse_document_uses_explicit_mineru_json_before_default(tmp_path, monkeypatch):
     default_json = tmp_path / "default.json"
     explicit_json = tmp_path / "朝阳区百子湾职工住宅项目.json"
@@ -44,3 +89,21 @@ def test_parse_document_uses_explicit_mineru_json_before_default(tmp_path, monke
     assert [block.text for block in blocks] == ["朝阳区百子湾职工住宅项目"]
     assert blocks[0].page == 1
     assert blocks[0].bbox == [10.0, 20.0, 120.0, 40.0]
+
+
+def test_parse_document_preserves_mineru_table_html_and_image_paths(tmp_path):
+    explicit_json = tmp_path / "mineru-media.json"
+    explicit_json.write_text(json.dumps(_mineru_doc_with_media()), encoding="utf-8")
+
+    blocks = water_review_service.parse_document(str(explicit_json))
+
+    assert len(blocks) == 2
+    table = blocks[0]
+    assert table.type == "table"
+    assert table.html == "<table><tr><td>项目组成</td><td>住宅楼</td></tr></table>"
+    assert table.image_path == "https://example.com/table.jpg"
+    assert "项目组成" in table.text
+    image = blocks[1]
+    assert image.type == "image"
+    assert image.image_path == "https://example.com/figure.jpg"
+    assert image.text == "https://example.com/figure.jpg"

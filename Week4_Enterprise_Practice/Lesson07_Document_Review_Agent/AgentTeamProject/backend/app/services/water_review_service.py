@@ -34,6 +34,8 @@ class ParsedBlock:
     section_hint: str
     char_start: int
     char_end: int
+    html: str = ""
+    image_path: str = ""
 
 
 @dataclass
@@ -418,10 +420,15 @@ def _parse_mineru_json(path: Path) -> list[ParsedBlock]:
     for page in pages:
         page_num = int(page.get("page_idx", 0)) + 1
         for raw in page.get("para_blocks", []) or []:
+            html, image_path = _mineru_block_media(raw)
             text = _mineru_block_text(raw).strip()
-            if not text:
+            if not text and html:
+                text = _html_to_text(html)
+            if not text and image_path:
+                text = image_path
+            if not text and not html and not image_path:
                 continue
-            block_type = _mineru_type(raw.get("type", "text"))
+            block_type = _mineru_type(raw.get("type", "text"), html=html, image_path=image_path)
             start = cursor
             cursor += len(text) + 1
             block_index = raw.get("index", len(blocks))
@@ -435,6 +442,8 @@ def _parse_mineru_json(path: Path) -> list[ParsedBlock]:
                     section_hint=_section_hint(text),
                     char_start=start,
                     char_end=start + len(text),
+                    html=html,
+                    image_path=image_path,
                 )
             )
     if not blocks and DEFAULT_MINERU_MD.exists():
@@ -468,12 +477,16 @@ def _parse_markdown(path: Path) -> list[ParsedBlock]:
     return blocks
 
 
-def _mineru_type(raw_type: str) -> str:
+def _mineru_type(raw_type: str, html: str = "", image_path: str = "") -> str:
     if raw_type == "title":
         return "title"
     if raw_type == "table":
         return "table"
     if raw_type == "image":
+        return "image"
+    if html:
+        return "table"
+    if image_path:
         return "image"
     return "paragraph"
 
@@ -495,6 +508,29 @@ def _mineru_lines_text(lines: list[dict[str, Any]]) -> list[str]:
         if text:
             result.append(text)
     return result
+
+
+def _mineru_block_media(block: dict[str, Any]) -> tuple[str, str]:
+    html = str(block.get("html") or "").strip()
+    image_path = str(block.get("image_path") or "").strip()
+    for line in block.get("lines", []) or []:
+        for span in line.get("spans", []) or []:
+            if not html and span.get("html"):
+                html = str(span.get("html") or "").strip()
+            if not image_path and span.get("image_path"):
+                image_path = str(span.get("image_path") or "").strip()
+    for child in block.get("blocks", []) or []:
+        child_html, child_image_path = _mineru_block_media(child)
+        if not html:
+            html = child_html
+        if not image_path:
+            image_path = child_image_path
+    return html, image_path
+
+
+def _html_to_text(html: str) -> str:
+    text = re.sub(r"<[^>]+>", " ", html)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _issues_from_configured_rules(
