@@ -2841,13 +2841,6 @@ function formatNullableNumber(value: unknown): string {
 }
 
 function getRetrievalContributionBadges(match: RetrievalMatch, fallbackIndex: number): RetrievalContributionBadge[] {
-  const badges: RetrievalContributionBadge[] = [
-    {
-      key: 'final',
-      label: `最终排序 #${numberOrFallback(match.final_rank, fallbackIndex + 1)}`,
-      className: 'bg-slate-100 text-slate-700 ring-slate-200',
-    },
-  ];
   const sourceRanks = match.source_ranks && typeof match.source_ranks === 'object' && !Array.isArray(match.source_ranks)
     ? match.source_ranks
     : {};
@@ -2855,13 +2848,26 @@ function getRetrievalContributionBadges(match: RetrievalMatch, fallbackIndex: nu
     ? match.retrieval_sources
     : inferRetrievalSources(match);
   const sources = orderRetrievalSources(rawSources);
+  const primary = primaryRetrievalSource(match, sources, sourceRanks);
+  const badges: RetrievalContributionBadge[] = [
+    {
+      key: 'primary',
+      label: `主命中：${primary.label}`,
+      className: primary.className,
+    },
+    {
+      key: 'final',
+      label: `最终排序 #${numberOrFallback(match.final_rank, fallbackIndex + 1)}`,
+      className: 'bg-slate-100 text-slate-700 ring-slate-200',
+    },
+  ];
 
   for (const source of sources) {
     const rank = Number(sourceRanks[source] ?? match[`${source}_rank`]);
     const meta = retrievalSourceMeta(source);
     badges.push({
       key: source,
-      label: Number.isFinite(rank) ? `${meta.label} #${rank}` : meta.label,
+      label: Number.isFinite(rank) ? `${meta.secondaryLabel} #${rank}` : meta.secondaryLabel,
       className: meta.className,
     });
   }
@@ -2889,6 +2895,47 @@ function getRetrievalContributionBadges(match: RetrievalMatch, fallbackIndex: nu
   return badges;
 }
 
+function primaryRetrievalSource(
+  match: RetrievalMatch,
+  sources: string[],
+  sourceRanks: Record<string, unknown>
+): { label: string; className: string } {
+  const hasBm25 = sources.includes('bm25');
+  const hasVector = sources.includes('vector');
+  const hasNeighbor = sources.includes('neighbor');
+  if (hasBm25 && hasVector) {
+    const bm25Contribution = rrfContribution(sourceRanks.bm25 ?? match.bm25_rank);
+    const vectorContribution = rrfContribution(sourceRanks.vector ?? match.vector_rank);
+    if (bm25Contribution && vectorContribution) {
+      const diff = Math.abs(bm25Contribution - vectorContribution);
+      if (diff <= 0.0005) return primaryRetrievalMeta('hybrid');
+      return bm25Contribution > vectorContribution ? primaryRetrievalMeta('bm25') : primaryRetrievalMeta('vector');
+    }
+    return primaryRetrievalMeta('hybrid');
+  }
+  if (hasBm25) return primaryRetrievalMeta('bm25');
+  if (hasVector) return primaryRetrievalMeta('vector');
+  if (hasNeighbor) return primaryRetrievalMeta('neighbor');
+  return primaryRetrievalMeta('unknown');
+}
+
+function rrfContribution(rankValue: unknown): number | null {
+  const rank = Number(rankValue);
+  if (!Number.isFinite(rank) || rank <= 0) return null;
+  return 1 / (60 + rank);
+}
+
+function primaryRetrievalMeta(source: string): { label: string; className: string } {
+  const metas: Record<string, { label: string; className: string }> = {
+    bm25: { label: 'BM25关键词召回', className: 'bg-amber-600 text-white ring-amber-700' },
+    vector: { label: '向量语义召回', className: 'bg-blue-600 text-white ring-blue-700' },
+    hybrid: { label: 'BM25+向量混合召回', className: 'bg-indigo-600 text-white ring-indigo-700' },
+    neighbor: { label: '邻近扩展补充', className: 'bg-violet-600 text-white ring-violet-700' },
+    unknown: { label: '未识别', className: 'bg-slate-500 text-white ring-slate-600' },
+  };
+  return metas[source] ?? metas.unknown;
+}
+
 function orderRetrievalSources(sources: string[]): string[] {
   const order = ['bm25', 'vector', 'neighbor', 'rerank'];
   return [...new Set(sources)].sort((a, b) => {
@@ -2898,14 +2945,14 @@ function orderRetrievalSources(sources: string[]): string[] {
   });
 }
 
-function retrievalSourceMeta(source: string): { label: string; className: string } {
-  const metas: Record<string, { label: string; className: string }> = {
-    bm25: { label: 'BM25召回', className: 'bg-amber-50 text-amber-800 ring-amber-200' },
-    vector: { label: '向量召回', className: 'bg-blue-50 text-blue-800 ring-blue-200' },
-    neighbor: { label: '邻近扩展', className: 'bg-violet-50 text-violet-800 ring-violet-200' },
-    rerank: { label: '重排命中', className: 'bg-emerald-50 text-emerald-800 ring-emerald-200' },
+function retrievalSourceMeta(source: string): { secondaryLabel: string; className: string } {
+  const metas: Record<string, { secondaryLabel: string; className: string }> = {
+    bm25: { secondaryLabel: '参与BM25', className: 'bg-amber-50 text-amber-800 ring-amber-200' },
+    vector: { secondaryLabel: '参与向量', className: 'bg-blue-50 text-blue-800 ring-blue-200' },
+    neighbor: { secondaryLabel: '邻近补充', className: 'bg-violet-50 text-violet-800 ring-violet-200' },
+    rerank: { secondaryLabel: '排序重排', className: 'bg-emerald-50 text-emerald-800 ring-emerald-200' },
   };
-  return metas[source] ?? { label: source, className: 'bg-slate-50 text-slate-700 ring-slate-200' };
+  return metas[source] ?? { secondaryLabel: source, className: 'bg-slate-50 text-slate-700 ring-slate-200' };
 }
 
 function inferRetrievalSources(match: RetrievalMatch): string[] {
