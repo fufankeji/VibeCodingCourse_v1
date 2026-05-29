@@ -602,7 +602,8 @@ def _issues_from_configured_rules(
         high_frequency = any(key in "、".join(target_fields) for key in ["土石方", "弃方", "表土", "占地", "防治责任范围", "监测", "投资"])
         if not matched and not high_frequency:
             continue
-        chunk = _best_chunk(chunks, matched or target_fields)
+        evidence_matches = _evidence_matches_from_chunks(chunks, matched or target_fields)
+        chunk = _chunk_for_evidence_match(chunks, evidence_matches[0]) if evidence_matches else _best_chunk(chunks, matched or target_fields)
         severity = _severity_from_policy(rule.get("severity_policy", ""))
         actual = "已命中：" + "、".join(matched) if matched else "材料中未见明确表述"
         if missing:
@@ -617,13 +618,15 @@ def _issues_from_configured_rules(
                     "severity": severity,
                     "expected": rule.get("evidence_requirement", "应满足规则库证据要求"),
                 },
-                issue_desc=f"{rule.get('rule_name', '规则库审查')}：部分目标字段或证据材料需要复核。",
+                issue_desc=_generic_rule_issue_desc(rule, matched, missing),
                 evidence_text="",
                 actual=actual,
                 expected=rule.get("evidence_requirement", "应满足规则库证据要求"),
                 chunk=chunk,
                 risk_override=severity,
                 confidence=68 if matched else 58,
+                extra_reasoning=_generic_rule_reasoning(rule, matched, missing),
+                evidence_matches=evidence_matches,
             )
         )
         if len(issues) >= limit:
@@ -727,7 +730,8 @@ def _issue_from_structured_check_item(
         status = "issue"
     else:
         status = "needs_evidence" if missing_audit_ids or project_comparison_status == "needs_review" else "issue"
-    chunk = _best_chunk(chunks, _structured_issue_keywords(rule, evidence_slot_package))
+    evidence_matches = _evidence_matches_from_slot_package(evidence_slot_package, chunks)
+    chunk = _chunk_for_evidence_match(chunks, evidence_matches[0]) if evidence_matches else _best_chunk(chunks, _structured_issue_keywords(rule, evidence_slot_package))
     page = chunk.page_range[0] if chunk else 1
     evidence = chunk.text[:500] if chunk else ""
     rule_name = str(rule.get("rule_name") or rule.get("review_sub_type") or "配置化审查项")
@@ -739,15 +743,24 @@ def _issue_from_structured_check_item(
         failed_formula_ids,
         missing_audit_ids,
         project_comparison_status,
+        project_comparison,
     )
+    issue_id = str(uuid.uuid4())
+    source_bbox_list = _source_bbox_list_from_matches(evidence_matches) or (chunk.bbox_list if chunk else [])
+    evidence_nodes = _block_ids_from_matches(evidence_matches) or [item.get("block_id") for item in (chunk.bbox_list if chunk else [])]
+    source_pages = _source_pages_from_matches(evidence_matches) or ([page] if page else [])
+    reasoning_summary = _review_reasoning_summary(actual_value, expected, None, f"{rule_name}：{finding_reason}，需补齐后复核。")
+    suggestion = "补齐配置项所需证据或修正文档数据后重新审查。"
+    risk_level = _severity_from_policy(str(rule.get("severity_policy") or "")) if status == "issue" else "HIGH"
     reasoning = {
         "issue_type": category,
         "rule_id": str(rule.get("rule_id") or rule.get("id") or "WSB-CONFIG"),
         "rule_name": rule_name,
         "actual_value": actual_value,
         "expected_value": expected,
-        "evidence_nodes": [item.get("block_id") for item in (chunk.bbox_list if chunk else [])],
-        "source_bbox_list": chunk.bbox_list if chunk else [],
+        "evidence_nodes": evidence_nodes,
+        "source_pages": source_pages,
+        "source_bbox_list": source_bbox_list,
         "evidence_slot_package": evidence_slot_package,
         "retrieval_trace": retrieval_trace,
         "formula_check_results": formula_check_results,
@@ -755,9 +768,26 @@ def _issue_from_structured_check_item(
         "project_composition_consistency": project_comparison,
         "review_status": status,
         "conclusion_type": status,
+        "reasoning_summary": reasoning_summary,
+        "review_result": _review_result(
+            issue_id=issue_id,
+            session_status="待审核",
+            review_topic=category,
+            review_item=str(rule.get("review_sub_type") or rule_name),
+            rule_id=str(rule.get("rule_id") or rule.get("id") or "WSB-CONFIG"),
+            rule_name=rule_name,
+            risk_level=risk_level,
+            issue_desc=f"{rule_name}：{finding_reason}，需补齐后复核。",
+            evidence_matches=evidence_matches or _evidence_matches_from_chunk(chunk),
+            source_bbox_list=source_bbox_list,
+            source_pages=source_pages,
+            reasoning_summary=reasoning_summary,
+            fix_suggestion=suggestion,
+            confidence=76,
+        ),
     }
     return {
-        "id": str(uuid.uuid4()),
+        "id": issue_id,
         "session_id": session_id,
         "clause_text": evidence,
         "page_number": page,
@@ -765,13 +795,13 @@ def _issue_from_structured_check_item(
         "highlight_anchor": chunk.chunk_id if chunk else f"page{page}",
         "char_offset_start": chunk.char_start if chunk else 0,
         "char_offset_end": chunk.char_end if chunk else len(evidence),
-        "risk_level": _severity_from_policy(str(rule.get("severity_policy") or "")) if status == "issue" else "HIGH",
+        "risk_level": risk_level,
         "confidence_score": 76,
         "source_type": "rule_engine",
         "risk_category": category,
         "ai_finding": f"{rule_name}：{finding_reason}，需补齐后复核。",
         "ai_reasoning": json.dumps(reasoning, ensure_ascii=False),
-        "suggested_revision": "补齐配置项所需证据或修正文档数据后重新审查。",
+        "suggested_revision": suggestion,
         "human_decision": "pending",
     }
 
@@ -827,6 +857,7 @@ def _structured_issue_reason(
     failed_formula_ids: list[str],
     missing_audit_ids: list[str],
     project_comparison_status: str = "",
+    project_comparison: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
     if missing_slot_ids:
         return "缺失必填 evidence_slots：" + "、".join(missing_slot_ids), "必填证据槽位缺失"
@@ -837,10 +868,280 @@ def _structured_issue_reason(
     if missing_audit_ids:
         return "土石方结构化审计缺项：" + "、".join(item for item in missing_audit_ids if item), "土石方结构化审计缺项"
     if project_comparison_status == "mismatch":
-        return "项目概要与立项或主体设计文件存在关键建设规模差异", "项目组成一致性不通过"
+        details = _project_comparison_detail_text(project_comparison)
+        actual = "项目概要与立项或主体设计文件存在关键建设规模差异"
+        return f"{actual}：{details}" if details else actual, "项目组成一致性不通过" + (f"：{details}" if details else "")
     if project_comparison_status == "needs_review":
-        return "项目概要或立项/主体设计文件缺少可结构化比较字段", "项目组成一致性证据不足"
+        details = _project_comparison_detail_text(project_comparison)
+        actual = "项目概要或立项/主体设计文件缺少可结构化比较字段"
+        return f"{actual}：{details}" if details else actual, "项目组成一致性证据不足" + (f"：{details}" if details else "")
     return "配置化审查命中待复核条件", "配置化审查需复核"
+
+
+def _project_comparison_detail_text(project_comparison: dict[str, Any] | None) -> str:
+    if not isinstance(project_comparison, dict):
+        return ""
+    key_findings = project_comparison.get("key_findings")
+    if isinstance(key_findings, list):
+        details = [str(item).strip() for item in key_findings if str(item).strip()]
+        if details:
+            return "；".join(details[:3])
+    reason = str(project_comparison.get("reason") or "").strip()
+    return reason
+
+
+def _generic_rule_issue_desc(rule: dict[str, Any], matched: list[str], missing: list[str]) -> str:
+    rule_name = str(rule.get("rule_name") or "规则库审查")
+    matched_text = "、".join(matched) if matched else "无"
+    missing_text = "、".join(missing[:6]) if missing else "无"
+    requirement = str(rule.get("evidence_requirement") or "应满足规则库证据要求")
+    return (
+        f"{rule_name}：按目标字段逐项核验，材料中已定位「{matched_text}」，"
+        f"但未定位到「{missing_text}」。依据规则要求“{requirement}”，判定为证据不足，需要复核。"
+    )
+
+
+def _generic_rule_reasoning(rule: dict[str, Any], matched: list[str], missing: list[str]) -> dict[str, Any]:
+    target_fields = [str(item) for item in rule.get("target_fields", []) if str(item).strip()]
+    requirement = str(rule.get("evidence_requirement") or "应满足规则库证据要求")
+    rule_source = str(rule.get("rule_source") or "")
+    severity_policy = str(rule.get("severity_policy") or "")
+    steps = [
+        f"1. 读取规则目标字段：{'、'.join(target_fields) or '-'}。",
+        f"2. 在当前审查对象全文中检索目标字段，已命中：{'、'.join(matched) if matched else '无'}。",
+        f"3. 未命中字段按“材料中未见明确表述”处理，待核验：{'、'.join(missing) if missing else '无'}。",
+        f"4. 规则要求：{requirement}",
+        "5. 只要存在必需目标字段未形成可核验证据，就不判定通过，输出为证据不足/需复核。",
+    ]
+    if severity_policy:
+        steps.append(f"6. 风险等级口径：{severity_policy}")
+    return {
+        "matched_target_fields": matched,
+        "missing_target_fields": missing,
+        "target_fields": target_fields,
+        "rule_source": rule_source,
+        "severity_policy": severity_policy,
+        "evidence_requirement": requirement,
+        "judgement_basis": (
+            f"{rule_source + '；' if rule_source else ''}"
+            f"规则要求：{requirement}；"
+            "判定逻辑：target_fields 中的字段必须在方案正文、附表、附图或支撑材料中形成可核验证据；"
+            "未命中的目标字段按材料中未见明确表述处理。"
+        ),
+        "judgement_steps": steps,
+    }
+
+
+def _evidence_matches_from_slot_package(
+    evidence_slot_package: dict[str, Any],
+    chunks: list[ReviewChunk],
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    matches: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for slot in evidence_slot_package.get("slots", []):
+        if not isinstance(slot, dict):
+            continue
+        for key in ["prompt_matches", "trace_matches", "matches"]:
+            for match in slot.get(key, []):
+                if not isinstance(match, dict):
+                    continue
+                chunk_id = str(match.get("chunk_id") or "")
+                if chunk_id and chunk_id in seen:
+                    continue
+                seen.add(chunk_id)
+                enriched = dict(match)
+                enriched["slot_id"] = slot.get("slot_id")
+                enriched["slot_label"] = slot.get("label")
+                if not enriched.get("anchors"):
+                    chunk = _chunk_for_evidence_match(chunks, enriched)
+                    if chunk:
+                        enriched.update(_evidence_match_from_chunk(chunk, []))
+                matches.append(enriched)
+                if len(matches) >= limit:
+                    return matches
+    return matches
+
+
+def _evidence_matches_from_chunks(
+    chunks: list[ReviewChunk],
+    keywords: list[str],
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    scored: list[tuple[int, int, ReviewChunk, list[str]]] = []
+    normalized_keywords = [keyword for keyword in keywords if keyword]
+    for index, chunk in enumerate(chunks):
+        text = chunk.text or ""
+        matched_terms = [keyword for keyword in normalized_keywords if keyword in text]
+        if not matched_terms:
+            continue
+        scored.append((len(matched_terms), -index, chunk, matched_terms))
+    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [_evidence_match_from_chunk(chunk, matched_terms) for _, _, chunk, matched_terms in scored[:limit]]
+
+
+def _evidence_matches_from_chunk(chunk: ReviewChunk | None) -> list[dict[str, Any]]:
+    return [_evidence_match_from_chunk(chunk, [])] if chunk else []
+
+
+def _evidence_match_from_chunk(chunk: ReviewChunk, matched_terms: list[str]) -> dict[str, Any]:
+    page_start = chunk.page_range[0] if chunk.page_range else None
+    page_end = chunk.page_range[-1] if chunk.page_range else page_start
+    anchors = chunk.bbox_list or []
+    block_ids = [str(anchor.get("block_id")) for anchor in anchors if anchor.get("block_id")]
+    return {
+        "chunk_id": chunk.chunk_id,
+        "page": page_start,
+        "page_end": page_end,
+        "primary_page": page_start,
+        "page_range": [page_start, page_end] if page_start is not None and page_end is not None else [],
+        "section": chunk.section,
+        "anchors": anchors,
+        "block_ids": block_ids,
+        "bbox_count": len(anchors),
+        "matched_terms": matched_terms,
+        "retrieval_sources": ["keyword"],
+        "text": chunk.text[:1600],
+    }
+
+
+def _chunk_for_evidence_match(chunks: list[ReviewChunk], match: dict[str, Any]) -> ReviewChunk | None:
+    chunk_id = str(match.get("chunk_id") or "")
+    if not chunk_id:
+        return None
+    return next((chunk for chunk in chunks if chunk.chunk_id == chunk_id), None)
+
+
+def _source_bbox_list_from_matches(matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    anchors: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for match in matches:
+        for anchor in match.get("anchors", []):
+            if not isinstance(anchor, dict):
+                continue
+            key = f"{anchor.get('page')}:{anchor.get('block_id')}:{anchor.get('bbox')}"
+            if key in seen:
+                continue
+            seen.add(key)
+            anchors.append(anchor)
+    return anchors
+
+
+def _block_ids_from_matches(matches: list[dict[str, Any]]) -> list[str]:
+    block_ids: list[str] = []
+    seen: set[str] = set()
+    for match in matches:
+        candidates = match.get("block_ids")
+        if not isinstance(candidates, list):
+            candidates = [anchor.get("block_id") for anchor in match.get("anchors", []) if isinstance(anchor, dict)]
+        for block_id in candidates:
+            text = str(block_id or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            block_ids.append(text)
+    return block_ids
+
+
+def _source_pages_from_matches(matches: list[dict[str, Any]]) -> list[int]:
+    pages: set[int] = set()
+    for match in matches:
+        for key in ["page", "primary_page"]:
+            value = match.get(key)
+            if isinstance(value, int):
+                pages.add(value)
+        page_range = match.get("page_range")
+        if isinstance(page_range, list):
+            pages.update(int(page) for page in page_range if isinstance(page, int))
+    return sorted(page for page in pages if page > 0)
+
+
+def _evidence_text_from_matches(matches: list[dict[str, Any]], limit: int = 5) -> str:
+    lines: list[str] = []
+    for index, match in enumerate(matches[:limit], start=1):
+        page = match.get("page") or match.get("primary_page") or "-"
+        chunk_id = str(match.get("chunk_id") or "-")
+        section = str(match.get("section") or "").strip()
+        text = re.sub(r"\s+", " ", str(match.get("text") or "")).strip()
+        if not text:
+            continue
+        prefix = f"{index}. {chunk_id} p.{page}"
+        if section:
+            prefix += f" {section}"
+        lines.append(f"{prefix}：{text[:320]}")
+    return "\n".join(lines)
+
+
+def _review_reasoning_summary(
+    actual: str,
+    expected: str,
+    extra_reasoning: dict[str, Any] | None,
+    issue_desc: str,
+) -> str:
+    steps = []
+    if isinstance(extra_reasoning, dict):
+        steps = [str(item).strip() for item in extra_reasoning.get("judgement_steps", []) if str(item).strip()]
+    if steps:
+        return "；".join(steps[:6])
+    return "；".join(
+        item
+        for item in [
+            f"判定对象：{issue_desc}",
+            f"实际命中：{actual}",
+            f"规则要求：{expected}",
+            "判定结论：存在未命中或待核验证据时，不判定为通过。",
+        ]
+        if item
+    )
+
+
+def _review_result(
+    *,
+    issue_id: str,
+    session_status: str,
+    review_topic: str,
+    review_item: str,
+    rule_id: str,
+    rule_name: str,
+    risk_level: str,
+    issue_desc: str,
+    evidence_matches: list[dict[str, Any]],
+    source_bbox_list: list[dict[str, Any]],
+    source_pages: list[int],
+    reasoning_summary: str,
+    fix_suggestion: str,
+    confidence: int,
+) -> dict[str, Any]:
+    return {
+        "issue_id": issue_id,
+        "review_topic": review_topic,
+        "review_item": review_item,
+        "rule_id": rule_id,
+        "rule_name": rule_name,
+        "risk_level": risk_level,
+        "issue_desc": issue_desc,
+        "evidence_text": _evidence_text_from_matches(evidence_matches),
+        "evidence_nodes": [
+            {
+                "chunk_id": match.get("chunk_id"),
+                "page": match.get("page") or match.get("primary_page"),
+                "page_end": match.get("page_end"),
+                "section": match.get("section"),
+                "block_ids": match.get("block_ids") or [],
+                "bbox_count": match.get("bbox_count") or len(match.get("anchors", [])),
+                "matched_terms": match.get("matched_terms") or [],
+                "retrieval_sources": match.get("retrieval_sources") or [],
+                "text": str(match.get("text") or "")[:800],
+            }
+            for match in evidence_matches
+        ],
+        "source_pages": source_pages,
+        "source_bbox_list": source_bbox_list,
+        "reasoning_summary": reasoning_summary,
+        "fix_suggestion": fix_suggestion,
+        "confidence": confidence,
+        "review_status": session_status,
+    }
 
 
 def _structured_issue_keywords(rule: dict[str, Any], evidence_slot_package: dict[str, Any]) -> list[str]:
@@ -1044,22 +1345,53 @@ def _issue(
     chunk: ReviewChunk | None,
     risk_override: str | None = None,
     confidence: int = 78,
+    extra_reasoning: dict[str, Any] | None = None,
+    evidence_matches: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    issue_id = str(uuid.uuid4())
     page = chunk.page_range[0] if chunk else 1
     evidence = evidence_text or (chunk.text[:500] if chunk else "")
+    matches = evidence_matches or _evidence_matches_from_chunk(chunk)
+    source_bbox_list = _source_bbox_list_from_matches(matches) or (chunk.bbox_list if chunk else [])
+    evidence_nodes = _block_ids_from_matches(matches) or [item.get("block_id") for item in (chunk.bbox_list if chunk else []) if item.get("block_id")]
+    source_pages = _source_pages_from_matches(matches) or ([page] if page else [])
+    risk_level = risk_override or rule["severity"]
+    review_status = "待审核"
+    fix_suggestion = _suggestion_for(rule)
+    reasoning_summary = _review_reasoning_summary(actual, expected, extra_reasoning, issue_desc)
     reasoning = {
         "issue_type": rule["rule_category"],
         "rule_id": rule["rule_id"],
         "rule_name": rule["rule_name"],
         "actual_value": actual,
         "expected_value": expected,
-        "evidence_nodes": [item.get("block_id") for item in (chunk.bbox_list if chunk else [])],
-        "source_bbox_list": chunk.bbox_list if chunk else [],
+        "evidence_nodes": evidence_nodes,
+        "source_pages": source_pages,
+        "source_bbox_list": source_bbox_list,
         "review_status": "pending",
-        "conclusion_type": "issue" if (risk_override or rule["severity"]) != "LOW" else "attention",
+        "conclusion_type": "issue" if risk_level != "LOW" else "attention",
+        "reasoning_summary": reasoning_summary,
     }
+    if isinstance(extra_reasoning, dict):
+        reasoning.update(extra_reasoning)
+    reasoning["review_result"] = _review_result(
+        issue_id=issue_id,
+        session_status=review_status,
+        review_topic=str(rule.get("rule_category") or ""),
+        review_item=str(rule.get("rule_name") or ""),
+        rule_id=str(rule.get("rule_id") or ""),
+        rule_name=str(rule.get("rule_name") or ""),
+        risk_level=str(risk_level),
+        issue_desc=issue_desc,
+        evidence_matches=matches,
+        source_bbox_list=source_bbox_list,
+        source_pages=source_pages,
+        reasoning_summary=reasoning_summary,
+        fix_suggestion=fix_suggestion,
+        confidence=confidence,
+    )
     return {
-        "id": str(uuid.uuid4()),
+        "id": issue_id,
         "session_id": session_id,
         "clause_text": evidence,
         "page_number": page,
@@ -1067,13 +1399,13 @@ def _issue(
         "highlight_anchor": chunk.chunk_id if chunk else f"page{page}",
         "char_offset_start": chunk.char_start if chunk else 0,
         "char_offset_end": chunk.char_end if chunk else len(evidence),
-        "risk_level": risk_override or rule["severity"],
+        "risk_level": risk_level,
         "confidence_score": confidence,
         "source_type": "rule_engine",
         "risk_category": rule["rule_category"],
         "ai_finding": issue_desc,
         "ai_reasoning": json.dumps(reasoning, ensure_ascii=False),
-        "suggested_revision": _suggestion_for(rule),
+        "suggested_revision": fix_suggestion,
         "human_decision": "pending",
     }
 

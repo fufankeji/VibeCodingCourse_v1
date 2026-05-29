@@ -76,6 +76,25 @@ export interface RiskEvidence {
   is_primary: boolean;
 }
 
+export interface ReviewResult {
+  issue_id?: string;
+  review_topic?: string;
+  review_item?: string;
+  rule_id?: string;
+  rule_name?: string;
+  risk_level?: RiskLevel | string;
+  issue_desc?: string;
+  evidence_text?: string;
+  evidence_nodes?: Array<Record<string, unknown>>;
+  source_pages?: number[];
+  source_bbox_list?: Array<Record<string, unknown>>;
+  reasoning_summary?: string;
+  fix_suggestion?: string;
+  confidence?: number;
+  review_status?: string;
+  [key: string]: unknown;
+}
+
 export interface DecisionHistory {
   id: string;
   decision_type: HumanDecision;
@@ -105,6 +124,7 @@ export interface ReviewItem {
   formula_check_results?: Record<string, unknown> | null;
   earthwork_audit_results?: Record<string, unknown> | null;
   project_composition_consistency?: Record<string, unknown> | null;
+  review_result?: ReviewResult | null;
   review_status?: string | null;
   conclusion_type?: string | null;
   suggested_revision: string;

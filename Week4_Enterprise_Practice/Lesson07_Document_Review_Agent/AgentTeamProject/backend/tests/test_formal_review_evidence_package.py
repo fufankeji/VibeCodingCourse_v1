@@ -195,6 +195,71 @@ def test_formal_review_flags_project_composition_mismatch():
     assert reasoning["project_composition_consistency"]["status"] == "mismatch"
     assert reasoning["review_status"] == "issue"
     assert "项目组成一致性不通过" in issue["ai_finding"]
+    assert "总建筑面积：正文 81700.84 平方米 vs 附件/设计 80836.65 平方米，差异 864.19 平方米" in issue["ai_finding"]
+    assert "地下建筑面积：正文 28450.84 平方米 vs 附件/设计 27586.65 平方米，差异 864.19 平方米" in issue["ai_finding"]
+    assert reasoning["project_composition_consistency"]["judgement_basis"] == (
+        "规则要求：项目组成及建设内容应与立项文件或所处阶段的主体设计文件一致。"
+        "判定方法：抽取正文项目概况与附件/主体设计文件中的关键建设规模字段，逐字段比较数值，差异超过 0.1 平方米判为不一致。"
+    )
+    assert "正文原话：" in reasoning["project_composition_consistency"]["evidence_quotes"]["body"]
+    assert "附件/设计原话：" in reasoning["project_composition_consistency"]["evidence_quotes"]["reference"]
+
+
+def test_formal_review_generic_rule_explains_target_field_judgement():
+    issues = review_rules(
+        "generic-target-field-session",
+        [
+            _chunk(
+                "layout-plan",
+                "总体布置和平面布置说明完整。",
+                section="3 总体布置",
+            ),
+            _chunk(
+                "vertical-plan",
+                "竖向布置章节列明设计标高。",
+                section="3 竖向布置",
+            ),
+        ],
+        _empty_fields(),
+        [
+            {
+                "rule_id": "WSB-GEN-LAYOUT",
+                "rule_source": "审查要点第2条",
+                "rule_name": "总体布置与竖向布置完整性审查",
+                "category": "项目概况类",
+                "target_fields": ["总体布置", "平面布置", "竖向布置", "设计标高", "防洪排水措施", "边坡防护措施"],
+                "severity_policy": "关键支撑文件、数据或责任界定缺失时判定为重大问题。",
+                "evidence_requirement": "需提供总体布置图、平面布置图、竖向设计资料及防洪排水、边坡防护设计说明。",
+            }
+        ],
+    )
+
+    issue = next(item for item in issues if item["ai_finding"].startswith("总体布置与竖向布置完整性审查"))
+    reasoning = json.loads(issue["ai_reasoning"])
+
+    assert "部分目标字段或证据材料需要复核" not in issue["ai_finding"]
+    assert "已定位「总体布置、平面布置、竖向布置、设计标高」" in issue["ai_finding"]
+    assert "未定位到「防洪排水措施、边坡防护措施」" in issue["ai_finding"]
+    assert "需提供总体布置图、平面布置图、竖向设计资料及防洪排水、边坡防护设计说明" in issue["ai_finding"]
+    assert reasoning["matched_target_fields"] == ["总体布置", "平面布置", "竖向布置", "设计标高"]
+    assert reasoning["missing_target_fields"] == ["防洪排水措施", "边坡防护措施"]
+    assert "判定逻辑" in reasoning["judgement_basis"]
+    assert any("未命中字段" in step for step in reasoning["judgement_steps"])
+    review_result = reasoning["review_result"]
+    assert review_result["issue_id"] == issue["id"]
+    assert review_result["review_topic"] == "项目概况类"
+    assert review_result["review_item"] == "总体布置与竖向布置完整性审查"
+    assert review_result["rule_id"] == "WSB-GEN-LAYOUT"
+    assert review_result["rule_name"] == "总体布置与竖向布置完整性审查"
+    assert review_result["risk_level"] == issue["risk_level"]
+    assert "未定位到" in review_result["issue_desc"]
+    assert "1. 读取规则目标字段" in review_result["reasoning_summary"]
+    assert review_result["fix_suggestion"]
+    assert review_result["confidence"] == issue["confidence_score"]
+    assert review_result["review_status"] == "待审核"
+    assert len(review_result["evidence_nodes"]) >= 2
+    assert "layout-plan" in review_result["evidence_text"]
+    assert "vertical-plan" in {node["chunk_id"] for node in review_result["evidence_nodes"]}
 
 
 def test_formal_review_structured_issue_reuses_available_store_with_rerank(monkeypatch: pytest.MonkeyPatch):
@@ -537,6 +602,10 @@ def test_review_item_response_exposes_structured_review_payloads():
                     "status": "mismatch",
                     "field_comparisons": [{"field": "total_building_area", "status": "mismatch"}],
                 },
+                "review_result": {
+                    "issue_id": "item-structured",
+                    "reasoning_summary": "按字段比较后不一致。",
+                },
                 "review_status": "needs_evidence",
                 "conclusion_type": "needs_evidence",
             },
@@ -559,4 +628,5 @@ def test_review_item_response_exposes_structured_review_payloads():
     assert data["formula_check_results"]["checks"][0]["formula_check_id"] == "earthwork_total_balance"
     assert data["earthwork_audit_results"]["checks"][0]["audit_check_id"] == "borrow_source"
     assert data["project_composition_consistency"]["status"] == "mismatch"
+    assert data["review_result"]["reasoning_summary"] == "按字段比较后不一致。"
     assert data["review_status"] == "needs_evidence"

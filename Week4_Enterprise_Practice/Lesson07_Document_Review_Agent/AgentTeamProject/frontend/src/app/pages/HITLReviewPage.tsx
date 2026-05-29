@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router';
-import { AlertTriangle, CheckCircle, XCircle, Edit, RotateCcw, History, Info, Loader2 } from 'lucide-react';
+import { AlertTriangle, CheckCircle, XCircle, Edit, RotateCcw, History, Info, Loader2, X } from 'lucide-react';
 import { RiskLevelBadge } from '../components/RiskLevelBadge';
 import { SourceBadge } from '../components/SourceBadge';
 import { ConfidenceBadge } from '../components/ConfidenceBadge';
@@ -37,7 +37,7 @@ import {
 } from '../api/reviewConfig';
 import { subscribeSSE } from '../api/sse';
 import { useAuth } from '../contexts/AuthContext';
-import type { ReviewItem, HumanDecision, RiskLevel } from '../types';
+import type { ReviewItem, HumanDecision, RiskLevel, ReviewResult } from '../types';
 
 type ActiveAction = 'approve' | 'edit' | 'reject' | null;
 type ConfigDraft = {
@@ -215,11 +215,20 @@ export function HITLReviewPage() {
 
   const activeItem = items.find((i) => i.id === activeItemId);
   useEffect(() => {
+    if (!activeItem) {
+      setActiveEvidenceAnchors([]);
+      return;
+    }
+    const anchors = getReviewItemEvidenceAnchors(activeItem, documentContent);
+    setActiveEvidenceAnchors(anchors);
+    const anchorPage = anchors.find((anchor) => typeof anchor.page === 'number' && anchor.page > 0)?.page;
     const pageNumber = activeItem?.clause_location?.page_number;
-    if (typeof pageNumber === 'number' && pageNumber > 0) {
+    if (typeof anchorPage === 'number' && anchorPage > 0) {
+      setActiveDocumentPage(anchorPage);
+    } else if (typeof pageNumber === 'number' && pageNumber > 0) {
       setActiveDocumentPage(pageNumber);
     }
-  }, [activeItem?.id, activeItem?.clause_location?.page_number]);
+  }, [activeItem?.id, activeItem?.clause_location?.page_number, documentContent]);
 
   const activeRuleTopic = ruleTopics.find((topic) => topic.topic_id === activeRuleTopicId) ?? ruleTopics[0];
   const noteLen = humanNote.trim().length;
@@ -501,7 +510,6 @@ export function HITLReviewPage() {
         />
         <PdfWorkbenchPanel
           item={activeItem}
-          conditionA={conditionA}
           evidenceRef={evidenceRef}
           documentContent={documentContent}
           activePage={activeDocumentPage}
@@ -511,6 +519,7 @@ export function HITLReviewPage() {
         />
         <ReviewIssuePanel
           items={items}
+          documentContent={documentContent}
           activeItemId={activeItemId}
           activeItem={activeItem}
           activeAction={activeAction}
@@ -699,7 +708,6 @@ function SectionTitle({ label, className = '' }: { label: string; className?: st
 
 function PdfWorkbenchPanel({
   item,
-  conditionA,
   evidenceRef,
   documentContent,
   activePage,
@@ -708,7 +716,6 @@ function PdfWorkbenchPanel({
   isLoading,
 }: {
   item?: ReviewItem;
-  conditionA: boolean;
   evidenceRef: React.RefObject<HTMLDivElement | null>;
   documentContent: ReviewDocumentContentResponse | null;
   activePage: number;
@@ -719,7 +726,6 @@ function PdfWorkbenchPanel({
   const page = documentContent?.pages.find((candidate) => candidate.page_number === activePage);
   const pageCount = documentContent?.page_count ?? 0;
   const title = documentContent?.title || '审查对象';
-  const issueText = item?.ai_finding || '弃渣场选址与防护措施说明不完整，未见截排水、拦挡及安全防护参数的连续论证。';
   const evidencePage = item?.clause_location?.page_number;
 
   return (
@@ -759,12 +765,6 @@ function PdfWorkbenchPanel({
           ) : (
             <div className="flex h-[720px] items-center justify-center text-xs text-slate-400">当前页暂无解析内容</div>
           )}
-
-          <div className="absolute right-8 top-64 w-64 rounded bg-slate-900 px-3 py-2 text-[11px] leading-5 text-white shadow-lg">
-            <p className="font-semibold text-sky-200">证据节点 #E-126-03</p>
-            <p className="mt-1 text-slate-200">{truncateText(issueText, 94)}</p>
-            <p className="mt-1 text-slate-400">状态：{conditionA ? '已进入视野' : '等待专家阅读'}</p>
-          </div>
         </div>
       </div>
     </section>
@@ -916,6 +916,8 @@ type WorkbenchIssueRow = {
   category: string;
   page: string;
   severity: RiskLevel;
+  evidenceText: string;
+  basisText: string;
   item?: ReviewItem;
   isStatic?: boolean;
 };
@@ -939,6 +941,7 @@ type DecisionFilter = 'pending' | 'handled' | 'all';
 
 function ReviewIssuePanel({
   items,
+  documentContent,
   activeItemId,
   activeItem,
   activeAction,
@@ -970,6 +973,7 @@ function ReviewIssuePanel({
   onSelectRetrievalDebugMatch,
 }: {
   items: ReviewItem[];
+  documentContent: ReviewDocumentContentResponse | null;
   activeItemId: string | null;
   activeItem?: ReviewItem;
   activeAction: ActiveAction;
@@ -1003,7 +1007,7 @@ function ReviewIssuePanel({
   const [chapterFilter, setChapterFilter] = useState<ChapterFilter>('all');
   const [severityFilter, setSeverityFilter] = useState<SeverityFilter>('all');
   const [decisionFilter, setDecisionFilter] = useState<DecisionFilter>('pending');
-  const rows = buildWorkbenchIssueRows(items);
+  const rows = buildWorkbenchIssueRows(items, documentContent);
   const filteredRows = rows.filter((row) => {
     const matchesChapter = chapterFilter === 'all' || isCurrentSectionIssue(row);
     const matchesSeverity = severityFilter === 'all' || row.severity === severityFilter;
@@ -1073,12 +1077,26 @@ function ReviewIssuePanel({
           <>
             <IssueGroup title="重点问题" count={criticalRows.length}>
               {criticalRows.map((row) => (
-                <IssueRow key={row.id} row={row} active={activeItemId === row.id} onSelect={row.isStatic ? undefined : () => onSelectItem(row.id)} />
+                <IssueRow
+                  key={row.id}
+                  row={row}
+                  active={activeItemId === row.id}
+                  documentContent={documentContent}
+                  onSelect={row.isStatic ? undefined : () => onSelectItem(row.id)}
+                  onSelectEvidenceMatch={onSelectRetrievalDebugMatch}
+                />
               ))}
             </IssueGroup>
             <IssueGroup title="一般核查" count={normalRows.length}>
               {normalRows.map((row) => (
-                <IssueRow key={row.id} row={row} active={activeItemId === row.id} onSelect={row.isStatic ? undefined : () => onSelectItem(row.id)} />
+                <IssueRow
+                  key={row.id}
+                  row={row}
+                  active={activeItemId === row.id}
+                  documentContent={documentContent}
+                  onSelect={row.isStatic ? undefined : () => onSelectItem(row.id)}
+                  onSelectEvidenceMatch={onSelectRetrievalDebugMatch}
+                />
               ))}
             </IssueGroup>
             {filteredRows.length === 0 && (
@@ -1090,12 +1108,9 @@ function ReviewIssuePanel({
 
       <div className="shrink-0 border-t border-slate-200 bg-slate-50 px-3 py-3">
         <div className="mb-2 flex items-center justify-between text-[11px] text-slate-500">
-          <span>AI 判断结论</span>
+          <span>人工处理</span>
           <span>高风险 {decidedCount}/{totalHigh} · 规则主题 {ruleTopicCount}</span>
         </div>
-        <p className="line-clamp-2 text-xs leading-5 text-slate-700">
-          {visibleActiveItem?.ai_finding || '当前样例提示：弃渣场选址及防护设计需补充安全距离、截排水参数和拦挡稳定性说明。'}
-        </p>
         {visibleActiveItem?.human_decision === 'pending' && (
           <div className="mt-2 space-y-2">
             {!activeAction && (
@@ -1136,6 +1151,9 @@ function ReviewIssuePanel({
             )}
           </div>
         )}
+        {!visibleActiveItem && (
+          <p className="text-xs leading-5 text-slate-500">选择一条审查问题后，可在这里确认、修正或驳回。</p>
+        )}
         {visibleActiveItem?.human_decision !== 'pending' && onRevoke && (
           <button onClick={onRevoke} className="mt-2 rounded border border-amber-200 px-2 py-1 text-[11px] text-amber-700 hover:bg-amber-50">
             撤销当前决策
@@ -1169,26 +1187,239 @@ function IssueGroup({ title, count, children }: { title: string; count: number; 
   );
 }
 
-function IssueRow({ row, active, onSelect }: { row: WorkbenchIssueRow; active: boolean; onSelect?: () => void }) {
+function IssueRow({
+  row,
+  active,
+  documentContent,
+  onSelect,
+  onSelectEvidenceMatch,
+}: {
+  row: WorkbenchIssueRow;
+  active: boolean;
+  documentContent: ReviewDocumentContentResponse | null;
+  onSelect?: () => void;
+  onSelectEvidenceMatch: (match: RetrievalMatch) => void;
+}) {
   const disabled = !onSelect;
   return (
-    <button
-      type="button"
-      onClick={onSelect}
-      disabled={disabled}
+    <div
       className={`w-full px-3 py-2.5 text-left ${
-        active ? 'bg-sky-50 shadow-[inset_3px_0_0_#0284c7]' : disabled ? 'cursor-default bg-white opacity-85' : 'hover:bg-slate-50'
+        active ? 'bg-sky-50 shadow-[inset_3px_0_0_#0284c7]' : disabled ? 'bg-white opacity-85' : 'bg-white hover:bg-slate-50'
       }`}
     >
-      <div className="flex items-start justify-between gap-2">
-        <span className="min-w-0 text-xs font-medium leading-5 text-slate-800">{row.title}</span>
-        <SeverityBadge level={row.severity} />
+      <button
+        type="button"
+        onClick={onSelect}
+        disabled={disabled}
+        className={`w-full text-left ${disabled ? 'cursor-default' : ''}`}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <span className="min-w-0 text-xs font-medium leading-5 text-slate-800">{row.title}</span>
+          <SeverityBadge level={row.severity} />
+        </div>
+        {row.evidenceText && (
+          <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-slate-600">
+            原话：{row.evidenceText}
+          </p>
+        )}
+        {row.basisText && (
+          <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-slate-500">
+            逻辑：{row.basisText}
+          </p>
+        )}
+        <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-slate-400">
+          <span className="min-w-0 truncate">{row.category}</span>
+          <span className="shrink-0">{row.page}</span>
+        </div>
+      </button>
+      {row.item && (
+        <ReviewResultSummaryPanel
+          result={getIssueReviewResult(row.item, documentContent)}
+          onSelectEvidenceMatch={onSelectEvidenceMatch}
+        />
+      )}
+    </div>
+  );
+}
+
+function ReviewResultSummaryPanel({
+  result,
+  onSelectEvidenceMatch,
+}: {
+  result: ReviewResult | null;
+  onSelectEvidenceMatch: (match: RetrievalMatch) => void;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  if (!result) return null;
+  const evidenceNodes = toRecordArray(result.evidence_nodes);
+  const sourcePages = Array.isArray(result.source_pages) ? result.source_pages : [];
+  const handleSelectEvidenceMatch = (match: RetrievalMatch) => {
+    onSelectEvidenceMatch(match);
+  };
+  return (
+    <div className="relative mt-2">
+      <button
+        type="button"
+        onClick={() => setIsOpen((current) => !current)}
+        className="w-full rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-left shadow-sm ring-1 ring-amber-100 hover:border-amber-400 hover:bg-amber-100"
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <p className="text-[11px] font-semibold text-amber-800">AI 判断结论 / ReviewResult</p>
+            <p className="mt-0.5 text-[10px] leading-4 text-amber-700">
+              证据节点 {evidenceNodes.length} 个 · 页码 {sourcePages.join('、') || '-'} · 点击展开查看判断依据
+            </p>
+          </div>
+          <span className="shrink-0 rounded bg-white/80 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-amber-200">
+            {isOpen ? '收起' : '展开'}
+          </span>
+        </div>
+        <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-slate-700">
+          {String(result.reasoning_summary || result.issue_desc || '-')}
+        </p>
+      </button>
+
+      {isOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/10" onClick={() => setIsOpen(false)}>
+          <div
+            className="fixed right-[430px] top-[76px] w-[560px] max-w-[calc(100vw-456px)] overflow-hidden rounded-lg border border-amber-200 bg-white shadow-2xl ring-1 ring-black/10"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3 border-b border-amber-100 bg-amber-50 px-4 py-3">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-slate-900">ReviewResult Schema</p>
+                <p className="mt-1 text-[11px] leading-4 text-slate-600">
+                  {String(result.review_topic || '-')} / {String(result.review_item || '-')}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsOpen(false)}
+                className="rounded p-1 text-slate-400 hover:bg-white hover:text-slate-700"
+                aria-label="关闭 ReviewResult"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="max-h-[calc(100vh-148px)] space-y-3 overflow-y-auto px-4 py-3 text-xs leading-5 text-slate-700">
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1 rounded border border-slate-100 bg-slate-50 px-3 py-2">
+                <KeyValue label="issue_id" value={String(result.issue_id || '-')} />
+                <KeyValue label="review_status" value={String(result.review_status || '-')} />
+                <KeyValue label="rule_id" value={String(result.rule_id || '-')} />
+                <KeyValue label="risk_level" value={String(result.risk_level || '-')} />
+                <KeyValue label="rule_name" value={String(result.rule_name || '-')} />
+                <KeyValue label="confidence" value={String(result.confidence ?? '-')} />
+                <KeyValue label="source_pages" value={sourcePages.join('、') || '-'} />
+                <KeyValue label="bbox_count" value={String(toRecordArray(result.source_bbox_list).length)} />
+              </div>
+
+              <div className="rounded border border-slate-100 px-3 py-2">
+                <p className="font-semibold text-slate-800">问题描述</p>
+                <p className="mt-1 text-slate-600">{String(result.issue_desc || '-')}</p>
+              </div>
+
+              <div className="rounded border border-sky-100 bg-sky-50/70 px-3 py-2">
+                <p className="font-semibold text-sky-800">推理关键文案</p>
+                <p className="mt-1 text-slate-700">{String(result.reasoning_summary || '-')}</p>
+              </div>
+
+              <div className="rounded border border-emerald-100 bg-emerald-50/70 px-3 py-2">
+                <p className="font-semibold text-emerald-800">修改建议</p>
+                <p className="mt-1 text-slate-700">{String(result.fix_suggestion || '-')}</p>
+              </div>
+
+              <div className="rounded border border-slate-100 px-3 py-2">
+                <p className="font-semibold text-slate-800">证据文本</p>
+                <p className="mt-1 whitespace-pre-wrap text-slate-600">{String(result.evidence_text || '-')}</p>
+              </div>
+
+              <div>
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <p className="font-semibold text-slate-800">可点击证据节点</p>
+                  <span className="text-[11px] text-slate-400">{evidenceNodes.length} 个</span>
+                </div>
+                <div className="space-y-1.5">
+                  {evidenceNodes.map((node, index) => {
+                    const match = reviewResultNodeToRetrievalMatch(node);
+                    return (
+                      <button
+                        key={`${String(node.chunk_id || index)}`}
+                        type="button"
+                        onClick={() => handleSelectEvidenceMatch(match)}
+                        className="w-full rounded border border-slate-100 bg-slate-50 px-2.5 py-2 text-left text-[11px] leading-4 text-slate-700 hover:border-sky-200 hover:bg-sky-50 hover:text-sky-800"
+                      >
+                        <span className="block font-semibold">
+                          节点 {index + 1} · {String(match.chunk_id || '-')} · p.{String(match.page || match.primary_page || '-')} · bbox {String(match.bbox_count ?? '-')}
+                        </span>
+                        <span className="mt-0.5 line-clamp-2 block">{String(match.text || '')}</span>
+                      </button>
+                    );
+                  })}
+                  {evidenceNodes.length === 0 && (
+                    <p className="rounded bg-slate-50 px-2 py-2 text-[11px] text-slate-400">暂无可定位证据节点</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function reviewResultNodeToRetrievalMatch(node: Record<string, unknown>): RetrievalMatch {
+  const page = Number(node.page || node.primary_page || 0);
+  const pageEnd = Number(node.page_end || page || 0);
+  const anchors = toRecordArray(node.anchors)
+    .map((anchor) => ({
+      page: Number(anchor.page || page || 0),
+      block_id: typeof anchor.block_id === 'string' ? anchor.block_id : undefined,
+      bbox: Array.isArray(anchor.bbox) ? anchor.bbox as number[] : undefined,
+      coordinate_mode: typeof anchor.coordinate_mode === 'string' ? anchor.coordinate_mode : undefined,
+      page_width: typeof anchor.page_width === 'number' ? anchor.page_width : null,
+      page_height: typeof anchor.page_height === 'number' ? anchor.page_height : null,
+    }))
+    .filter((anchor) => anchor.page > 0);
+  return {
+    chunk_id: String(node.chunk_id || ''),
+    page: page > 0 ? page : undefined,
+    page_end: pageEnd > 0 ? pageEnd : undefined,
+    primary_page: page > 0 ? page : undefined,
+    page_range: page > 0 && pageEnd > 0 ? [page, pageEnd] : [],
+    section: typeof node.section === 'string' ? node.section : undefined,
+    anchors,
+    block_ids: toStringArray(node.block_ids),
+    bbox_count: typeof node.bbox_count === 'number' ? node.bbox_count : anchors.length,
+    retrieval_sources: toStringArray(node.retrieval_sources),
+    text: String(node.text || ''),
+  };
+}
+
+function ReviewResultDetailPanel({ result }: { result: ReviewResult }) {
+  const evidenceNodes = toRecordArray(result.evidence_nodes);
+  return (
+    <div className="rounded-lg border border-indigo-100 bg-indigo-50/60 px-3 py-2 text-xs space-y-1">
+      <p className="text-indigo-700" style={{ fontWeight: 600 }}>ReviewResult Schema</p>
+      <KeyValue label="issue_id" value={String(result.issue_id || '-')} />
+      <KeyValue label="review_topic" value={String(result.review_topic || '-')} />
+      <KeyValue label="review_item" value={String(result.review_item || '-')} />
+      <KeyValue label="rule_id / rule_name" value={`${String(result.rule_id || '-')} / ${String(result.rule_name || '-')}`} />
+      <KeyValue label="risk_level / confidence" value={`${String(result.risk_level || '-')} / ${String(result.confidence ?? '-')}`} />
+      <KeyValue label="review_status" value={String(result.review_status || '-')} />
+      <KeyValue label="source_pages" value={(result.source_pages || []).join('、') || '-'} />
+      <KeyValue label="reasoning_summary" value={String(result.reasoning_summary || '-')} />
+      <KeyValue label="fix_suggestion" value={String(result.fix_suggestion || '-')} />
+      <div className="mt-1 space-y-1">
+        {evidenceNodes.slice(0, 5).map((node, index) => (
+          <div key={`${String(node.chunk_id || index)}`} className="rounded bg-white px-2 py-1 text-[11px] text-slate-600 ring-1 ring-indigo-100">
+            <p className="font-medium text-slate-700">{index + 1}. {String(node.chunk_id || '-')} · p.{String(node.page || '-')} · bbox {String(node.bbox_count ?? '-')}</p>
+            <p className="line-clamp-2">{String(node.text || '')}</p>
+          </div>
+        ))}
       </div>
-      <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-slate-400">
-        <span className="min-w-0 truncate">{row.category}</span>
-        <span className="shrink-0">{row.page}</span>
-      </div>
-    </button>
+    </div>
   );
 }
 
@@ -1202,24 +1433,26 @@ function SeverityBadge({ level }: { level: RiskLevel }) {
   return <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[10px] ${config}`}>{label}</span>;
 }
 
-function buildWorkbenchIssueRows(items: ReviewItem[]): WorkbenchIssueRow[] {
+function buildWorkbenchIssueRows(items: ReviewItem[], documentContent?: ReviewDocumentContentResponse | null): WorkbenchIssueRow[] {
   if (items.length > 0) {
     return items.map((item, index) => ({
       id: item.id,
-      title: truncateText(item.ai_finding || `审查问题 ${index + 1}`, 54),
+      title: truncateText(getIssueDisplayTitle(item, documentContent) || `审查问题 ${index + 1}`, 112),
       category: item.risk_category || '水土保持措施审查',
       page: `p.${item.clause_location?.page_number ?? 126}`,
       severity: item.risk_level,
+      evidenceText: truncateText(getIssueEvidenceQuote(item, documentContent), 108),
+      basisText: truncateText(getIssueBasisSummary(item, documentContent), 118),
       item,
     }));
   }
 
   const fallback: WorkbenchIssueRow[] = [
-    { id: 'static-issue-1', title: '弃渣场安全距离和稳定性复核缺失', category: '6.2 弃渣场选址及防护设计', page: 'p.126', severity: 'HIGH', isStatic: true },
-    { id: 'static-issue-2', title: '截排水断面尺寸未与附图保持一致', category: '附图 T2 / 排水沟断面', page: 'p.128', severity: 'HIGH', isStatic: true },
-    { id: 'static-issue-3', title: '临时苫盖材料规格和维护频次说明不足', category: '施工期临时防护', page: 'p.134', severity: 'MEDIUM', isStatic: true },
-    { id: 'static-issue-4', title: '监测点位布设缺少弃渣区覆盖', category: '水土保持监测', page: 'p.211', severity: 'MEDIUM', isStatic: true },
-    { id: 'static-issue-5', title: '建议补充施工前后影像归档要求', category: '资料归档', page: 'p.236', severity: 'LOW', isStatic: true },
+    { id: 'static-issue-1', title: '弃渣场安全距离和稳定性复核缺失', category: '6.2 弃渣场选址及防护设计', page: 'p.126', severity: 'HIGH', evidenceText: '', basisText: '', isStatic: true },
+    { id: 'static-issue-2', title: '截排水断面尺寸未与附图保持一致', category: '附图 T2 / 排水沟断面', page: 'p.128', severity: 'HIGH', evidenceText: '', basisText: '', isStatic: true },
+    { id: 'static-issue-3', title: '临时苫盖材料规格和维护频次说明不足', category: '施工期临时防护', page: 'p.134', severity: 'MEDIUM', evidenceText: '', basisText: '', isStatic: true },
+    { id: 'static-issue-4', title: '监测点位布设缺少弃渣区覆盖', category: '水土保持监测', page: 'p.211', severity: 'MEDIUM', evidenceText: '', basisText: '', isStatic: true },
+    { id: 'static-issue-5', title: '建议补充施工前后影像归档要求', category: '资料归档', page: 'p.236', severity: 'LOW', evidenceText: '', basisText: '', isStatic: true },
   ];
   return fallback;
 }
@@ -1231,6 +1464,313 @@ function isCurrentSectionIssue(row: WorkbenchIssueRow): boolean {
 
 function getIssueDecision(row: WorkbenchIssueRow): HumanDecision {
   return row.item?.human_decision ?? 'pending';
+}
+
+function getIssueDisplayTitle(item?: ReviewItem, documentContent?: ReviewDocumentContentResponse | null): string {
+  if (!item) return '';
+  const reviewResult = getIssueReviewResult(item, documentContent);
+  if (reviewResult?.issue_desc) return String(reviewResult.issue_desc);
+  const rawFinding = String(item.ai_finding || '').trim();
+  const reasoning = parseReasoning(item.ai_reasoning) ?? {};
+  const explicitSteps = toStringArray(reasoning.judgement_steps);
+  const explicitBasis = String(reasoning.judgement_basis || '').trim();
+  const actualValue = String(reasoning.actual_value || '').trim();
+  const expectedValue = String(reasoning.expected_value || reasoning.evidence_requirement || '').trim();
+  const ruleName = String(reasoning.rule_name || item.risk_category || '').trim();
+  const findingIsGeneric = rawFinding.includes('部分目标字段或证据材料需要复核');
+
+  if (explicitBasis && explicitSteps.length > 0) {
+    return [
+      ruleName || rawFinding,
+      explicitSteps.slice(0, 3).join('；'),
+      `判定依据：${explicitBasis}`,
+    ].filter(Boolean).join('：');
+  }
+
+  if (findingIsGeneric && (actualValue || expectedValue)) {
+    return [
+      ruleName || rawFinding.replace('：部分目标字段或证据材料需要复核。', ''),
+      actualValue,
+      expectedValue ? `规则要求：${expectedValue}` : '',
+      '结论：存在待核验字段或证据材料，暂不能判定通过',
+    ].filter(Boolean).join('；');
+  }
+
+  return rawFinding;
+}
+
+function getIssueReviewResult(item?: ReviewItem, documentContent?: ReviewDocumentContentResponse | null): ReviewResult | null {
+  if (!item) return null;
+  const reasoning = parseReasoning(item.ai_reasoning) ?? {};
+  const base = (item.review_result ?? reasoning.review_result ?? null) as ReviewResult | null;
+  const synthetic = buildReviewResultFromDocument(item, reasoning, documentContent);
+  if (!base) return synthetic;
+  if (!synthetic) return base;
+  const baseNodeCount = Array.isArray(base.evidence_nodes) ? base.evidence_nodes.length : 0;
+  const syntheticNodeCount = Array.isArray(synthetic.evidence_nodes) ? synthetic.evidence_nodes.length : 0;
+  if (syntheticNodeCount > baseNodeCount) {
+    return {
+      ...base,
+      evidence_text: synthetic.evidence_text || base.evidence_text,
+      evidence_nodes: synthetic.evidence_nodes,
+      source_pages: synthetic.source_pages,
+      source_bbox_list: synthetic.source_bbox_list,
+      reasoning_summary: base.reasoning_summary || synthetic.reasoning_summary,
+    };
+  }
+  return base;
+}
+
+function buildReviewResultFromDocument(
+  item: ReviewItem,
+  reasoning: Record<string, any>,
+  documentContent?: ReviewDocumentContentResponse | null,
+): ReviewResult | null {
+  const keywords = getReviewResultKeywords(reasoning);
+  if (!documentContent || keywords.length === 0) return null;
+  const nodes: Array<Record<string, unknown> & { _score?: number; _order?: number }> = [];
+  let order = 0;
+  for (const page of documentContent.pages) {
+    for (const block of page.blocks) {
+      const text = String(block.text || '').trim();
+      if (!text) continue;
+      const matchedTerms = keywords.filter((keyword) => text.includes(keyword));
+      if (matchedTerms.length === 0) continue;
+      nodes.push({
+        chunk_id: block.block_id,
+        page: block.page || page.page_number,
+        page_end: block.page || page.page_number,
+        section: block.section_hint,
+        block_ids: [block.block_id],
+        bbox_count: block.bbox?.length ? 1 : 0,
+        matched_terms: matchedTerms,
+        retrieval_sources: ['document_keyword'],
+        text,
+        anchors: [{
+          page: block.page || page.page_number,
+          block_id: block.block_id,
+          bbox: block.bbox,
+          coordinate_mode: 'page_coordinate',
+        }],
+        _score: matchedTerms.length,
+        _order: order,
+      });
+      order += 1;
+    }
+  }
+  const selected = nodes
+    .sort((a, b) => Number(b._score || 0) - Number(a._score || 0) || Number(a._order || 0) - Number(b._order || 0))
+    .slice(0, 6)
+    .map(({ _score, _order, ...node }) => node);
+  if (selected.length === 0) return null;
+  const sourcePages = Array.from(new Set(selected.map((node) => Number(node.page)).filter((page) => Number.isFinite(page) && page > 0))).sort((a, b) => a - b);
+  const sourceBboxList = selected.flatMap((node) => toRecordArray(node.anchors));
+  return {
+    issue_id: item.id,
+    review_topic: item.risk_category,
+    review_item: String(reasoning.rule_name || item.risk_category || ''),
+    rule_id: String(reasoning.rule_id || ''),
+    rule_name: String(reasoning.rule_name || ''),
+    risk_level: item.risk_level,
+    issue_desc: buildIssueDescFromReasoning(item, reasoning),
+    evidence_text: selected.map((node, index) => `${index + 1}. ${String(node.chunk_id || '-')} p.${String(node.page || '-')}：${truncateText(node.text, 240)}`).join('\n'),
+    evidence_nodes: selected,
+    source_pages: sourcePages,
+    source_bbox_list: sourceBboxList,
+    reasoning_summary: buildReasoningSummaryFromReasoning(reasoning, item),
+    fix_suggestion: item.suggested_revision || '补齐证据后重新审查。',
+    confidence: item.confidence_score,
+    review_status: item.human_decision === 'pending' ? '待审核' : item.human_decision === 'approve' ? '已确认' : '已关闭',
+  };
+}
+
+function getReviewResultKeywords(reasoning: Record<string, any>): string[] {
+  const matchedFields = toStringArray(reasoning.matched_target_fields);
+  if (matchedFields.length > 0) return matchedFields;
+  const actual = String(reasoning.actual_value || '');
+  const matchedPart = actual.match(/已命中[:：]([^；;]+)/)?.[1] || '';
+  const parsed = matchedPart.split(/[、,，]/).map((item) => item.trim()).filter(Boolean);
+  if (parsed.length > 0) return parsed;
+  return toStringArray(reasoning.target_fields).slice(0, 6);
+}
+
+function buildIssueDescFromReasoning(item: ReviewItem, reasoning: Record<string, any>): string {
+  const rawFinding = String(item.ai_finding || '').trim();
+  const actualValue = String(reasoning.actual_value || '').trim();
+  const expectedValue = String(reasoning.expected_value || reasoning.evidence_requirement || '').trim();
+  const ruleName = String(reasoning.rule_name || item.risk_category || '').trim();
+  if (rawFinding.includes('部分目标字段或证据材料需要复核') && (actualValue || expectedValue)) {
+    return [
+      ruleName || rawFinding.replace('：部分目标字段或证据材料需要复核。', ''),
+      actualValue,
+      expectedValue ? `规则要求：${expectedValue}` : '',
+      '结论：存在待核验字段或证据材料，暂不能判定通过',
+    ].filter(Boolean).join('；');
+  }
+  return rawFinding;
+}
+
+function buildReasoningSummaryFromReasoning(reasoning: Record<string, any>, item: ReviewItem): string {
+  const explicit = String(reasoning.reasoning_summary || '').trim();
+  if (explicit) return explicit;
+  const steps = toStringArray(reasoning.judgement_steps);
+  if (steps.length > 0) return steps.slice(0, 6).join('；');
+  return [
+    `判定对象：${String(reasoning.rule_name || item.risk_category || '')}`,
+    String(reasoning.actual_value || '') ? `实际命中：${String(reasoning.actual_value)}` : '',
+    String(reasoning.expected_value || '') ? `规则要求：${String(reasoning.expected_value)}` : '',
+    '判定结论：存在待核验字段或证据材料时，不判定通过。',
+  ].filter(Boolean).join('；');
+}
+
+function getReviewItemEvidenceAnchors(item?: ReviewItem, documentContent?: ReviewDocumentContentResponse | null): EvidenceAnchor[] {
+  if (!item) return [];
+  const reasoning = parseReasoning(item.ai_reasoning) ?? {};
+  const anchors: EvidenceAnchor[] = [];
+
+  collectAnchorsFromValue(item.review_result, anchors);
+  collectAnchorsFromValue(reasoning.review_result, anchors);
+  collectAnchorsFromValue(getIssueReviewResult(item, documentContent), anchors);
+  collectAnchorsFromValue(reasoning.source_bbox_list, anchors);
+  collectAnchorsFromValue(item.project_composition_consistency, anchors);
+  collectAnchorsFromValue(reasoning.project_composition_consistency, anchors);
+  collectAnchorsFromValue(item.evidence_slot_package, anchors);
+  collectAnchorsFromValue(reasoning.evidence_slot_package, anchors);
+
+  return dedupeEvidenceAnchors(anchors);
+}
+
+function collectAnchorsFromValue(value: unknown, target: EvidenceAnchor[]) {
+  if (!value) return;
+  if (Array.isArray(value)) {
+    value.forEach((item) => {
+      if (isEvidenceAnchorRecord(item)) target.push(toEvidenceAnchor(item));
+      else collectAnchorsFromValue(item, target);
+    });
+    return;
+  }
+  if (typeof value !== 'object') return;
+  const record = value as Record<string, unknown>;
+  if (isEvidenceAnchorRecord(record)) {
+    target.push(toEvidenceAnchor(record));
+  }
+  ['anchors', 'source_bbox_list', 'bbox_list'].forEach((key) => collectAnchorsFromValue(record[key], target));
+  ['body_source', 'reference_source'].forEach((key) => collectAnchorsFromValue(record[key], target));
+  ['slots', 'matches', 'prompt_matches', 'trace_matches', 'retrieval_matches', 'evidence_nodes'].forEach((key) => collectAnchorsFromValue(record[key], target));
+}
+
+function isEvidenceAnchorRecord(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.page === 'number' && (typeof record.block_id === 'string' || Array.isArray(record.bbox));
+}
+
+function toEvidenceAnchor(record: Record<string, unknown>): EvidenceAnchor {
+  return {
+    page: typeof record.page === 'number' ? record.page : undefined,
+    block_id: typeof record.block_id === 'string' ? record.block_id : undefined,
+    bbox: Array.isArray(record.bbox) ? record.bbox as number[] : undefined,
+    coordinate_mode: typeof record.coordinate_mode === 'string' ? record.coordinate_mode : undefined,
+    page_width: typeof record.page_width === 'number' ? record.page_width : null,
+    page_height: typeof record.page_height === 'number' ? record.page_height : null,
+  };
+}
+
+function dedupeEvidenceAnchors(anchors: EvidenceAnchor[]): EvidenceAnchor[] {
+  const seen = new Set<string>();
+  const result: EvidenceAnchor[] = [];
+  anchors.forEach((anchor) => {
+    if (typeof anchor.page !== 'number' || !anchor.block_id) return;
+    const key = `${anchor.page}:${anchor.block_id}:${JSON.stringify(anchor.bbox ?? [])}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    result.push(anchor);
+  });
+  return result;
+}
+
+function getIssueEvidenceQuote(item?: ReviewItem, documentContent?: ReviewDocumentContentResponse | null): string {
+  if (!item) return '';
+  const reviewResult = getIssueReviewResult(item, documentContent);
+  const reviewEvidence = String(reviewResult?.evidence_text || '').trim();
+  if (reviewEvidence) return reviewEvidence;
+  const primaryEvidence = item.risk_evidence.find((ev) => ev.is_primary)?.evidence_text || item.risk_evidence[0]?.evidence_text;
+  if (primaryEvidence?.trim()) return primaryEvidence.trim();
+  const reasoning = parseReasoning(item.ai_reasoning) ?? {};
+  const projectComposition = item.project_composition_consistency ?? reasoning.project_composition_consistency;
+  const quotes = projectComposition && typeof projectComposition === 'object'
+    ? (projectComposition as Record<string, unknown>).evidence_quotes
+    : null;
+  if (quotes && typeof quotes === 'object') {
+    const body = String((quotes as Record<string, unknown>).body || '').trim();
+    const reference = String((quotes as Record<string, unknown>).reference || '').trim();
+    return [body, reference].filter(Boolean).join('；');
+  }
+  const firstMatch = firstRetrievalMatchText(item.evidence_slot_package ?? reasoning.evidence_slot_package);
+  return firstMatch || '';
+}
+
+function firstRetrievalMatchText(value: unknown): string {
+  if (!value) return '';
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const text = firstRetrievalMatchText(item);
+      if (text) return text;
+    }
+    return '';
+  }
+  if (typeof value !== 'object') return '';
+  const record = value as Record<string, unknown>;
+  if (typeof record.text === 'string' && record.text.trim()) return record.text.trim();
+  for (const key of ['prompt_matches', 'matches', 'trace_matches', 'slots']) {
+    const text = firstRetrievalMatchText(record[key]);
+    if (text) return text;
+  }
+  return '';
+}
+
+function getIssueBasisSummary(item?: ReviewItem, documentContent?: ReviewDocumentContentResponse | null): string {
+  if (!item) return '';
+  const reviewResult = getIssueReviewResult(item, documentContent);
+  const reviewSummary = String(reviewResult?.reasoning_summary || '').trim();
+  if (reviewSummary) return reviewSummary;
+  const reasoning = parseReasoning(item.ai_reasoning) ?? {};
+  const explicitBasis = String(reasoning.judgement_basis || '').trim();
+  const explicitSteps = toStringArray(reasoning.judgement_steps);
+  if (explicitBasis || explicitSteps.length > 0) {
+    return [explicitSteps.slice(0, 2).join('；'), explicitBasis].filter(Boolean).join('；');
+  }
+  const actualValue = String(reasoning.actual_value || '').trim();
+  const expectedValue = String(reasoning.expected_value || reasoning.evidence_requirement || '').trim();
+  if (actualValue || expectedValue) {
+    return [
+      actualValue ? `判定过程：${actualValue}` : '',
+      expectedValue ? `规则依据：${expectedValue}` : '',
+      '存在待核验字段时不判定通过',
+    ].filter(Boolean).join('；');
+  }
+  const projectComposition = item.project_composition_consistency ?? reasoning.project_composition_consistency;
+  if (projectComposition && typeof projectComposition === 'object') {
+    const record = projectComposition as Record<string, unknown>;
+    const findings = toStringArray(record.key_findings);
+    const basis = String(record.judgement_basis || '').trim();
+    const reason = String(record.reason || '').trim();
+    return [findings.slice(0, 2).join('；'), basis || reason].filter(Boolean).join('；');
+  }
+  const formulaResults = item.formula_check_results ?? reasoning.formula_check_results;
+  if (formulaResults && typeof formulaResults === 'object') {
+    const checks = toRecordArray((formulaResults as Record<string, unknown>).checks);
+    const firstIssue = checks.find((check) => ['fail', 'missing', 'unsupported'].includes(String(check.status || '')));
+    if (firstIssue) {
+      return `公式 ${String(firstIssue.formula_check_id || firstIssue.label || '-')}：${String(firstIssue.status || '-')}，${String(firstIssue.failure_reason || '')}`;
+    }
+  }
+  const slotPackage = item.evidence_slot_package ?? reasoning.evidence_slot_package;
+  if (slotPackage && typeof slotPackage === 'object') {
+    const missing = toStringArray((slotPackage as Record<string, unknown>).missing_required_slot_ids);
+    if (missing.length > 0) return `缺失必填证据槽位：${missing.join('、')}`;
+  }
+  return [String(reasoning.rule_name || ''), String(reasoning.expected_value || '')].filter(Boolean).join('；');
 }
 
 function RetrievalDebugPanel({
@@ -1520,10 +2060,9 @@ function RiskItemCard({
         )}
       </p>
 
-      {/* Review Issue — R01: 展示 ai_finding 原文，不截断不改写 */}
       <div className="space-y-1">
         <p className="text-xs text-gray-400">评审问题</p>
-        <p className="text-sm text-gray-700 leading-relaxed">{item.ai_finding}</p>
+        <p className="text-sm text-gray-700 leading-relaxed">{getIssueDisplayTitle(item)}</p>
       </div>
 
       {reasoning && (
@@ -1804,6 +2343,7 @@ function RightPane({ item, conditionA, evidenceRef, sessionId, ruleTopics }: {
   const formulaCheckResults = reasoning?.formula_check_results as FormulaCheckResults | undefined;
   const projectComposition = reasoning?.project_composition_consistency as ProjectCompositionConsistency | undefined;
   const earthworkAuditChecks = toRecordArray(reasoning?.earthwork_audit_results?.checks);
+  const reviewResult = getIssueReviewResult(item);
 
   return (
     <div className="p-5 space-y-4">
@@ -1924,6 +2464,9 @@ function RightPane({ item, conditionA, evidenceRef, sessionId, ruleTopics }: {
             <p className="text-xs text-gray-400">
               结构化事实 {structuredFacts.length} 个 · 跨章节核验 {crossFindings.length} 条
             </p>
+            {reviewResult && (
+              <ReviewResultDetailPanel result={reviewResult} />
+            )}
             {structuredFacts.length > 0 && (
               <div className="rounded-lg border border-emerald-100 bg-emerald-50/60 px-3 py-2 text-xs space-y-1">
                 <p className="text-emerald-700" style={{ fontWeight: 600 }}>LangExtract 结构化事实</p>
@@ -2485,6 +3028,9 @@ function ProjectCompositionComparisonPanel({
   onSelectEvidenceMatch: (match: RetrievalMatch) => void;
 }) {
   const fields = Array.isArray(comparison.field_comparisons) ? comparison.field_comparisons : [];
+  const keyFindings = toStringArray(comparison.key_findings);
+  const bodyQuote = typeof comparison.evidence_quotes?.body === 'string' ? comparison.evidence_quotes.body : '';
+  const referenceQuote = typeof comparison.evidence_quotes?.reference === 'string' ? comparison.evidence_quotes.reference : '';
   return (
     <PreviewSection title="项目组成一致性">
       <div className="flex flex-wrap items-center gap-2 text-[11px]">
@@ -2493,6 +3039,24 @@ function ProjectCompositionComparisonPanel({
         </span>
         <span className="min-w-0 flex-1 text-slate-600">{comparison.reason || '待复核项目组成与建设内容。'}</span>
       </div>
+      {comparison.judgement_basis && (
+        <div className="rounded bg-blue-50 px-2 py-1.5 text-[11px] leading-4 text-blue-700">
+          判断依据：{comparison.judgement_basis}
+        </div>
+      )}
+      {keyFindings.length > 0 && (
+        <div className="rounded bg-amber-50 px-2 py-1.5 text-[11px] leading-4 text-amber-800">
+          {keyFindings.slice(0, 3).map((item) => (
+            <p key={item}>判定过程：{item}</p>
+          ))}
+        </div>
+      )}
+      {(bodyQuote || referenceQuote) && (
+        <div className="space-y-1 rounded bg-slate-50 px-2 py-1.5 text-[11px] leading-4 text-slate-600">
+          {bodyQuote && <p>正文原话：{bodyQuote.replace(/^正文原话：/, '')}</p>}
+          {referenceQuote && <p>附件/设计原话：{referenceQuote.replace(/^附件\/设计原话：/, '')}</p>}
+        </div>
+      )}
       <div className="grid gap-2 sm:grid-cols-2">
         <ProjectCompositionSourceButton
           label="正文项目概况"
@@ -3356,7 +3920,7 @@ function ConfirmModal({ item, decision, humanNote, editedRiskLevel, editedFindin
         <p className="text-xs text-gray-400 mb-4">此弹窗不可通过 ESC 或点击遮罩关闭（防 Automation Bias）</p>
 
         <div className="space-y-3 bg-gray-50 rounded-xl p-4 mb-5">
-          <Row label="问题摘要" value={item.ai_finding.slice(0, 60) + '…'} />
+          <Row label="问题摘要" value={truncateText(getIssueDisplayTitle(item), 60)} />
           <Row label="原始风险等级" value={<RiskLevelBadge level={item.risk_level} />} />
           <Row label="决策类型" value={
             <span className={`text-xs px-2 py-0.5 rounded ${

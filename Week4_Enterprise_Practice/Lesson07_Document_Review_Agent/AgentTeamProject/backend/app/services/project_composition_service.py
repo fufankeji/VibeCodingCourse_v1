@@ -12,6 +12,11 @@ AREA_FIELDS = {
     "underground_building_area": "地下建筑面积",
 }
 
+JUDGEMENT_BASIS = (
+    "规则要求：项目组成及建设内容应与立项文件或所处阶段的主体设计文件一致。"
+    "判定方法：抽取正文项目概况与附件/主体设计文件中的关键建设规模字段，逐字段比较数值，差异超过 0.1 平方米判为不一致。"
+)
+
 
 def analyze_project_composition_consistency(chunks: list[Any], check_item: dict[str, Any]) -> dict[str, Any] | None:
     if not _is_project_composition_check(check_item):
@@ -23,9 +28,12 @@ def analyze_project_composition_consistency(chunks: list[Any], check_item: dict[
         return {
             "status": "needs_review",
             "reason": "未同时定位到项目概况正文和立项/主体设计附件证据。",
+            "judgement_basis": JUDGEMENT_BASIS,
             "body_source": _source_summary(body) if body else None,
             "reference_source": _source_summary(reference) if reference else None,
+            "evidence_quotes": _evidence_quotes(body, reference),
             "field_comparisons": [],
+            "key_findings": [],
         }
 
     body_fields = _extract_project_fields(_chunk_text(body))
@@ -44,10 +52,13 @@ def analyze_project_composition_consistency(chunks: list[Any], check_item: dict[
 
     return {
         "status": status,
-        "reason": _comparison_reason(status),
+        "reason": _comparison_reason(status, comparisons),
+        "judgement_basis": JUDGEMENT_BASIS,
         "body_source": _source_summary(body, material_type="document_body"),
         "reference_source": _source_summary(reference),
+        "evidence_quotes": _evidence_quotes(body, reference),
         "field_comparisons": comparisons,
+        "key_findings": _key_findings(comparisons),
     }
 
 
@@ -151,12 +162,65 @@ def _compare_number_field(field: str, label: str, body_value: float | None, refe
     }
 
 
-def _comparison_reason(status: str) -> str:
+def _comparison_reason(status: str, comparisons: list[dict[str, Any]]) -> str:
     if status == "match":
-        return "正文项目概况与所选附件/主体设计文件的关键建设规模一致。"
+        details = _comparison_details([item for item in comparisons if item["status"] == "match"])
+        return "正文项目概况与所选附件/主体设计文件的关键建设规模一致。" + (f" {details}" if details else "")
     if status == "mismatch":
-        return "正文项目概况与所选附件/主体设计文件存在关键建设规模差异。"
-    return "正文或附件缺少可结构化比较的关键字段，需人工复核。"
+        details = _comparison_details([item for item in comparisons if item["status"] == "mismatch"])
+        return "正文项目概况与所选附件/主体设计文件存在关键建设规模差异。" + (f" {details}" if details else "")
+    details = _comparison_details([item for item in comparisons if item["status"] == "missing"])
+    return "正文或附件缺少可结构化比较的关键字段，需人工复核。" + (f" {details}" if details else "")
+
+
+def _key_findings(comparisons: list[dict[str, Any]]) -> list[str]:
+    priority = {"mismatch": 0, "missing": 1, "match": 2}
+    ordered = sorted(comparisons, key=lambda item: priority.get(str(item.get("status")), 9))
+    return [_comparison_detail(item) for item in ordered if _comparison_detail(item)]
+
+
+def _comparison_details(comparisons: list[dict[str, Any]]) -> str:
+    details = [_comparison_detail(item) for item in comparisons]
+    return "；".join(item for item in details if item)
+
+
+def _comparison_detail(item: dict[str, Any]) -> str:
+    label = str(item.get("label") or item.get("field") or "字段")
+    status = str(item.get("status") or "")
+    body_value = item.get("body_value")
+    reference_value = item.get("reference_value")
+    difference = item.get("difference")
+    if status == "missing":
+        return f"{label}：正文 {_format_area(body_value)}，附件/设计 {_format_area(reference_value)}，缺少可比较值"
+    if body_value is None or reference_value is None:
+        return ""
+    if status == "match":
+        return f"{label}：正文 {_format_area(body_value)} 与附件/设计 {_format_area(reference_value)}一致"
+    return f"{label}：正文 {_format_area(body_value)} vs 附件/设计 {_format_area(reference_value)}，差异 {_format_area(difference)}"
+
+
+def _format_area(value: Any) -> str:
+    if value is None:
+        return "未提取"
+    try:
+        number = round(float(value), 2)
+    except (TypeError, ValueError):
+        return f"{value} 平方米"
+    text = f"{number:.2f}".rstrip("0").rstrip(".")
+    return f"{text} 平方米"
+
+
+def _evidence_quotes(body: Any | None, reference: Any | None) -> dict[str, str]:
+    return {
+        "body": _quote("正文原话", body),
+        "reference": _quote("附件/设计原话", reference),
+    }
+
+
+def _quote(label: str, chunk: Any | None) -> str:
+    if not chunk:
+        return f"{label}：未定位"
+    return f"{label}：{_chunk_text(chunk)[:260]}"
 
 
 def _source_summary(chunk: Any, material_type: str | None = None) -> dict[str, Any]:

@@ -95,6 +95,13 @@ export interface ProjectCompositionFieldComparison {
 export interface ProjectCompositionConsistency {
   status?: 'match' | 'mismatch' | 'needs_review' | string;
   reason?: string;
+  judgement_basis?: string;
+  key_findings?: string[];
+  evidence_quotes?: {
+    body?: string;
+    reference?: string;
+    [key: string]: unknown;
+  };
   body_source?: ProjectCompositionSource | null;
   reference_source?: ProjectCompositionSource | null;
   field_comparisons?: ProjectCompositionFieldComparison[];
