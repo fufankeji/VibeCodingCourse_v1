@@ -435,6 +435,10 @@ def retrieve_for_query(
             raise RAGReviewError(f"vector retrieval failed: {exc}") from exc
 
     bm25_matches = bm25.query(query, top_k=top_k) if bm25 else []
+    focus_terms = _domain_query_focus_terms(query)
+    if focus_terms and _matches_contain_focus_terms([*vector_matches, *bm25_matches], focus_terms):
+        vector_matches = _filter_matches_by_focus_terms(vector_matches, focus_terms)
+        bm25_matches = _filter_matches_by_focus_terms(bm25_matches, focus_terms)
     if vector_matches and bm25_matches:
         fused = _rrf(vector_matches, bm25_matches)
     elif vector_matches:
@@ -451,11 +455,17 @@ def retrieve_for_query(
         )
     else:
         expanded = fused[:top_k]
+    if focus_terms:
+        expanded = _filter_matches_by_focus_terms(expanded, focus_terms)
+        expanded = _filter_matches_by_location_intent(query, expanded)
     rerank_available = bool(vector_available and use_rerank and settings.siliconflow_reranker_model)
     if rerank_available:
         matches = SiliconFlowRerankerProvider().rerank(query, expanded, top_n=min(top_k, effective_rerank_top_n))
     else:
         matches = expanded[:top_k]
+    if focus_terms:
+        matches = _filter_matches_by_focus_terms(matches, focus_terms)
+        matches = _filter_matches_by_location_intent(query, matches)
     matches = _with_final_ranks(matches)
     return {
         "query": query,
@@ -473,6 +483,56 @@ def _positive_int(value: Any, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return max(1, parsed)
+
+
+_DOMAIN_QUERY_FOCUS_GROUPS: tuple[tuple[str, ...], ...] = (
+    ("弃渣场", "弃渣", "弃土", "弃方", "弃土场", "弃石", "排矸"),
+    ("取土场", "取土", "取料场", "取料", "采石场", "借土"),
+)
+_LOCATION_QUERY_TERMS = ("在哪", "哪里", "何处", "分布", "位置", "去向", "场址")
+_LOCATION_EVIDENCE_TERMS = ("不存在", "不在", "不布设", "未布设", "布设", "设置", "运至", "去向", "调配", "综合利用", "场址", "位置")
+
+
+def _domain_query_focus_terms(query: str) -> list[str]:
+    normalized = query.replace("（", "").replace("）", "").replace("(", "").replace(")", "")
+    terms: list[str] = []
+    for group in _DOMAIN_QUERY_FOCUS_GROUPS:
+        if any(term in normalized for term in group):
+            terms.extend(group)
+    return list(dict.fromkeys(terms))
+
+
+def _matches_contain_focus_terms(matches: list[dict[str, Any]], focus_terms: list[str]) -> bool:
+    return any(_match_contains_focus_term(match, focus_terms) for match in matches)
+
+
+def _filter_matches_by_focus_terms(matches: list[dict[str, Any]], focus_terms: list[str]) -> list[dict[str, Any]]:
+    if not matches or not focus_terms:
+        return matches
+    filtered = [match for match in matches if _match_contains_focus_term(match, focus_terms)]
+    return filtered or matches
+
+
+def _filter_matches_by_location_intent(query: str, matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not matches or not any(term in query for term in _LOCATION_QUERY_TERMS):
+        return matches
+    filtered = [match for match in matches if _match_contains_any_term(match, _LOCATION_EVIDENCE_TERMS)]
+    return filtered or matches
+
+
+def _match_contains_focus_term(match: dict[str, Any], focus_terms: list[str]) -> bool:
+    return _match_contains_any_term(match, focus_terms)
+
+
+def _match_contains_any_term(match: dict[str, Any], terms: tuple[str, ...] | list[str]) -> bool:
+    metadata = match.get("metadata") if isinstance(match.get("metadata"), dict) else {}
+    haystack = "\n".join(
+        [
+            str(match.get("document") or ""),
+            str(metadata.get("section") or ""),
+        ]
+    )
+    return any(term and term in haystack for term in terms)
 
 
 class BM25Index:
