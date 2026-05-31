@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from app.services import rag_service
@@ -186,3 +188,71 @@ def test_retrieve_for_rules_reports_missing_required_evidence_slot(monkeypatch: 
 
     assert retrieval["missing_required_slot_ids"] == ["spoil_site"]
     assert [slot["status"] for slot in retrieval["slot_retrievals"]] == ["matched", "missing"]
+
+
+def test_adjudicate_top_rules_blocks_llm_when_required_slot_is_missing(monkeypatch: pytest.MonkeyPatch):
+    def fail_llm(*args, **kwargs):
+        raise AssertionError("LLM should not run when required evidence slot is missing")
+
+    monkeypatch.setattr(rag_service, "_call_deepseek_adjudicator", fail_llm)
+    match = {
+        "chunk_id": "chunk-0001",
+        "document": "本项目土石方挖方15.30万m3，填方5.275万m3。",
+        "metadata": {
+            "chunk_index": 0,
+            "page_start": 20,
+            "bbox_json": json.dumps([{"block_id": "p20-b1", "page": 20, "bbox": [1, 2, 3, 4]}], ensure_ascii=False),
+            "block_ids_json": json.dumps(["p20-b1"], ensure_ascii=False),
+        },
+        "score": 0.8,
+        "evidence_slot_ids": ["earthwork_quantities"],
+        "slot_queries": ["土石方 挖方 填方"],
+    }
+    rule = {"rule_id": "R-missing-slot", "rule_name": "土石方与弃渣场一致性审查"}
+    retrieval = {
+        "rule_index": 0,
+        "matches": [match],
+        "missing_required_slot_ids": ["spoil_site"],
+        "slot_retrievals": [
+            {"slot_id": "earthwork_quantities", "status": "matched", "required": True},
+            {"slot_id": "spoil_site", "status": "missing", "required": True},
+        ],
+        "candidate_score": 1,
+    }
+
+    issues = rag_service.adjudicate_top_rules("session", [], [rule], [retrieval], max_issues=1)
+
+    assert len(issues) == 1
+    issue = issues[0]
+    reasoning = json.loads(issue["ai_reasoning"])
+    assert issue["confidence_score"] == 0
+    assert "缺失必填证据槽位：spoil_site" in issue["ai_finding"]
+    assert reasoning["review_status"] == "needs_evidence"
+    assert reasoning["conclusion_type"] == "needs_evidence"
+    assert reasoning["rule_execution"]["result"]["llm_required"] is False
+
+
+def test_adjudicate_top_rules_reports_missing_required_slot_even_without_matches(monkeypatch: pytest.MonkeyPatch):
+    def fail_llm(*args, **kwargs):
+        raise AssertionError("LLM should not run when there is no required-slot evidence")
+
+    monkeypatch.setattr(rag_service, "_call_deepseek_adjudicator", fail_llm)
+    rule = {"rule_id": "R-all-missing", "rule_name": "证据完整性审查"}
+    retrieval = {
+        "rule_index": 0,
+        "matches": [],
+        "missing_required_slot_ids": ["approval_or_design_content"],
+        "slot_retrievals": [
+            {"slot_id": "approval_or_design_content", "status": "missing", "required": True},
+        ],
+        "candidate_score": 1,
+    }
+
+    issues = rag_service.adjudicate_top_rules("session", [], [rule], [retrieval], max_issues=1)
+
+    assert len(issues) == 1
+    assert issues[0]["highlight_anchor"] == ""
+    assert "缺失必填证据槽位：approval_or_design_content" in issues[0]["clause_text"]
+    reasoning = json.loads(issues[0]["ai_reasoning"])
+    assert reasoning["missing_required_slot_ids"] == ["approval_or_design_content"]
+    assert reasoning["review_status"] == "needs_evidence"

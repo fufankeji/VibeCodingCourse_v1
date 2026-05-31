@@ -4,8 +4,7 @@ import { Upload, X, FileText, AlertCircle, CheckCircle } from 'lucide-react';
 import { GlobalNav } from '../components/GlobalNav';
 
 const MAX_SIZE_MB = 50;
-const ALLOWED_TYPES = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
-const ALLOWED_EXTS = ['.pdf', '.docx', '.json'];
+const ALLOWED_EXTS = ['.pdf', '.doc', '.docx', '.json'];
 
 /**
  * ContractUploadPage — P04 方案上传页
@@ -28,7 +27,7 @@ export function ContractUploadPage() {
     const errs: string[] = [];
     const ext = '.' + file.name.split('.').pop()?.toLowerCase();
     if (!ALLOWED_EXTS.includes(ext)) {
-      errs.push(`文件格式不支持，仅允许 PDF / DOCX / MinerU JSON（当前：${ext}）`);
+      errs.push(`文件格式不支持，仅允许 PDF / Word / MinerU JSON（当前：${ext}）`);
     }
     if (file.size > MAX_SIZE_MB * 1024 * 1024) {
       errs.push(`文件大小超过 ${MAX_SIZE_MB}MB 限制（当前：${(file.size / 1024 / 1024).toFixed(1)}MB）`);
@@ -42,7 +41,7 @@ export function ContractUploadPage() {
     if (errs.length === 0) {
       setSelectedFile(file);
       if (!contractTitle) {
-        setContractTitle(file.name.replace(/\.(pdf|docx)$/i, ''));
+        setContractTitle(file.name.replace(/\.(pdf|doc|docx|json)$/i, ''));
       }
     }
   };
@@ -127,11 +126,11 @@ export function ContractUploadPage() {
                 >
                   <Upload className="w-10 h-10 text-gray-300 mx-auto mb-3" />
                   <p className="text-sm text-gray-600" style={{ fontWeight: 500 }}>拖拽文件至此或点击上传</p>
-                  <p className="text-xs text-gray-400 mt-1.5">支持格式：PDF / DOCX / MinerU JSON · 最大 50MB</p>
+                  <p className="text-xs text-gray-400 mt-1.5">支持格式：PDF / Word / MinerU JSON · 最大 50MB</p>
                   <input
                     ref={fileInputRef}
                     type="file"
-                    accept=".pdf,.docx,.json"
+                    accept=".pdf,.doc,.docx,.json"
                     className="hidden"
                     onChange={(e) => e.target.files?.[0] && handleFileSelect(e.target.files[0])}
                     disabled={isDisabled}
@@ -224,7 +223,7 @@ export function ContractUploadPage() {
           <div className="mt-4 p-3 bg-blue-50 border border-blue-100 rounded-lg">
             <p className="text-xs text-blue-600">
               <span style={{ fontWeight: 600 }}>API：</span>
-              POST /contracts/upload (multipart/form-data) · 文件大小上限 50MB · 格式：PDF/DOCX/MinerU JSON
+              POST /contracts/upload (multipart/form-data) · 文件大小上限 50MB · 格式：PDF/Word/MinerU JSON
             </p>
           </div>
         </div>

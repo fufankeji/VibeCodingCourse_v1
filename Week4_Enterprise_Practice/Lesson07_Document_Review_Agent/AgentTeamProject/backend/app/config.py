@@ -23,6 +23,17 @@ class Settings(BaseSettings):
     langextract_max_char_buffer: int = 3000
     langextract_max_chunks: int = 24
     langextract_request_timeout: int = 120
+    mineru_token: str = ""
+    mineru_access_key: str = ""
+    mineru_secret_key: str = ""
+    mineru_base_url: str = "https://mineru.net/api/v4"
+    mineru_model_version: str = "vlm"
+    mineru_language: str = "ch"
+    mineru_enable_formula: bool = True
+    mineru_enable_table: bool = True
+    mineru_request_timeout: int = 120
+    mineru_poll_interval_seconds: int = 5
+    mineru_poll_timeout_seconds: int = 900
     database_url: str = "sqlite:///./contract_review.db"
     app_host: str = "0.0.0.0"
     app_port: int = 8000

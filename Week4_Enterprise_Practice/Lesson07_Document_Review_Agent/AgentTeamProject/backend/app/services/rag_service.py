@@ -853,6 +853,10 @@ def adjudicate_top_rules(
             break
         rule = rules[retrieval["rule_index"]]
         evidence = retrieval.get("matches", [])[:8]
+        missing_slot_ids = _missing_required_slot_ids(retrieval)
+        if missing_slot_ids:
+            issues.append(_missing_required_slot_issue(session_id, rule, evidence, retrieval, missing_slot_ids))
+            continue
         if not evidence:
             continue
         issues.append(_adjudicate_rule(session_id, rule, evidence, retrieval))
@@ -957,6 +961,107 @@ def _adjudicate_rule(
         "suggested_revision": payload.get("fix_suggestion") or _generic_suggestion(rule),
         "human_decision": "pending",
     }
+
+
+def _missing_required_slot_issue(
+    session_id: str,
+    rule: dict[str, Any],
+    evidence: list[dict[str, Any]],
+    retrieval: dict[str, Any],
+    missing_slot_ids: list[str],
+) -> dict[str, Any]:
+    first = evidence[0] if evidence else {}
+    meta = first.get("metadata", {}) if isinstance(first.get("metadata"), dict) else {}
+    bbox_list = []
+    evidence_nodes = []
+    for match in evidence:
+        bbox_list.extend(_match_evidence_bboxes(match))
+        evidence_nodes.extend(_match_evidence_block_ids(match))
+    evidence_text = "\n\n".join(_match_evidence_text(match)[:800] for match in evidence[:3])
+    actual_value = f"缺失必填证据槽位：{'、'.join(missing_slot_ids)}"
+    expected_value = "每个 required evidence_slot 至少命中 min_matches 且覆盖 expected_terms 后，才能执行规则结论判断。"
+    reasoning = {
+        "issue_type": rule.get("category", "规则库审查"),
+        "rule_id": rule.get("rule_id", ""),
+        "rule_name": rule.get("rule_name", ""),
+        "rule_source": rule.get("rule_source", ""),
+        "rule_description": _rule_description(rule),
+        "review_topic": rule.get("review_topic", {}),
+        "review_item": rule.get("review_item", {}),
+        "review_logic": rule.get("review_logic", []),
+        "evidence_scope": rule.get("evidence_scope", {}),
+        "rule_execution": {
+            "plan": rule.get("rule_execution", {}),
+            "result": {
+                "execution_status": "needs_evidence",
+                "checks": [
+                    {
+                        "type": "evidence_slot_required_presence",
+                        "status": "needs_evidence",
+                        "reason": "正式 RAG 审查缺失必填证据槽位，已跳过 LLM 结论判断。",
+                        "missing_required_slot_ids": missing_slot_ids,
+                    }
+                ],
+                "llm_required": False,
+            },
+        },
+        "evidence_requirement": rule.get("evidence_requirement", ""),
+        "actual_value": actual_value,
+        "expected_value": expected_value,
+        "evidence_nodes": evidence_nodes,
+        "source_bbox_list": bbox_list,
+        "fact_ids": retrieval.get("fact_ids", []),
+        "structured_facts": retrieval.get("structured_facts", []) or [],
+        "cross_chapter_findings": retrieval.get("cross_chapter_findings", []) or [],
+        "evidence_slot_retrievals": retrieval.get("slot_retrievals", []),
+        "missing_required_slot_ids": missing_slot_ids,
+        "langextract_grounding": {
+            "fact_count": len(retrieval.get("structured_facts", []) or []),
+            "finding_count": len(retrieval.get("cross_chapter_findings", []) or []),
+            "source": "langextract",
+        },
+        "retrieval_scores": [
+            {
+                "chunk_id": match.get("chunk_id"),
+                "score": match.get("score"),
+                "vector_score": match.get("vector_score"),
+                "bm25_score": match.get("bm25_score"),
+                "rerank_score": match.get("rerank_score"),
+                "rerank_rank": match.get("rerank_rank"),
+                "evidence_slot_ids": match.get("evidence_slot_ids", []),
+                "slot_queries": match.get("slot_queries", []),
+            }
+            for match in evidence
+        ],
+        "review_status": "needs_evidence",
+        "conclusion_type": "needs_evidence",
+    }
+    return {
+        "id": str(uuid.uuid4()),
+        "session_id": session_id,
+        "clause_text": evidence_text or actual_value,
+        "page_number": int(meta.get("page_start") or 1),
+        "paragraph_index": int(meta.get("chunk_index") or 0),
+        "highlight_anchor": first.get("chunk_id", ""),
+        "char_offset_start": 0,
+        "char_offset_end": len(evidence_text or actual_value),
+        "risk_level": "HIGH",
+        "confidence_score": 0,
+        "source_type": "hybrid",
+        "risk_category": rule.get("category", "规则库审查"),
+        "ai_finding": f"{rule.get('rule_name', '规则审查')}：{actual_value}，未执行 AI 结论判断。",
+        "ai_reasoning": json.dumps(reasoning, ensure_ascii=False),
+        "suggested_revision": "调整 evidence_slots.queries、补充解析/索引内容，或补齐原文证据后重新审查。",
+        "human_decision": "pending",
+    }
+
+
+def _missing_required_slot_ids(retrieval: dict[str, Any]) -> list[str]:
+    return [
+        str(slot_id)
+        for slot_id in retrieval.get("missing_required_slot_ids", [])
+        if str(slot_id).strip()
+    ]
 
 
 def _call_deepseek_adjudicator(

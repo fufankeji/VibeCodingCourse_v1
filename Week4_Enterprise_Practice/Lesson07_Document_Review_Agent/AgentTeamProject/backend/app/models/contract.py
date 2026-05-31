@@ -10,6 +10,7 @@ from app.database import Base
 
 class FileType(str, enum.Enum):
     pdf = "pdf"
+    doc = "doc"
     docx = "docx"
     json = "json"
 

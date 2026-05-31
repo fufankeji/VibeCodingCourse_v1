@@ -15,18 +15,26 @@ from app.models.audit_log import AuditLog
 from app.models.contract import Contract
 from app.models.session import ReviewSession
 from app.schemas.contract import UploadResponse
+from app.services import mineru_service, ocr_service
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 PDF_MAGIC = b"%PDF-"
 ZIP_MAGIC = b"PK\x03\x04"
+OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+MINERU_PARSE_TYPES = {"pdf", "doc", "docx"}
 
 
-def _detect_file_type(header: bytes) -> str | None:
+def _detect_file_type(header: bytes, filename: str | None = None) -> str | None:
+    suffix = Path(filename or "").suffix.lower()
     if header[:5] == PDF_MAGIC:
         return "pdf"
     if header[:4] == ZIP_MAGIC:
         return "docx"
+    if header[:8] == OLE_MAGIC and suffix == ".doc":
+        return "doc"
     if header.lstrip().startswith((b"{", b"[")):
+        return "json"
+    if suffix == ".json":
         return "json"
     return None
 
@@ -88,7 +96,7 @@ def _is_scanned_pdf(file_path: str) -> bool:
 async def handle_upload(file: UploadFile, db: Session, user_id: str = "anonymous") -> UploadResponse:
     # Read header for magic bytes check
     header = await file.read(8)
-    file_type = _detect_file_type(header)
+    file_type = _detect_file_type(header, file.filename)
     if file_type is None:
         raise APIError.unsupported_file_type()
 
@@ -128,6 +136,8 @@ async def handle_upload(file: UploadFile, db: Session, user_id: str = "anonymous
         if not _check_docx_integrity(file_path):
             shutil.rmtree(storage_dir, ignore_errors=True)
             raise APIError.corrupt_file()
+    elif file_type == "doc":
+        pass
     elif file_type == "json":
         if not _check_mineru_json_integrity(file_path):
             shutil.rmtree(storage_dir, ignore_errors=True)
@@ -195,15 +205,62 @@ async def handle_upload(file: UploadFile, db: Session, user_id: str = "anonymous
 async def _background_ocr(session_id: str, file_path: str, file_type: str) -> None:
     """Run OCR extraction in a background task."""
     from app.database import SessionLocal
-    from app.services import ocr_service
 
     db = SessionLocal()
     try:
-        text = await asyncio.get_event_loop().run_in_executor(
-            None, ocr_service.extract_text, file_path
+        parse_path, text = await asyncio.get_event_loop().run_in_executor(
+            None, _prepare_parse_input, file_path, file_type
         )
-        await ocr_service.extract_fields(session_id, text, db, file_path=file_path)
-    except Exception:
-        pass  # Errors are logged inside ocr_service
+        await ocr_service.extract_fields(session_id, text, db, file_path=parse_path)
+    except Exception as exc:
+        await _mark_parse_failed(session_id, db, exc)
     finally:
         db.close()
+
+
+def _prepare_parse_input(file_path: str, file_type: str) -> tuple[str, str]:
+    if file_type == "json":
+        return file_path, ""
+    if file_type in MINERU_PARSE_TYPES and _mineru_configured():
+        artifacts = mineru_service.parse_file_to_artifacts(file_path, Path(file_path).parent / "mineru")
+        if artifacts.best_parse_path is None:
+            raise mineru_service.MinerUAPIError("MinerU did not produce a parse artifact")
+        return str(artifacts.best_parse_path), ""
+    return file_path, ocr_service.extract_text(file_path)
+
+
+def _mineru_configured() -> bool:
+    return bool((settings.mineru_token or settings.mineru_access_key).strip())
+
+
+async def _mark_parse_failed(session_id: str, db: Session, exc: Exception) -> None:
+    from app.core.sse import sse_manager
+
+    session = db.query(ReviewSession).filter(ReviewSession.id == session_id).first()
+    if not session:
+        return
+    session.state = "aborted"
+    session.updated_at = datetime.utcnow()
+    contract = db.query(Contract).filter(Contract.id == session.contract_id).first()
+    if contract:
+        contract.contract_status = "aborted"
+        db.add(contract)
+    db.add(session)
+    db.add(
+        AuditLog(
+            session_id=session_id,
+            event_type="parse_failed",
+            actor_id="system",
+            actor_type="system",
+            metadata_json=json.dumps(
+                {"error": str(exc), "error_code": "DOCUMENT_PARSE_FAILED"},
+                ensure_ascii=False,
+            ),
+        )
+    )
+    db.commit()
+    await sse_manager.publish(
+        session_id,
+        "parse_failed",
+        {"session_id": session_id, "state": "aborted", "message": str(exc)},
+    )
