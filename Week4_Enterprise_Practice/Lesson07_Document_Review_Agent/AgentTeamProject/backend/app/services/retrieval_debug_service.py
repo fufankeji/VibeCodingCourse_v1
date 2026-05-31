@@ -212,6 +212,7 @@ def _load_review_chunks(path: Path) -> list[ReviewChunk]:
                     metadata=item.get("metadata") if isinstance(item.get("metadata"), dict) else {},
                     char_start=int(item.get("char_start") or 0),
                     char_end=int(item.get("char_end") or 0),
+                    embedding_text=str(item.get("embedding_text") or ""),
                 )
             )
         except Exception:

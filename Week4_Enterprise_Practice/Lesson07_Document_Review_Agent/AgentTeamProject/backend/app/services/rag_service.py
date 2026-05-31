@@ -20,11 +20,18 @@ from typing import Any
 import httpx
 
 from app.config import get_llm, settings
+from app.services.review_retrieval_defaults import EVIDENCE_SLOT_RETRIEVAL_DEFAULTS
 from app.services.review_rule_schema import execute_rule_precheck
 
 
 class RAGReviewError(RuntimeError):
     """Raised when the RAG path cannot complete safely."""
+
+
+RETRIEVAL_ENRICHMENT_VERSION = "v4"
+MAX_RULE_EVIDENCE_SLOTS = 8
+MAX_RULE_EVIDENCE_SLOT_QUERIES = 3
+MAX_RULE_EVIDENCE_SLOT_QUERY_LENGTH = 240
 
 
 def _post_json_with_retries(
@@ -118,6 +125,7 @@ def run_rag_review(
         ),
         "embedding_model": settings.siliconflow_embedding_model,
         "embedding_dimensions": settings.siliconflow_embedding_dimensions,
+        "retrieval_enrichment_version": RETRIEVAL_ENRICHMENT_VERSION,
         "reranker_model": settings.siliconflow_reranker_model,
         "retrieval_top_k": settings.rag_top_k,
         "rerank_top_n": settings.rag_rerank_top_n,
@@ -278,11 +286,27 @@ class ChromaChunkStore:
         self.client = chromadb.PersistentClient(path=str(persist_dir))
         safe_session = re.sub(r"[^a-zA-Z0-9_-]", "_", session_id)
         signature = hashlib.sha1(
-            f"{settings.siliconflow_embedding_model}:{settings.siliconflow_embedding_dimensions}".encode()
+            (
+                f"{settings.siliconflow_embedding_model}:"
+                f"{settings.siliconflow_embedding_dimensions}:"
+                f"{RETRIEVAL_ENRICHMENT_VERSION}"
+            ).encode()
         ).hexdigest()[:8]
         self.collection_name = f"water_review_{safe_session}_{signature}"
+        self._delete_stale_session_collections(safe_session)
         self.collection = self._create_collection()
         self.embedder = embedder
+
+    def _delete_stale_session_collections(self, safe_session: str) -> None:
+        prefix = f"water_review_{safe_session}_"
+        try:
+            collections = self.client.list_collections()
+        except Exception:
+            return
+        for collection in collections:
+            name = collection if isinstance(collection, str) else getattr(collection, "name", "")
+            if name.startswith(prefix) and name != self.collection_name:
+                self.client.delete_collection(name)
 
     def _create_collection(self) -> Any:
         return self.client.get_or_create_collection(
@@ -292,10 +316,16 @@ class ChromaChunkStore:
 
     def rebuild(self, chunks: list[Any]) -> None:
         chunk_ids = [_chunk_id(chunk) for chunk in chunks]
-        existing = self.collection.get()
+        index_content_hash = _index_content_hash(chunks)
+        existing = self.collection.get(include=["metadatas"])
         ids = existing.get("ids", [])
+        existing_metadatas = existing.get("metadatas") or []
         existing_dimension = self._existing_embedding_dimension()
-        if set(ids) == set(chunk_ids) and existing_dimension == settings.siliconflow_embedding_dimensions:
+        if (
+            set(ids) == set(chunk_ids)
+            and existing_dimension == settings.siliconflow_embedding_dimensions
+            and _existing_index_hash_matches(existing_metadatas, index_content_hash)
+        ):
             return
         if ids and existing_dimension != settings.siliconflow_embedding_dimensions:
             self.client.delete_collection(self.collection_name)
@@ -305,12 +335,16 @@ class ChromaChunkStore:
             self.collection.delete(ids=ids)
 
         documents = [_chunk_text(chunk) for chunk in chunks]
-        embeddings = self.embedder.embed_texts(documents)
+        embedding_documents = [_chunk_embedding_text(chunk) for chunk in chunks]
+        embeddings = self.embedder.embed_texts(embedding_documents)
         self.collection.upsert(
             ids=chunk_ids,
             documents=documents,
             embeddings=embeddings,
-            metadatas=[_chunk_metadata(chunk, index) for index, chunk in enumerate(chunks)],
+            metadatas=[
+                _chunk_metadata(chunk, index, index_content_hash=index_content_hash)
+                for index, chunk in enumerate(chunks)
+            ],
         )
 
     def _existing_embedding_dimension(self) -> int | None:
@@ -371,25 +405,45 @@ def retrieve_for_rules(
     reranker = SiliconFlowRerankerProvider()
     by_id = {_chunk_id(chunk): chunk for chunk in chunks}
     by_index = {_chunk_id(chunk): index for index, chunk in enumerate(chunks)}
-    queries = [_rule_query(rule) for rule in rules]
-    query_embeddings = store.embedder.embed_texts(queries)
 
     retrievals: list[dict[str, Any]] = []
     for rule_index, rule in enumerate(rules):
-        query = queries[rule_index]
+        query = _rule_query(rule)
         matched_facts = _facts_for_rule(rule, facts or [])
         matched_findings = _findings_for_rule(rule, findings or [], matched_facts)
-        vector_matches = store.query_by_embedding(query_embeddings[rule_index], top_k=top_k)
-        bm25_matches = bm25.query(query, top_k=top_k)
-        fused = _rrf(vector_matches, bm25_matches)
-        expanded = _expand_neighbors(
-            fused[:top_k],
+        slot_retrievals = _retrieve_rule_evidence_slots(
+            rule,
+            store,
+            bm25,
             chunks,
             by_id,
             by_index,
-            limit=max(settings.rag_rerank_top_n * 2, settings.rag_rerank_top_n),
+            reranker,
+            top_k=top_k,
         )
-        reranked = _with_final_ranks(reranker.rerank(query, expanded, top_n=settings.rag_rerank_top_n))
+        if slot_retrievals:
+            reranked = _merge_rule_slot_matches(
+                slot_retrievals,
+                limit=max(top_k, settings.rag_rerank_top_n, len(slot_retrievals) * EVIDENCE_SLOT_RETRIEVAL_DEFAULTS.final_top_k_per_slot),
+            )
+            missing_required_slot_ids = [
+                slot["slot_id"]
+                for slot in slot_retrievals
+                if slot.get("required") is True and slot.get("status") != "matched"
+            ]
+        else:
+            reranked = _retrieve_rule_query_matches(
+                query,
+                store,
+                bm25,
+                chunks,
+                by_id,
+                by_index,
+                reranker,
+                top_k=top_k,
+                rerank_top_n=settings.rag_rerank_top_n,
+            )
+            missing_required_slot_ids = []
         retrievals.append(
             {
                 "rule_index": rule_index,
@@ -402,6 +456,8 @@ def retrieve_for_rules(
                 "rule_execution": rule.get("rule_execution", {}),
                 "query": query,
                 "matches": reranked,
+                "slot_retrievals": slot_retrievals,
+                "missing_required_slot_ids": missing_required_slot_ids,
                 "structured_facts": [_compact_fact(fact) for fact in matched_facts[:12]],
                 "cross_chapter_findings": [_compact_finding(finding) for finding in matched_findings[:6]],
                 "fact_ids": [fact.get("fact_id") for fact in matched_facts[:12] if fact.get("fact_id")],
@@ -410,6 +466,201 @@ def retrieve_for_rules(
             }
         )
     return retrievals
+
+
+def _retrieve_rule_evidence_slots(
+    rule: dict[str, Any],
+    store: ChromaChunkStore,
+    bm25: "BM25Index",
+    chunks: list[Any],
+    by_id: dict[str, Any],
+    by_index: dict[str, int],
+    reranker: "SiliconFlowRerankerProvider",
+    top_k: int,
+) -> list[dict[str, Any]]:
+    raw_slots = [slot for slot in rule.get("evidence_slots", []) if isinstance(slot, dict)]
+    if not raw_slots:
+        return []
+
+    slot_retrievals: list[dict[str, Any]] = []
+    for slot in raw_slots[:MAX_RULE_EVIDENCE_SLOTS]:
+        slot_id = _slot_id(slot)
+        label = str(slot.get("label") or slot_id)
+        queries = _slot_queries(slot)[:MAX_RULE_EVIDENCE_SLOT_QUERIES]
+        query_results: list[dict[str, Any]] = []
+        by_chunk_id: dict[str, dict[str, Any]] = {}
+        for query in queries:
+            matches = _retrieve_rule_query_matches(
+                query,
+                store,
+                bm25,
+                chunks,
+                by_id,
+                by_index,
+                reranker,
+                top_k=max(top_k, EVIDENCE_SLOT_RETRIEVAL_DEFAULTS.candidate_top_k),
+                rerank_top_n=EVIDENCE_SLOT_RETRIEVAL_DEFAULTS.rerank_candidate_top_n,
+            )
+            tagged_matches = [
+                _tag_slot_match(match, slot_id, label, query, rank)
+                for rank, match in enumerate(matches, start=1)
+            ]
+            for match in tagged_matches:
+                chunk_id = str(match.get("chunk_id") or "")
+                if chunk_id and chunk_id not in by_chunk_id:
+                    by_chunk_id[chunk_id] = match
+            query_results.append(
+                {
+                    "query": query,
+                    "match_count": len(tagged_matches),
+                    "matches": tagged_matches[: EVIDENCE_SLOT_RETRIEVAL_DEFAULTS.prompt_match_limit],
+                }
+            )
+
+        matches = list(by_chunk_id.values())[: EVIDENCE_SLOT_RETRIEVAL_DEFAULTS.final_top_k_per_slot]
+        expected_terms = _string_list(slot.get("expected_terms"))
+        haystack = "\n".join(_match_evidence_text(match) for match in matches)
+        matched_terms = [term for term in expected_terms if term in haystack]
+        missing_terms = [term for term in expected_terms if term not in matched_terms]
+        min_matches = _positive_int(slot.get("min_matches"), EVIDENCE_SLOT_RETRIEVAL_DEFAULTS.min_matches)
+        if not queries:
+            status = "not_configured"
+        elif len(matches) >= min_matches and not missing_terms:
+            status = "matched"
+        else:
+            status = "missing"
+        slot_retrievals.append(
+            {
+                "slot_id": slot_id,
+                "label": label,
+                "required": slot.get("required") is True,
+                "status": status,
+                "min_matches": min_matches,
+                "queries": query_results,
+                "query_count": len(query_results),
+                "query_limit": MAX_RULE_EVIDENCE_SLOT_QUERIES,
+                "truncated_queries": len(_slot_queries(slot)) > len(queries),
+                "matches": matches,
+                "match_count": len(matches),
+                "expected_terms": expected_terms,
+                "matched_expected_terms": matched_terms,
+                "missing_expected_terms": missing_terms,
+            }
+        )
+    return slot_retrievals
+
+
+def _retrieve_rule_query_matches(
+    query: str,
+    store: ChromaChunkStore,
+    bm25: "BM25Index",
+    chunks: list[Any],
+    by_id: dict[str, Any],
+    by_index: dict[str, int],
+    reranker: "SiliconFlowRerankerProvider",
+    top_k: int,
+    rerank_top_n: int,
+) -> list[dict[str, Any]]:
+    vector_matches = store.query(query, top_k=top_k)
+    bm25_matches = bm25.query(query, top_k=top_k)
+    focus_terms = _domain_query_focus_terms(query)
+    if focus_terms and _matches_contain_focus_terms([*vector_matches, *bm25_matches], focus_terms):
+        vector_matches = _filter_matches_by_focus_terms(vector_matches, focus_terms)
+        bm25_matches = _filter_matches_by_focus_terms(bm25_matches, focus_terms)
+    fused = _rrf(vector_matches, bm25_matches) if vector_matches and bm25_matches else (vector_matches or bm25_matches)
+    expanded = _expand_neighbors(
+        fused[:top_k],
+        chunks,
+        by_id,
+        by_index,
+        limit=max(rerank_top_n * 2, rerank_top_n),
+    )
+    if focus_terms:
+        expanded = _filter_matches_by_focus_terms(expanded, focus_terms)
+        expanded = _filter_matches_by_location_intent(query, expanded)
+    if settings.siliconflow_reranker_model:
+        matches = reranker.rerank(query, expanded, top_n=rerank_top_n)
+    else:
+        matches = expanded[:rerank_top_n]
+    if focus_terms:
+        matches = _filter_matches_by_focus_terms(matches, focus_terms)
+        matches = _filter_matches_by_location_intent(query, matches)
+    return _with_final_ranks(matches)
+
+
+def _tag_slot_match(
+    match: dict[str, Any],
+    slot_id: str,
+    label: str,
+    query: str,
+    rank: int,
+) -> dict[str, Any]:
+    item = dict(match)
+    item["evidence_slot_id"] = slot_id
+    item["evidence_slot_label"] = label
+    item["slot_query"] = query
+    item["evidence_slot_ids"] = [slot_id]
+    item["evidence_slot_labels"] = [label]
+    item["slot_queries"] = [query]
+    _add_retrieval_source(item, f"slot:{slot_id}", rank)
+    return item
+
+
+def _merge_rule_slot_matches(slot_retrievals: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    by_chunk_id: dict[str, dict[str, Any]] = {}
+    ordered: list[dict[str, Any]] = []
+    max_match_count = max((len(slot.get("matches", [])) for slot in slot_retrievals), default=0)
+    for match_index in range(max_match_count):
+        for slot in slot_retrievals:
+            matches = slot.get("matches", [])
+            if not isinstance(matches, list) or match_index >= len(matches):
+                continue
+            match = matches[match_index]
+            chunk_id = str(match.get("chunk_id") or "")
+            if not chunk_id:
+                continue
+            if chunk_id not in by_chunk_id:
+                item = dict(match)
+                by_chunk_id[chunk_id] = item
+                ordered.append(item)
+                continue
+            _merge_slot_match(by_chunk_id[chunk_id], match)
+    return _with_final_ranks(ordered[:limit])
+
+
+def _merge_slot_match(target: dict[str, Any], source: dict[str, Any]) -> None:
+    target["score"] = max(float(target.get("score") or 0), float(source.get("score") or 0))
+    for key in ("vector_score", "bm25_score", "rerank_score"):
+        if source.get(key) is None:
+            continue
+        if target.get(key) is None or float(source.get(key) or 0) > float(target.get(key) or 0):
+            target[key] = source.get(key)
+    for key in ("evidence_slot_ids", "evidence_slot_labels", "slot_queries"):
+        current = [str(item) for item in target.get(key, []) if str(item)]
+        incoming = [str(item) for item in source.get(key, []) if str(item)]
+        target[key] = list(dict.fromkeys([*current, *incoming]))
+    _merge_retrieval_sources(target, source)
+
+
+def _slot_queries(slot: dict[str, Any]) -> list[str]:
+    queries: list[str] = []
+    for query in _string_list(slot.get("queries")):
+        trimmed = query[:MAX_RULE_EVIDENCE_SLOT_QUERY_LENGTH].strip()
+        if trimmed:
+            queries.append(trimmed)
+    return queries
+
+
+def _slot_id(slot: dict[str, Any]) -> str:
+    return str(slot.get("id") or slot.get("slot_id") or "").strip() or "unnamed_slot"
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
 
 
 def retrieve_for_query(
@@ -530,6 +781,7 @@ def _match_contains_any_term(match: dict[str, Any], terms: tuple[str, ...] | lis
         [
             str(match.get("document") or ""),
             str(metadata.get("section") or ""),
+            str(metadata.get("evidence_window_text") or ""),
         ]
     )
     return any(term and term in haystack for term in terms)
@@ -538,7 +790,7 @@ def _match_contains_any_term(match: dict[str, Any], terms: tuple[str, ...] | lis
 class BM25Index:
     def __init__(self, chunks: list[Any]) -> None:
         self.chunks = chunks
-        self.docs = [_tokenize(_chunk_text(chunk)) for chunk in chunks]
+        self.docs = [_tokenize(_chunk_embedding_text(chunk)) for chunk in chunks]
         self.df: Counter[str] = Counter()
         for doc in self.docs:
             self.df.update(set(doc))
@@ -616,16 +868,22 @@ def _adjudicate_rule(
     structured_facts = retrieval.get("structured_facts", []) or []
     cross_chapter_findings = retrieval.get("cross_chapter_findings", []) or []
     execution_result = execute_rule_precheck(rule, evidence, structured_facts, cross_chapter_findings)
-    payload = _call_deepseek_adjudicator(rule, evidence, structured_facts, cross_chapter_findings, execution_result)
+    payload = _call_deepseek_adjudicator(
+        rule,
+        evidence,
+        structured_facts,
+        cross_chapter_findings,
+        execution_result,
+        retrieval.get("slot_retrievals", []),
+        retrieval.get("missing_required_slot_ids", []),
+    )
     first = evidence[0]
     meta = first.get("metadata", {})
     bbox_list = []
     evidence_nodes = []
     for match in evidence:
-        match_meta = match.get("metadata", {})
-        bboxes = json.loads(match_meta.get("bbox_json") or "[]")
-        bbox_list.extend(bboxes)
-        evidence_nodes.extend(json.loads(match_meta.get("block_ids_json") or "[]"))
+        bbox_list.extend(_match_evidence_bboxes(match))
+        evidence_nodes.extend(_match_evidence_block_ids(match))
     for fact in structured_facts:
         bbox_list.extend(fact.get("bbox_list") or [])
         evidence_nodes.extend(fact.get("block_ids") or [])
@@ -657,6 +915,8 @@ def _adjudicate_rule(
         "fact_ids": retrieval.get("fact_ids", []),
         "structured_facts": structured_facts,
         "cross_chapter_findings": cross_chapter_findings,
+        "evidence_slot_retrievals": retrieval.get("slot_retrievals", []),
+        "missing_required_slot_ids": retrieval.get("missing_required_slot_ids", []),
         "langextract_grounding": {
             "fact_count": len(structured_facts),
             "finding_count": len(cross_chapter_findings),
@@ -670,13 +930,15 @@ def _adjudicate_rule(
                 "bm25_score": match.get("bm25_score"),
                 "rerank_score": match.get("rerank_score"),
                 "rerank_rank": match.get("rerank_rank"),
+                "evidence_slot_ids": match.get("evidence_slot_ids", []),
+                "slot_queries": match.get("slot_queries", []),
             }
             for match in evidence
         ],
         "review_status": "pending",
         "conclusion_type": payload.get("conclusion_type", "issue"),
     }
-    evidence_text = "\n\n".join(match.get("document", "")[:800] for match in evidence[:3])
+    evidence_text = "\n\n".join(_match_evidence_text(match)[:800] for match in evidence[:3])
     return {
         "id": str(uuid.uuid4()),
         "session_id": session_id,
@@ -703,6 +965,8 @@ def _call_deepseek_adjudicator(
     structured_facts: list[dict[str, Any]],
     cross_chapter_findings: list[dict[str, Any]],
     execution_result: dict[str, Any],
+    evidence_slot_retrievals: list[dict[str, Any]] | None = None,
+    missing_required_slot_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -719,15 +983,30 @@ def _call_deepseek_adjudicator(
             "target_fields": rule.get("target_fields", []),
             "severity_policy": rule.get("severity_policy"),
             "evidence_requirement": rule.get("evidence_requirement"),
+            "evidence_slots": [
+                {
+                    "slot_id": _slot_id(slot),
+                    "label": slot.get("label"),
+                    "required": slot.get("required") is True,
+                    "expected_terms": _string_list(slot.get("expected_terms")),
+                    "queries": _slot_queries(slot),
+                }
+                for slot in rule.get("evidence_slots", [])
+                if isinstance(slot, dict)
+            ],
         },
         "rule_execution_result": execution_result,
+        "evidence_slot_retrievals": evidence_slot_retrievals or [],
+        "missing_required_slot_ids": missing_required_slot_ids or [],
         "evidence": [
             {
                 "chunk_id": match.get("chunk_id"),
+                "evidence_slot_ids": match.get("evidence_slot_ids", []),
+                "slot_queries": match.get("slot_queries", []),
                 "page_start": match.get("metadata", {}).get("page_start"),
                 "page_end": match.get("metadata", {}).get("page_end"),
                 "section": match.get("metadata", {}).get("section"),
-                "text": match.get("document", "")[:1200],
+                "text": _match_evidence_text(match)[:1200],
             }
             for match in evidence[:8]
         ],
@@ -1116,28 +1395,112 @@ def _rule_description(rule: dict[str, Any]) -> str:
     return "；".join(pieces)
 
 
+def _match_evidence_text(match: dict[str, Any]) -> str:
+    metadata = match.get("metadata") if isinstance(match.get("metadata"), dict) else {}
+    return str(metadata.get("evidence_window_text") or match.get("document") or "")
+
+
 def _chunk_text(chunk: Any) -> str:
     return getattr(chunk, "text", "")
+
+
+def _chunk_embedding_text(chunk: Any) -> str:
+    enriched = str(getattr(chunk, "embedding_text", "") or "").strip()
+    return enriched or _chunk_text(chunk)
 
 
 def _chunk_id(chunk: Any) -> str:
     return getattr(chunk, "chunk_id", "")
 
 
-def _chunk_metadata(chunk: Any, index: int) -> dict[str, Any]:
+def _chunk_metadata(chunk: Any, index: int, index_content_hash: str | None = None) -> dict[str, Any]:
     bbox_list = getattr(chunk, "bbox_list", [])
     block_ids = [item.get("block_id") for item in bbox_list if item.get("block_id")]
     page_range = getattr(chunk, "page_range", [1, 1])
-    return {
+    chunk_meta = getattr(chunk, "metadata", {})
+    if not isinstance(chunk_meta, dict):
+        chunk_meta = {}
+    metadata = {
         "chunk_id": _chunk_id(chunk),
         "chunk_index": index,
+        "index_content_hash": index_content_hash or "",
         "section": getattr(chunk, "section", ""),
         "page_start": int(page_range[0] if page_range else 1),
         "page_end": int(page_range[-1] if page_range else 1),
         "bbox_json": json.dumps(bbox_list, ensure_ascii=False),
-        "block_ids_json": json.dumps(block_ids, ensure_ascii=False),
+        "block_ids_json": json.dumps(chunk_meta.get("block_ids") or block_ids, ensure_ascii=False),
         "table_refs_json": json.dumps(getattr(chunk, "table_refs", []), ensure_ascii=False),
+        "chunk_layer": str(chunk_meta.get("chunk_layer") or ""),
+        "parent_section": str(chunk_meta.get("parent_section") or ""),
+        "block_types_json": json.dumps(chunk_meta.get("block_types", []), ensure_ascii=False),
+        "block_sub_types_json": json.dumps(chunk_meta.get("block_sub_types", []), ensure_ascii=False),
+        "mineru_indexes_json": json.dumps(chunk_meta.get("mineru_indexes", []), ensure_ascii=False),
+        "child_types_json": json.dumps(chunk_meta.get("child_types", []), ensure_ascii=False),
+        "span_types_json": json.dumps(chunk_meta.get("span_types", []), ensure_ascii=False),
+        "page_sizes_json": json.dumps(chunk_meta.get("page_sizes", {}), ensure_ascii=False),
+        "captions_json": json.dumps(chunk_meta.get("captions", []), ensure_ascii=False),
+        "atomic_block_ids_json": json.dumps(chunk_meta.get("atomic_block_ids", []), ensure_ascii=False),
+        "evidence_window_block_ids_json": json.dumps(chunk_meta.get("evidence_window_block_ids", []), ensure_ascii=False),
+        "evidence_window_bbox_json": json.dumps(chunk_meta.get("evidence_window_bbox_list", []), ensure_ascii=False),
+        "evidence_window_text": str(chunk_meta.get("evidence_window_text") or "")[:2400],
+        "has_table": bool(chunk_meta.get("has_table")),
+        "has_image": bool(chunk_meta.get("has_image")),
     }
+    embedding_text = _chunk_embedding_text(chunk)
+    if embedding_text != _chunk_text(chunk):
+        metadata["embedding_enriched"] = True
+        metadata["embedding_text_sha1"] = hashlib.sha1(embedding_text.encode("utf-8")).hexdigest()
+    else:
+        metadata["embedding_enriched"] = False
+    return metadata
+
+
+def _index_content_hash(chunks: list[Any]) -> str:
+    payload = [
+        {
+            "chunk_id": _chunk_id(chunk),
+            "document": _chunk_text(chunk),
+            "embedding_text": _chunk_embedding_text(chunk),
+            "section": getattr(chunk, "section", ""),
+            "page_range": getattr(chunk, "page_range", []),
+            "metadata": getattr(chunk, "metadata", {}),
+        }
+        for chunk in chunks
+    ]
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _existing_index_hash_matches(metadatas: Any, index_content_hash: str) -> bool:
+    if not isinstance(metadatas, list) or not metadatas:
+        return False
+    hashes = {metadata.get("index_content_hash") for metadata in metadatas if isinstance(metadata, dict)}
+    return hashes == {index_content_hash}
+
+
+def _match_evidence_bboxes(match: dict[str, Any]) -> list[dict[str, Any]]:
+    metadata = match.get("metadata") if isinstance(match.get("metadata"), dict) else {}
+    window_bboxes = _loads_json_list(metadata.get("evidence_window_bbox_json"))
+    return [item for item in (window_bboxes or _loads_json_list(metadata.get("bbox_json"))) if isinstance(item, dict)]
+
+
+def _match_evidence_block_ids(match: dict[str, Any]) -> list[str]:
+    metadata = match.get("metadata") if isinstance(match.get("metadata"), dict) else {}
+    window_ids = _loads_json_list(metadata.get("evidence_window_block_ids_json"))
+    block_ids = window_ids or _loads_json_list(metadata.get("block_ids_json"))
+    return [str(item) for item in block_ids if str(item).strip()]
+
+
+def _loads_json_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    return parsed if isinstance(parsed, list) else []
 
 
 def _tokenize(text: str) -> list[str]:

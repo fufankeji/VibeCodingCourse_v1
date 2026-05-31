@@ -60,6 +60,26 @@ _Avoid_: full engineering audit, cost audit
 Review Object 中来自 MinerU table html 或表格截图的结构化表格证据；土石方表格优先使用该证据源，LangExtract 补充文字证据。
 _Avoid_: OCR-only table, prose-only extraction
 
+**Retrieval Enrichment Text**:
+从 Review Object 原文、标题上下文和 MinerU 表格正文生成的连续文档文本，只用于 embedding 生成；不得混入页码、bbox、block type 等定位或结构标签。
+_Avoid_: vector metadata, display text
+
+**Atomic Block**:
+Review Object 中由 MinerU 或 fallback parser 产生的最小可定位文档单元，保留原文、caption、page、bbox、page size、block id 和 parent section；Atomic Block 本身不是默认向量切片。
+_Avoid_: vector chunk, review result
+
+**Semantic Chunk**:
+由同一章节路径下的一组 Atomic Block 组成的向量切片，embedding 只使用连续文档内容和表格可读文本，metadata 引用对应 Atomic Block。
+_Avoid_: raw paragraph, page chunk
+
+**Evidence Window**:
+围绕命中 Semantic Chunk 扩展出的审查证据窗口，包含相邻 Atomic Block、章节标题、表格 caption/body 等上下文，用于规则判断和人工复核定位。
+_Avoid_: neighbor-only retrieval, LLM summary
+
+**Retrieval Location Metadata**:
+用于定位和高亮 EvidenceAnchor 的页码、bbox、page size、MinerU block index 和 block id 等坐标元数据，不进入 embedding 语义文本。
+_Avoid_: vector text, reasoning evidence
+
 **EvidenceAnchor**:
 指向 Review Object 中可定位证据位置的页码、block id、bbox 和坐标元数据。
 _Avoid_: bbox, location
@@ -83,6 +103,9 @@ _Avoid_: debug query, saved rule
 - **Formula Check** depends on extracted facts; missing or unsupported units create **Missing Evidence** instead of guessed values.
 - **Retrieval Debug** and **Rule Preview** both produce evidence matches that carry **EvidenceAnchor** values.
 - **EvidenceAnchor** points back to parsed blocks in the **Review Object**.
+- **Retrieval Enrichment Text** improves vector recall without changing the user-visible chunk text.
+- **Retrieval Location Metadata** supplies the coordinate fields used by **EvidenceAnchor**.
+- **Semantic Chunk** references one or more **Atomic Block** values and carries an **Evidence Window** for review judgment.
 
 ## Example dialogue
 
@@ -94,3 +117,4 @@ _Avoid_: debug query, saved rule
 - "合同" was used in older code and docs to mean **Review Object**; current domain language should use **Review Object** for 水土保持方案审查.
 - "bbox" was used both as raw coordinate data and as source evidence location; use **EvidenceAnchor** when callers need a stable location interface.
 - "知识检索测试" can mean Review Object retrieval or regulation knowledge retrieval; use **Review Object Retrieval Debug** when validating current project text blocks only.
+- "向量数据" can mean **Retrieval Enrichment Text** or **Retrieval Location Metadata**; use the former for complete document semantics and the latter for click/highlight coordinates.

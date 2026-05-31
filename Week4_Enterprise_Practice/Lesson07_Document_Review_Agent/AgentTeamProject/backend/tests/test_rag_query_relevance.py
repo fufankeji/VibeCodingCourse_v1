@@ -1,3 +1,5 @@
+import pytest
+
 from app.services import rag_service
 from app.services.water_review_service import ReviewChunk
 
@@ -47,6 +49,42 @@ class _FakeStore:
         return matches
 
 
+class _QueryAwareStore:
+    def __init__(self, chunks: list[ReviewChunk], query_matches: dict[str, list[str]]) -> None:
+        self._chunks = {chunk.chunk_id: chunk for chunk in chunks}
+        self._query_matches = query_matches
+
+    def query(self, query: str, top_k: int) -> list[dict]:
+        matches = []
+        for rank, chunk_id in enumerate(self._query_matches.get(query, [])[:top_k], start=1):
+            chunk = self._chunks[chunk_id]
+            matches.append(
+                {
+                    "chunk_id": chunk.chunk_id,
+                    "rank": rank,
+                    "vector_rank": rank,
+                    "document": chunk.text,
+                    "metadata": rag_service._chunk_metadata(chunk, rank - 1),
+                    "score": 0.8 - rank * 0.001,
+                    "vector_score": 0.8 - rank * 0.001,
+                    "retrieval_sources": ["vector"],
+                    "source_ranks": {"vector": rank},
+                }
+            )
+        return matches
+
+
+class _PassthroughReranker:
+    def rerank(self, query: str, matches: list[dict], top_n: int) -> list[dict]:
+        reranked = []
+        for rank, match in enumerate(matches[:top_n], start=1):
+            item = dict(match)
+            item["rerank_rank"] = rank
+            item["rerank_score"] = 1.0 / rank
+            reranked.append(item)
+        return reranked
+
+
 def test_domain_query_filters_weak_heading_and_generic_distribution_matches():
     chunks = [
         _chunk("chunk-0001", "1 项目及项目区概况", "1 项目及项目区概况"),
@@ -77,3 +115,74 @@ def test_domain_query_filters_weak_heading_and_generic_distribution_matches():
     assert "chunk-0004" not in chunk_ids
     assert "chunk-0005" not in chunk_ids
     assert "chunk-0006" not in chunk_ids
+
+
+def test_retrieve_for_rules_aggregates_multiple_required_evidence_slots(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(rag_service.settings, "siliconflow_reranker_model", "fake-reranker")
+    monkeypatch.setattr(rag_service.settings, "rag_rerank_top_n", 3)
+    monkeypatch.setattr(rag_service, "SiliconFlowRerankerProvider", lambda: _PassthroughReranker())
+    chunks = [
+        _chunk("chunk-0001", "本项目土石方挖方15.30万m3，填方5.275万m3。", "土石方平衡"),
+        _chunk("chunk-0002", "本项目不存在弃渣（土、石）场。", "弃渣场设置分析"),
+        _chunk("chunk-0003", "5.3 水土流失防治方案", "5.3 水土流失防治方案"),
+    ]
+    store = _QueryAwareStore(
+        chunks,
+        {
+            "土石方 挖方 填方": ["chunk-0001"],
+            "弃渣场 设置": ["chunk-0002"],
+        },
+    )
+    rule = {
+        "rule_id": "R-earthwork",
+        "rule_name": "土石方与弃渣场一致性审查",
+        "evidence_slots": [
+            {
+                "id": "earthwork_quantities",
+                "label": "土石方数量",
+                "required": True,
+                "queries": ["土石方 挖方 填方"],
+                "expected_terms": ["挖方", "填方"],
+            },
+            {
+                "id": "spoil_site",
+                "label": "弃渣场设置",
+                "required": True,
+                "queries": ["弃渣场 设置"],
+                "expected_terms": ["弃渣"],
+            },
+        ],
+    }
+
+    retrieval = rag_service.retrieve_for_rules(store, chunks, [rule], top_k=2)[0]
+
+    assert retrieval["missing_required_slot_ids"] == []
+    assert [slot["status"] for slot in retrieval["slot_retrievals"]] == ["matched", "matched"]
+    chunk_ids = [match["chunk_id"] for match in retrieval["matches"]]
+    assert "chunk-0001" in chunk_ids
+    assert "chunk-0002" in chunk_ids
+    assert {"earthwork_quantities", "spoil_site"} == {
+        slot_id for match in retrieval["matches"] for slot_id in match.get("evidence_slot_ids", [])
+    }
+
+
+def test_retrieve_for_rules_reports_missing_required_evidence_slot(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(rag_service.settings, "siliconflow_reranker_model", "fake-reranker")
+    monkeypatch.setattr(rag_service, "SiliconFlowRerankerProvider", lambda: _PassthroughReranker())
+    chunks = [
+        _chunk("chunk-0001", "本项目土石方挖方15.30万m3，填方5.275万m3。", "土石方平衡"),
+    ]
+    store = _QueryAwareStore(chunks, {"土石方 挖方 填方": ["chunk-0001"], "弃渣场 设置": []})
+    rule = {
+        "rule_id": "R-missing-slot",
+        "rule_name": "土石方与弃渣场一致性审查",
+        "evidence_slots": [
+            {"id": "earthwork_quantities", "required": True, "queries": ["土石方 挖方 填方"]},
+            {"id": "spoil_site", "required": True, "queries": ["弃渣场 设置"]},
+        ],
+    }
+
+    retrieval = rag_service.retrieve_for_rules(store, chunks, [rule], top_k=2)[0]
+
+    assert retrieval["missing_required_slot_ids"] == ["spoil_site"]
+    assert [slot["status"] for slot in retrieval["slot_retrievals"]] == ["matched", "missing"]

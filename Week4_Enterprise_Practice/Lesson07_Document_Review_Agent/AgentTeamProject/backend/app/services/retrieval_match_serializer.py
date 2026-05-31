@@ -9,6 +9,7 @@ from typing import Any
 def serialize_retrieval_match(match: dict[str, Any]) -> dict[str, Any]:
     meta = match.get("metadata") if isinstance(match.get("metadata"), dict) else {}
     anchors = anchors_from_metadata(meta)
+    evidence_window_anchors = anchors_from_metadata({"bbox_json": meta.get("evidence_window_bbox_json")})
     block_ids = [anchor["block_id"] for anchor in anchors if anchor.get("block_id")]
     page_start = meta.get("page_start")
     page_end = meta.get("page_end")
@@ -21,8 +22,11 @@ def serialize_retrieval_match(match: dict[str, Any]) -> dict[str, Any]:
         "chunk_index": meta.get("chunk_index"),
         "section": meta.get("section"),
         "anchors": anchors,
+        "evidence_window_anchors": evidence_window_anchors,
         "block_ids": block_ids,
+        "evidence_window_block_ids": _loads_json_list(meta.get("evidence_window_block_ids_json")),
         "bbox_count": len(anchors),
+        "evidence_window_bbox_count": len(evidence_window_anchors),
         "score": match.get("score"),
         "vector_score": match.get("vector_score"),
         "bm25_score": match.get("bm25_score"),
@@ -42,6 +46,7 @@ def serialize_retrieval_match(match: dict[str, Any]) -> dict[str, Any]:
 def serialize_retrieval_location(match: dict[str, Any]) -> dict[str, Any]:
     meta = match.get("metadata") if isinstance(match.get("metadata"), dict) else {}
     anchors = anchors_from_metadata(meta)
+    evidence_window_anchors = anchors_from_metadata({"bbox_json": meta.get("evidence_window_bbox_json")})
     return {
         "chunk_id": match.get("chunk_id"),
         "page_number": meta.get("page_start"),
@@ -50,8 +55,11 @@ def serialize_retrieval_location(match: dict[str, Any]) -> dict[str, Any]:
         "highlight_anchor": match.get("chunk_id"),
         "section": meta.get("section"),
         "anchors": anchors,
+        "evidence_window_anchors": evidence_window_anchors,
         "block_ids": [anchor["block_id"] for anchor in anchors if anchor.get("block_id")],
+        "evidence_window_block_ids": _loads_json_list(meta.get("evidence_window_block_ids_json")),
         "bbox_count": len(anchors),
+        "evidence_window_bbox_count": len(evidence_window_anchors),
     }
 
 

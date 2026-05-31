@@ -16,7 +16,8 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,16 @@ class ParsedBlock:
     char_end: int
     html: str = ""
     image_path: str = ""
+    mineru_index: int | None = None
+    mineru_sub_type: str = ""
+    page_size: list[float] = field(default_factory=list)
+    child_types: list[str] = field(default_factory=list)
+    span_types: list[str] = field(default_factory=list)
+    line_bboxes: list[list[float]] = field(default_factory=list)
+    span_bboxes: list[list[float]] = field(default_factory=list)
+    parent_section: str = ""
+    caption: str = ""
+    atomic_index: int = 0
 
 
 @dataclass
@@ -50,6 +61,7 @@ class ReviewChunk:
     metadata: dict[str, Any]
     char_start: int
     char_end: int
+    embedding_text: str = ""
 
 
 WATER_FIELDS = [
@@ -151,6 +163,25 @@ DEFAULT_MINERU_JSON = DATA_DIR / "MinerU_1 北京航空航天大学沙河校区�
 DEFAULT_MINERU_MD = DATA_DIR / "北京航空航天大学沙河校区图书馆项目-mineru.md"
 DEFAULT_RULE_SET = DATA_DIR / "水土保持方案审查规则集.json"
 QUICK_VALIDATION_ISSUE_COUNT = 10
+SEMANTIC_CHUNK_MAX_CHARS = 1100
+SEMANTIC_CHUNK_OVERLAP_BLOCKS = 1
+EVIDENCE_WINDOW_BLOCK_RADIUS = 1
+TABLE_ROW_MAX_ROWS_PER_TABLE = 80
+TABLE_ROW_INCLUDE_KEYWORDS = (
+    "弃渣",
+    "弃土",
+    "弃方",
+    "取土",
+    "取料",
+    "土石方",
+    "表土",
+    "占地",
+    "防治责任",
+    "防治措施",
+    "监测",
+    "扰动",
+)
+TABLE_ROW_EXCLUDE_HINTS = ("工程单价", "机械台时", "概算附表", "单价汇总", "附表")
 
 
 def run_pipeline(file_path: str, artifact_dir: str, session_id: str) -> dict[str, Any]:
@@ -279,47 +310,43 @@ def load_rule_set(path: Path = DEFAULT_RULE_SET) -> list[dict[str, Any]]:
     return normalize_review_rules(rules or RULES)
 
 
-def build_chunks(blocks: list[ParsedBlock], max_chars: int = 1600) -> list[ReviewChunk]:
+def build_chunks(blocks: list[ParsedBlock], max_chars: int = SEMANTIC_CHUNK_MAX_CHARS) -> list[ReviewChunk]:
     chunks: list[ReviewChunk] = []
     current: list[ParsedBlock] = []
-    current_section = "未识别章节"
+    block_positions = {block.block_id: index for index, block in enumerate(blocks)}
+
+    def next_chunk_id() -> str:
+        return f"chunk-{len(chunks) + 1:04d}"
 
     def flush() -> None:
         nonlocal current
-        if not current:
-            return
-        text = "\n".join(b.text for b in current).strip()
-        if not text:
+        core_blocks = [block for block in current if _block_document_text(block)]
+        if not core_blocks:
             current = []
             return
-        pages = sorted({b.page for b in current})
-        bbox_list = [
-            {"block_id": b.block_id, "page": b.page, "bbox": b.bbox}
-            for b in current
-            if b.bbox
-        ]
-        chunks.append(
-            ReviewChunk(
-                chunk_id=f"chunk-{len(chunks) + 1:04d}",
-                text=text,
-                section=current_section,
-                page_range=[pages[0], pages[-1]] if pages else [1, 1],
-                bbox_list=bbox_list,
-                table_refs=[b.block_id for b in current if b.type in {"table", "cell"}],
-                metadata={"block_ids": [b.block_id for b in current]},
-                char_start=current[0].char_start,
-                char_end=current[-1].char_end,
-            )
-        )
+        chunk = _semantic_chunk_from_blocks(next_chunk_id(), core_blocks, blocks, block_positions)
+        if not chunk.text.strip():
+            current = []
+            return
+        chunks.append(chunk)
+        for table_block in [block for block in core_blocks if block.html and _should_emit_table_row_chunks(block)]:
+            for row_text in _table_row_texts(table_block):
+                chunks.append(_table_row_chunk(next_chunk_id(), table_block, row_text, chunk.chunk_id))
         current = []
 
     for block in blocks:
         if block.type == "title":
-            if current:
+            if any(item.type != "title" and _block_document_text(item) for item in current):
                 flush()
-            current_section = block.section_hint or block.text[:40]
-        if sum(len(b.text) for b in current) + len(block.text) > max_chars:
+            current.append(block)
+            continue
+        projected_len = sum(_block_semantic_size(b) for b in current) + _block_semantic_size(block)
+        if current and _block_section(current[-1]) != _block_section(block):
             flush()
+        elif current and projected_len > max_chars:
+            overlap = _overlap_blocks(current)
+            flush()
+            current.extend(overlap)
         current.append(block)
     flush()
     return chunks
@@ -452,9 +479,11 @@ def _parse_mineru_json(path: Path) -> list[ParsedBlock]:
     pages = data.get("pdf_info", []) if isinstance(data, dict) else []
     blocks: list[ParsedBlock] = []
     cursor = 0
+    section_stack: list[tuple[int, str]] = []
 
     for page in pages:
         page_num = int(page.get("page_idx", 0)) + 1
+        page_size = _number_list(page.get("page_size", []))
         for raw in page.get("para_blocks", []) or []:
             html, image_path = _mineru_block_media(raw)
             text = _mineru_block_text(raw).strip()
@@ -468,18 +497,32 @@ def _parse_mineru_json(path: Path) -> list[ParsedBlock]:
             start = cursor
             cursor += len(text) + 1
             block_index = raw.get("index", len(blocks))
+            structure = _mineru_block_structure(raw)
+            if block_type == "title" and _is_section_title(text):
+                section_stack = _update_section_stack(section_stack, text)
+            parent_section = _section_path(section_stack) or _section_hint(text)
             blocks.append(
                 ParsedBlock(
                     block_id=f"p{page_num}-b{block_index}",
                     page=page_num,
-                    bbox=[round(float(v), 2) for v in raw.get("bbox", [])],
+                    bbox=_number_list(raw.get("bbox", [])),
                     text=text,
                     type=block_type,
-                    section_hint=_section_hint(text),
+                    section_hint=parent_section,
                     char_start=start,
                     char_end=start + len(text),
                     html=html,
                     image_path=image_path,
+                    mineru_index=_optional_int(block_index),
+                    mineru_sub_type=str(raw.get("sub_type") or ""),
+                    page_size=page_size,
+                    child_types=structure["child_types"],
+                    span_types=structure["span_types"],
+                    line_bboxes=structure["line_bboxes"],
+                    span_bboxes=structure["span_bboxes"],
+                    parent_section=parent_section,
+                    caption=_mineru_caption(raw, text),
+                    atomic_index=len(blocks),
                 )
             )
     if not blocks and DEFAULT_MINERU_MD.exists():
@@ -490,12 +533,17 @@ def _parse_mineru_json(path: Path) -> list[ParsedBlock]:
 def _parse_markdown(path: Path) -> list[ParsedBlock]:
     blocks: list[ParsedBlock] = []
     cursor = 0
+    section_stack: list[tuple[int, str]] = []
     for index, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         text = raw_line.strip()
         if not text:
             continue
         block_type = "title" if text.startswith("#") else _classify_block(text)
         clean_text = text.lstrip("#").strip()
+        if block_type == "title":
+            level = max(1, min(6, len(text) - len(text.lstrip("#"))))
+            section_stack = _replace_section_level(section_stack, level, clean_text)
+        parent_section = _section_path(section_stack) or _section_hint(clean_text)
         start = cursor
         cursor += len(clean_text) + 1
         blocks.append(
@@ -505,9 +553,12 @@ def _parse_markdown(path: Path) -> list[ParsedBlock]:
                 bbox=[],
                 text=clean_text,
                 type=block_type,
-                section_hint=_section_hint(clean_text),
+                section_hint=parent_section,
                 char_start=start,
                 char_end=start + len(clean_text),
+                parent_section=parent_section,
+                caption=_caption_from_text(clean_text),
+                atomic_index=len(blocks),
             )
         )
     return blocks
@@ -536,6 +587,15 @@ def _mineru_block_text(block: dict[str, Any]) -> str:
     return "\n".join(part for part in parts if part.strip())
 
 
+def _mineru_caption(block: dict[str, Any], fallback_text: str) -> str:
+    captions: list[str] = []
+    for child in block.get("blocks", []) or []:
+        child_type = str(child.get("type") or "")
+        if "caption" in child_type:
+            captions.extend(_mineru_lines_text(child.get("lines", [])))
+    return _caption_from_text("\n".join(captions) or fallback_text)
+
+
 def _mineru_lines_text(lines: list[dict[str, Any]]) -> list[str]:
     result: list[str] = []
     for line in lines:
@@ -562,6 +622,397 @@ def _mineru_block_media(block: dict[str, Any]) -> tuple[str, str]:
         if not image_path:
             image_path = child_image_path
     return html, image_path
+
+
+def _mineru_block_structure(block: dict[str, Any]) -> dict[str, list[Any]]:
+    child_types: list[str] = []
+    span_types: list[str] = []
+    line_bboxes: list[list[float]] = []
+    span_bboxes: list[list[float]] = []
+
+    def visit(raw: dict[str, Any], include_self: bool = False) -> None:
+        raw_type = str(raw.get("type") or "").strip()
+        if include_self and raw_type:
+            child_types.append(raw_type)
+        for line in raw.get("lines", []) or []:
+            line_bbox = _number_list(line.get("bbox", []))
+            if line_bbox:
+                line_bboxes.append(line_bbox)
+            for span in line.get("spans", []) or []:
+                span_type = str(span.get("type") or "").strip()
+                if span_type:
+                    span_types.append(span_type)
+                span_bbox = _number_list(span.get("bbox", []))
+                if span_bbox:
+                    span_bboxes.append(span_bbox)
+        for child in raw.get("blocks", []) or []:
+            visit(child, include_self=True)
+
+    visit(block)
+    return {
+        "child_types": _unique_strings(child_types),
+        "span_types": _unique_strings(span_types),
+        "line_bboxes": line_bboxes[:20],
+        "span_bboxes": span_bboxes[:40],
+    }
+
+
+def _block_anchor(block: ParsedBlock) -> dict[str, Any]:
+    anchor: dict[str, Any] = {
+        "block_id": block.block_id,
+        "page": block.page,
+        "bbox": block.bbox,
+    }
+    if len(block.page_size) >= 2:
+        anchor["page_width"] = block.page_size[0]
+        anchor["page_height"] = block.page_size[1]
+    if block.mineru_index is not None:
+        anchor["mineru_index"] = block.mineru_index
+    if block.type:
+        anchor["block_type"] = block.type
+    if block.parent_section:
+        anchor["parent_section"] = block.parent_section
+    return anchor
+
+
+def _semantic_chunk_from_blocks(
+    chunk_id: str,
+    core_blocks: list[ParsedBlock],
+    all_blocks: list[ParsedBlock],
+    block_positions: dict[str, int],
+) -> ReviewChunk:
+    section = _semantic_chunk_section(core_blocks)
+    text = _semantic_chunk_display_text(core_blocks, section)
+    window_blocks = _evidence_window_blocks(core_blocks, all_blocks, block_positions)
+    pages = sorted({block.page for block in core_blocks})
+    metadata = _chunk_structure_metadata(core_blocks)
+    metadata.update(
+        {
+            "chunk_layer": "semantic",
+            "parent_section": section,
+            "atomic_block_ids": [block.block_id for block in core_blocks],
+            "evidence_window_block_ids": [block.block_id for block in window_blocks],
+            "evidence_window_text": _semantic_chunk_display_text(window_blocks, section),
+            "evidence_window_bbox_list": [_block_anchor(block) for block in window_blocks if block.bbox],
+        }
+    )
+    return ReviewChunk(
+        chunk_id=chunk_id,
+        text=text,
+        section=section,
+        page_range=[pages[0], pages[-1]] if pages else [1, 1],
+        bbox_list=[_block_anchor(block) for block in core_blocks if block.bbox],
+        table_refs=[block.block_id for block in core_blocks if block.type in {"table", "cell"} or block.html],
+        metadata=metadata,
+        char_start=core_blocks[0].char_start,
+        char_end=core_blocks[-1].char_end,
+        embedding_text=_build_chunk_embedding_text(core_blocks, section, text),
+    )
+
+
+def _table_row_chunk(chunk_id: str, table_block: ParsedBlock, row_text: str, parent_chunk_id: str) -> ReviewChunk:
+    section = _block_section(table_block)
+    text = "\n".join(_unique_strings([section, table_block.caption, row_text]))
+    metadata = _chunk_structure_metadata([table_block])
+    metadata.update(
+        {
+            "chunk_layer": "table_row",
+            "parent_section": section,
+            "parent_chunk_id": parent_chunk_id,
+            "atomic_block_ids": [table_block.block_id],
+            "evidence_window_block_ids": [table_block.block_id],
+            "evidence_window_text": text,
+            "evidence_window_bbox_list": [_block_anchor(table_block)] if table_block.bbox else [],
+        }
+    )
+    return ReviewChunk(
+        chunk_id=chunk_id,
+        text=text,
+        section=section,
+        page_range=[table_block.page, table_block.page],
+        bbox_list=[_block_anchor(table_block)] if table_block.bbox else [],
+        table_refs=[table_block.block_id],
+        metadata=metadata,
+        char_start=table_block.char_start,
+        char_end=table_block.char_end,
+        embedding_text=text,
+    )
+
+
+def _chunk_structure_metadata(blocks: list[ParsedBlock]) -> dict[str, Any]:
+    page_sizes: dict[str, list[float]] = {}
+    for block in blocks:
+        if len(block.page_size) >= 2:
+            page_sizes[str(block.page)] = block.page_size[:2]
+    return {
+        "block_ids": [b.block_id for b in blocks],
+        "block_types": _unique_strings([b.type for b in blocks]),
+        "block_sub_types": _unique_strings([b.mineru_sub_type for b in blocks if b.mineru_sub_type]),
+        "mineru_indexes": [b.mineru_index for b in blocks if b.mineru_index is not None],
+        "child_types": _unique_strings(item for b in blocks for item in b.child_types),
+        "span_types": _unique_strings(item for b in blocks for item in b.span_types),
+        "page_sizes": page_sizes,
+        "has_table": any(b.type == "table" or bool(b.html) for b in blocks),
+        "has_image": any(b.type == "image" or bool(b.image_path) for b in blocks),
+        "captions": _unique_strings([b.caption for b in blocks if b.caption]),
+    }
+
+
+def _build_chunk_embedding_text(blocks: list[ParsedBlock], section: str, display_text: str) -> str:
+    lines: list[str] = []
+    if section != "未识别章节":
+        _append_document_line(lines, section)
+    for block in blocks:
+        _append_document_line(lines, _block_document_text(block))
+        if block.html:
+            table_text = _html_to_text(block.html)
+            _append_document_line(lines, _truncate_for_embedding(table_text))
+    return "\n".join(lines).strip() or display_text
+
+
+def _semantic_chunk_display_text(blocks: list[ParsedBlock], section: str) -> str:
+    lines: list[str] = []
+    if section != "未识别章节":
+        _append_document_line(lines, section)
+    for block in blocks:
+        _append_document_line(lines, _block_document_text(block))
+    return "\n".join(lines).strip()
+
+
+def _block_document_text(block: ParsedBlock) -> str:
+    text = block.text.strip()
+    if block.image_path and text == block.image_path.strip():
+        return ""
+    if block.html and len(text) > 900:
+        return "\n".join(_unique_strings([block.caption, _truncate_for_embedding(text, 600)]))
+    return text
+
+
+def _block_semantic_size(block: ParsedBlock) -> int:
+    size = len(_block_document_text(block))
+    if block.html:
+        table_text = _html_to_text(block.html)
+        if table_text and table_text not in block.text:
+            size += min(len(table_text), 900)
+    return size
+
+
+def _block_section(block: ParsedBlock) -> str:
+    return block.parent_section or block.section_hint or "未识别章节"
+
+
+def _semantic_chunk_section(blocks: list[ParsedBlock]) -> str:
+    for block in reversed(blocks):
+        if block.type != "title" and _block_section(block) != "未识别章节":
+            return _block_section(block)
+    for block in reversed(blocks):
+        if _block_section(block) != "未识别章节":
+            return _block_section(block)
+    return "未识别章节"
+
+
+def _overlap_blocks(blocks: list[ParsedBlock]) -> list[ParsedBlock]:
+    candidates = [block for block in blocks if block.type != "title" and _block_document_text(block)]
+    return candidates[-SEMANTIC_CHUNK_OVERLAP_BLOCKS:]
+
+
+def _evidence_window_blocks(
+    core_blocks: list[ParsedBlock],
+    all_blocks: list[ParsedBlock],
+    block_positions: dict[str, int],
+) -> list[ParsedBlock]:
+    positions = [block_positions[block.block_id] for block in core_blocks if block.block_id in block_positions]
+    if not positions:
+        return core_blocks
+    start = max(0, min(positions) - EVIDENCE_WINDOW_BLOCK_RADIUS)
+    end = min(len(all_blocks) - 1, max(positions) + EVIDENCE_WINDOW_BLOCK_RADIUS)
+    window = all_blocks[start : end + 1]
+    section = _block_section(core_blocks[0])
+    section_titles = [
+        block
+        for block in all_blocks[: min(positions)]
+        if block.type == "title" and block.text and block.text in section
+    ]
+    return _unique_blocks([*section_titles[-3:], *window])
+
+
+def _unique_blocks(blocks: list[ParsedBlock]) -> list[ParsedBlock]:
+    seen: set[str] = set()
+    result: list[ParsedBlock] = []
+    for block in blocks:
+        if block.block_id in seen:
+            continue
+        seen.add(block.block_id)
+        result.append(block)
+    return result
+
+
+def _table_row_texts(block: ParsedBlock) -> list[str]:
+    rows = _html_table_rows(block.html)
+    if not rows:
+        return []
+    headers = rows[0] if _looks_like_header_row(rows[0]) else []
+    data_rows = rows[1:] if headers else rows
+    result: list[str] = []
+    for row in data_rows:
+        cells = [cell for cell in row if cell]
+        if not cells:
+            continue
+        if headers and len(headers) == len(cells):
+            result.append("；".join(f"{headers[index]}：{cell}" for index, cell in enumerate(cells)))
+        else:
+            result.append("；".join(cells))
+    return _unique_strings(result)[:TABLE_ROW_MAX_ROWS_PER_TABLE]
+
+
+def _html_table_rows(html: str) -> list[list[str]]:
+    parser = _TableHTMLParser()
+    parser.feed(html)
+    return parser.rows
+
+
+class _TableHTMLParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.rows: list[list[str]] = []
+        self._current_row: list[str] | None = None
+        self._current_cell: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        normalized = tag.lower()
+        if normalized == "tr":
+            self._current_row = []
+        elif normalized in {"td", "th"} and self._current_row is not None:
+            self._current_cell = []
+
+    def handle_data(self, data: str) -> None:
+        if self._current_cell is not None:
+            self._current_cell.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        normalized = tag.lower()
+        if normalized in {"td", "th"} and self._current_row is not None and self._current_cell is not None:
+            cell = re.sub(r"\s+", " ", "".join(self._current_cell)).strip()
+            self._current_row.append(cell)
+            self._current_cell = None
+        elif normalized == "tr" and self._current_row is not None:
+            if any(cell.strip() for cell in self._current_row):
+                self.rows.append(self._current_row)
+            self._current_row = None
+
+
+def _looks_like_header_row(row: list[str]) -> bool:
+    joined = "".join(row)
+    return bool(row) and any(keyword in joined for keyword in ["项目", "名称", "指标", "单位", "数量", "面积", "挖方", "填方", "位置", "结论"])
+
+
+def _should_emit_table_row_chunks(block: ParsedBlock) -> bool:
+    haystack = "\n".join([_block_section(block), block.caption, block.text, _html_to_text(block.html)])
+    if any(keyword in haystack for keyword in TABLE_ROW_INCLUDE_KEYWORDS):
+        return True
+    if any(hint in haystack for hint in TABLE_ROW_EXCLUDE_HINTS):
+        return False
+    return False
+
+
+def _caption_from_text(text: str) -> str:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    for line in lines[:3]:
+        if re.match(r"^(表|图)\s*[\d一二三四五六七八九十.-]+", line) or "表" in line[:8] or "图" in line[:8]:
+            return line[:120]
+    return ""
+
+
+def _update_section_stack(section_stack: list[tuple[int, str]], title: str) -> list[tuple[int, str]]:
+    return _replace_section_level(section_stack, _heading_level(title), title.strip())
+
+
+def _is_section_title(title: str) -> bool:
+    stripped = title.strip()
+    if not stripped or len(stripped) > 80:
+        return False
+    if _section_hint(stripped):
+        return True
+    if re.match(r"^第[一二三四五六七八九十\d]+章", stripped):
+        return True
+    if re.match(r"^\d+(?:\.\d+)*\s+\S", stripped):
+        return True
+    if re.match(r"^[一二三四五六七八九十]+[、.．]", stripped):
+        return True
+    if re.match(r"^[（(][一二三四五六七八九十\d]+[）)]", stripped):
+        return True
+    return False
+
+
+def _replace_section_level(section_stack: list[tuple[int, str]], level: int, title: str) -> list[tuple[int, str]]:
+    if not title:
+        return section_stack
+    kept = [(item_level, item_title) for item_level, item_title in section_stack if item_level < level]
+    return [*kept, (level, title)]
+
+
+def _heading_level(title: str) -> int:
+    stripped = title.strip()
+    if re.match(r"^第[一二三四五六七八九十\d]+章", stripped):
+        return 1
+    match = re.match(r"^(\d+(?:\.\d+)*)", stripped)
+    if match:
+        return min(match.group(1).count(".") + 1, 5)
+    if re.match(r"^[一二三四五六七八九十]+[、.．]", stripped):
+        return 2
+    if re.match(r"^[（(][一二三四五六七八九十\d]+[）)]", stripped):
+        return 3
+    return 2
+
+
+def _section_path(section_stack: list[tuple[int, str]]) -> str:
+    return " / ".join(title for _, title in section_stack)
+
+
+def _append_document_line(lines: list[str], text: str) -> None:
+    normalized = re.sub(r"\s+", " ", text or "").strip()
+    if not normalized:
+        return
+    if any(normalized == existing or normalized in existing for existing in lines):
+        return
+    lines.append(normalized)
+
+
+def _truncate_for_embedding(text: str, limit: int = 900) -> str:
+    normalized = re.sub(r"\s+", " ", text).strip()
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[:limit].rstrip() + "..."
+
+
+def _number_list(values: Any) -> list[float]:
+    if not isinstance(values, list):
+        return []
+    result: list[float] = []
+    for value in values:
+        try:
+            result.append(round(float(value), 2))
+        except (TypeError, ValueError):
+            continue
+    return result
+
+
+def _optional_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _unique_strings(values: Any) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            result.append(text)
+    return result
 
 
 def _html_to_text(html: str) -> str:
