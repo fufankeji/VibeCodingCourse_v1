@@ -35,6 +35,7 @@ def test_prepare_parse_input_falls_back_to_local_text_without_mineru_token(tmp_p
     source.write_bytes(b"PK\x03\x04 fake")
 
     monkeypatch.setattr(upload_service.settings, "mineru_token", "", raising=False)
+    monkeypatch.setattr(upload_service.settings, "mineru_access_key", "", raising=False)
     monkeypatch.setattr(upload_service.ocr_service, "extract_text", lambda path: f"local:{path}")
 
     parse_path, text = upload_service._prepare_parse_input(str(source), "docx")
