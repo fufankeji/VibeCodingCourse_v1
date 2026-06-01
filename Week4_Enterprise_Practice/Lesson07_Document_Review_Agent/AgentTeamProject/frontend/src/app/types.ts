@@ -1,6 +1,7 @@
 export type UserRole = 'reviewer' | 'submitter' | 'admin';
 export type SessionState =
   | 'parsing'
+  | 'parsed'
   | 'scanning'
   | 'hitl_field_verify'
   | 'hitl_pending'

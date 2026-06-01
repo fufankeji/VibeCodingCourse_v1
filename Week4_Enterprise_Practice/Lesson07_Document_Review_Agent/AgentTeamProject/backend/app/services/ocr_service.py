@@ -109,6 +109,7 @@ async def extract_fields(session_id: str, text: str, db: Session, file_path: str
     if not session:
         return None
 
+    previous_state = session.state
     session.state = "scanning"
     session.updated_at = datetime.utcnow()
     db.add(session)
@@ -131,7 +132,8 @@ async def extract_fields(session_id: str, text: str, db: Session, file_path: str
         extracted_fields = pipeline.get("fields", [])
     except Exception as exc:
         error_message = str(exc)
-        session.state = "aborted"
+        failure_state = "parsed" if previous_state == "parsed" else "aborted"
+        session.state = failure_state
         session.updated_at = datetime.utcnow()
         db.add(session)
         db.add(
@@ -156,7 +158,7 @@ async def extract_fields(session_id: str, text: str, db: Session, file_path: str
             "system_failure",
             {
                 "session_id": session_id,
-                "state": "aborted",
+                "state": failure_state,
                 "error_code": "RAG_REVIEW_FAILED",
                 "message": error_message,
                 "node_name": "water_review_rag_pipeline",

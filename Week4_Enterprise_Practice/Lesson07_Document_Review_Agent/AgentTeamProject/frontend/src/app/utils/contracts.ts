@@ -11,6 +11,7 @@ export function contractRoute(contract: ContractItem): string | null {
   const state = contractState(contract);
   if (state === 'aborted') return `/contracts/${sid}/parsing`;
   if (state === 'parsing') return `/contracts/${sid}/parsing`;
+  if (state === 'parsed') return `/contracts/${sid}/parsing`;
   if (state === 'scanning' || state === 'hitl_field_verify') return `/contracts/${sid}/fields`;
   if (state === 'hitl_medium_confirm') return `/contracts/${sid}/batch`;
   if (state === 'report_ready' || state === 'completed') return `/contracts/${sid}/report`;

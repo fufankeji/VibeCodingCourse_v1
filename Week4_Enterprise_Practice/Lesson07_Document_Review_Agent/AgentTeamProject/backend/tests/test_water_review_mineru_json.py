@@ -91,6 +91,19 @@ def test_parse_document_uses_explicit_mineru_json_before_default(tmp_path, monke
     assert blocks[0].bbox == [10.0, 20.0, 120.0, 40.0]
 
 
+def test_parse_document_does_not_fallback_to_default_when_explicit_json_has_no_blocks(tmp_path, monkeypatch):
+    default_md = tmp_path / "default.md"
+    explicit_json = tmp_path / "empty-result.json"
+    default_md.write_text("# 默认样例不应出现\n", encoding="utf-8")
+    explicit_json.write_text(json.dumps({"pdf_info": [{"page_idx": 0, "para_blocks": []}]}), encoding="utf-8")
+    monkeypatch.setattr(water_review_service, "DEFAULT_MINERU_JSON", tmp_path / "missing.json")
+    monkeypatch.setattr(water_review_service, "DEFAULT_MINERU_MD", default_md)
+
+    blocks = water_review_service.parse_document(str(explicit_json))
+
+    assert blocks == []
+
+
 def test_parse_document_preserves_mineru_table_html_and_image_paths(tmp_path):
     explicit_json = tmp_path / "mineru-media.json"
     explicit_json.write_text(json.dumps(_mineru_doc_with_media()), encoding="utf-8")

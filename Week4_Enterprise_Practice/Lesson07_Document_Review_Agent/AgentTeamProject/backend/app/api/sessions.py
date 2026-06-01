@@ -1,4 +1,5 @@
 import json
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -12,6 +13,7 @@ from app.core.sse import sse_manager
 from app.database import get_db
 from app.models.audit_log import AuditLog
 from app.models.contract import Contract
+from app.models.document_parse_job import DocumentParseJob
 from app.models.review_item import ReviewItem
 from app.models.session import ReviewSession
 from app.schemas.session import (
@@ -20,9 +22,10 @@ from app.schemas.session import (
     ReviewSessionResponse,
     SessionRecoveryResponse,
 )
-from app.services import retrieval_debug_service
+from app.services import ocr_service, retrieval_debug_service
 from app.services.contract_entry_service import build_contract_entry
 from app.services.document_parse_worker import DocumentParseError, cancel_parse_jobs_for_session, reset_parse_job_for_retry
+from app.services.water_review_parsers import parse_document
 
 router = APIRouter()
 
@@ -35,6 +38,12 @@ class RetrievalDebugRequest(BaseModel):
     use_bm25: bool = True
     use_neighbors: bool = True
     use_rerank: bool = True
+
+
+class StartReviewResponse(BaseModel):
+    session_id: str
+    state: str
+    message: str
 
 
 def _build_progress_summary(session: ReviewSession) -> ProgressSummary:
@@ -109,13 +118,14 @@ def get_review_document_content(session_id: str, db: Session = Depends(get_db)) 
 
     artifact_dir = Path(contract.file_path).parent / "water_review"
     parsed_blocks_path = artifact_dir / "parsed_blocks.json"
-    if not parsed_blocks_path.exists():
-        raise APIError.not_found("ParsedDocument")
-
-    try:
-        blocks = json.loads(parsed_blocks_path.read_text(encoding="utf-8"))
-    except Exception:
-        raise APIError.internal("解析文档内容读取失败")
+    source = "parsed_blocks"
+    if parsed_blocks_path.exists():
+        try:
+            blocks = json.loads(parsed_blocks_path.read_text(encoding="utf-8"))
+        except Exception:
+            raise APIError.internal("解析文档内容读取失败")
+    else:
+        blocks, source = _load_mineru_document_blocks(session_id, db)
 
     if not isinstance(blocks, list):
         raise APIError.internal("解析文档内容格式错误")
@@ -135,7 +145,7 @@ def get_review_document_content(session_id: str, db: Session = Depends(get_db)) 
         "contract_id": contract.id,
         "title": contract.title,
         "file_type": contract.file_type,
-        "source": "parsed_blocks",
+        "source": source,
         "page_count": max(pages) if pages else 0,
         "outline": _build_document_outline(normalized_blocks),
         "pages": ordered_pages,
@@ -164,6 +174,31 @@ def run_retrieval_debug(
         raise APIError.bad_request(str(exc)) from exc
 
 
+@router.post("/{session_id}/start-review", response_model=StartReviewResponse)
+async def start_review(session_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    session = db.query(ReviewSession).filter(ReviewSession.id == session_id).first()
+    if not session:
+        raise APIError.not_found("ReviewSession")
+    if session.state != "parsed":
+        raise APIError.session_state_invalid(session.state, "parsed")
+
+    job = _latest_successful_parse_job(session_id, db)
+    artifact_path, _ = _best_parse_artifact(job)
+    if not artifact_path:
+        raise APIError.not_found("ParsedDocument")
+
+    pipeline = await ocr_service.extract_fields(session_id, "", db, file_path=str(artifact_path))
+    db.refresh(session)
+    if pipeline is None:
+        raise APIError.internal("数据清洗与向量审查失败，MinerU 解析结果已保留")
+
+    return {
+        "session_id": session_id,
+        "state": session.state,
+        "message": "数据清洗与向量审查已启动",
+    }
+
+
 def _normalize_document_block(block: Any, index: int) -> dict[str, Any]:
     data = block if isinstance(block, dict) else {}
     text = str(data.get("text") or "").strip()
@@ -181,6 +216,56 @@ def _normalize_document_block(block: Any, index: int) -> dict[str, Any]:
         "bbox": bbox,
         "section_hint": str(data.get("section_hint") or ""),
     }
+
+
+def _load_mineru_document_blocks(session_id: str, db: Session) -> tuple[list[dict[str, Any]], str]:
+    job = _latest_successful_parse_job(session_id, db)
+    for path, source in _parse_artifact_candidates(job):
+        try:
+            blocks = parse_document(str(path))
+        except Exception:
+            raise APIError.internal("MinerU 解析结果读取失败")
+        return [asdict(block) for block in blocks], source
+
+    raise APIError.not_found("ParsedDocument")
+
+
+def _latest_successful_parse_job(session_id: str, db: Session) -> DocumentParseJob | None:
+    return (
+        db.query(DocumentParseJob)
+        .filter(
+            DocumentParseJob.session_id == session_id,
+            DocumentParseJob.status == "succeeded",
+        )
+        .order_by(DocumentParseJob.completed_at.desc().nullslast(), DocumentParseJob.created_at.desc())
+        .first()
+    )
+
+
+def _best_parse_artifact(job: DocumentParseJob | None) -> tuple[Path | None, str]:
+    for path, source in _parse_artifact_candidates(job):
+        return path, source
+    return None, ""
+
+
+def _parse_artifact_candidates(job: DocumentParseJob | None) -> list[tuple[Path, str]]:
+    if not job:
+        return []
+    raw_candidates: list[tuple[str | None, str]] = [
+        (job.result_json_path, "mineru_json"),
+        (job.result_markdown_path, "mineru_markdown"),
+    ]
+    if job.source_file_type == "json":
+        raw_candidates.append((job.source_file_path, "mineru_json"))
+
+    candidates: list[tuple[Path, str]] = []
+    for raw_path, source in raw_candidates:
+        if not raw_path:
+            continue
+        path = Path(raw_path)
+        if path.exists():
+            candidates.append((path, source))
+    return candidates
 
 
 def _build_document_outline(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:

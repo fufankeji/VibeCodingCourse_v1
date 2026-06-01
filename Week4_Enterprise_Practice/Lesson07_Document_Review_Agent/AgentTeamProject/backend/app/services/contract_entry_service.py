@@ -33,6 +33,13 @@ def build_contract_entry(db: Session, contract: Contract, session: ReviewSession
     state = session.state
     if state == "aborted":
         return {**base, **_aborted_entry(db, session)}
+    if state == "parsed":
+        return {
+            **base,
+            "entry_route_type": "parsing",
+            "entry_action_label": "查看解析结果",
+            "can_view_result": True,
+        }
     if state == "parsing":
         return {**base, "entry_route_type": "parsing", "entry_action_label": "继续解析"}
     if state in {"scanning", "hitl_field_verify"}:
@@ -62,6 +69,8 @@ def _latest_parse_job(db: Session, contract_id: str, session_id: str | None) -> 
 def _retry_decision(job: DocumentParseJob | None) -> dict:
     if not job:
         return {"can_retry_parse": False, "retry_block_reason": "PARSE_JOB_NOT_FOUND"}
+    if job.status == "succeeded":
+        return {"can_retry_parse": False, "retry_block_reason": "PARSE_ALREADY_SUCCEEDED"}
     if job.status == "running":
         return {"can_retry_parse": False, "retry_block_reason": "PARSE_JOB_RUNNING"}
     if job.attempt_count >= job.max_attempts:

@@ -11,6 +11,7 @@ import { formatApiDate } from '../utils/datetime';
 const STATE_OPTIONS: { value: '' | SessionState; label: string }[] = [
   { value: '', label: '全部状态' },
   { value: 'parsing', label: '解析中' },
+  { value: 'parsed', label: '已解析' },
   { value: 'scanning', label: '规则审查中' },
   { value: 'hitl_field_verify', label: '字段核对' },
   { value: 'hitl_pending', label: '待人工审核' },

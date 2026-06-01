@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import {
   AlertTriangle,
@@ -18,18 +18,16 @@ import {
 import { GlobalNav } from '../components/GlobalNav';
 import { WorkflowStatusBar } from '../components/WorkflowStatusBar';
 import { subscribeSSE } from '../api/sse';
-import { abortSession, getSession, retryParse } from '../api/sessions';
+import { abortSession, getReviewDocumentContent, getSession, retryParse, startReview } from '../api/sessions';
+import type { ReviewDocumentContentResponse } from '../api/sessions';
 import type { SessionState } from '../types';
 
-type ParseStatus = 'parsing' | 'failed' | 'timeout' | 'system_failure' | 'aborted' | 'completed';
+type ParseStatus = 'parsing' | 'parsed' | 'failed' | 'timeout' | 'system_failure' | 'aborted' | 'completed';
 type ParseStage =
   | 'queued'
   | 'upload_url_requested'
-  | 'uploaded'
   | 'polling'
   | 'downloading'
-  | 'extracted'
-  | 'pipeline_running'
   | 'completed';
 
 const STAGES: Array<{
@@ -37,19 +35,18 @@ const STAGES: Array<{
   title: string;
   description: string;
 }> = [
-  { id: 'queued', title: '等待任务领取', description: '解析任务已进入队列' },
-  { id: 'upload_url_requested', title: '准备 MinerU 上传', description: '正在获取上传地址' },
-  { id: 'uploaded', title: '文件上传完成', description: '等待 MinerU 开始解析' },
-  { id: 'polling', title: 'MinerU 解析中', description: '正在轮询远端解析结果' },
-  { id: 'downloading', title: '下载解析结果', description: '正在获取结果包' },
-  { id: 'extracted', title: '提取结构化内容', description: '已生成可审查文本与结构' },
-  { id: 'pipeline_running', title: '生成审查数据', description: '正在复用字段抽取与向量检索链路' },
-  { id: 'completed', title: '解析完成', description: '即将进入字段核对' },
+  { id: 'queued', title: '等待解析', description: '任务已入队，等待 worker 领取' },
+  { id: 'upload_url_requested', title: '上传到 MinerU', description: '获取上传地址并提交原始文件' },
+  { id: 'polling', title: 'MinerU 解析中', description: '等待远端返回结构化结果' },
+  { id: 'downloading', title: '获取解析结果', description: '下载并校验 MinerU 结果包' },
+  { id: 'completed', title: '解析完成', description: '已保留结构化结果，尚未执行向量和审查' },
 ];
 
 const STAGE_INDEX = new Map(STAGES.map((stage, index) => [stage.id, index]));
 
 function normalizeStage(value: unknown): ParseStage {
+  if (value === 'uploaded') return 'upload_url_requested';
+  if (value === 'extracted' || value === 'pipeline_running') return 'completed';
   return STAGE_INDEX.has(value as ParseStage) ? (value as ParseStage) : 'queued';
 }
 
@@ -101,14 +98,30 @@ export function ParsingProgressPage() {
   const [isScannedDocument, setIsScannedDocument] = useState(false);
   const [isAborting, setIsAborting] = useState(false);
   const [isRetrying, setIsRetrying] = useState(false);
+  const [isStartingReview, setIsStartingReview] = useState(false);
+  const [startReviewError, setStartReviewError] = useState('');
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [sseConnected, setSseConnected] = useState(false);
+  const [documentContent, setDocumentContent] = useState<ReviewDocumentContentResponse | null>(null);
+  const [documentContentError, setDocumentContentError] = useState('');
 
   const currentStageIndex = STAGE_INDEX.get(stage) ?? 0;
   const progressPercent = useMemo(() => {
     if (parseStatus !== 'parsing') return 100;
     return Math.max(8, Math.round(((currentStageIndex + 1) / STAGES.length) * 100));
   }, [currentStageIndex, parseStatus]);
+
+  const loadParsedContent = useCallback(async () => {
+    if (!sessionId) return;
+    try {
+      const content = await getReviewDocumentContent(sessionId);
+      setDocumentContent(content);
+      setDocumentContentError('');
+    } catch (err: any) {
+      setDocumentContent(null);
+      setDocumentContentError(err.message || '解析结果读取失败');
+    }
+  }, [sessionId]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -121,6 +134,12 @@ export function ParsingProgressPage() {
         setCanRetryParse(session.can_retry_parse ?? true);
         setRetryBlockReason(session.retry_block_reason ?? null);
         if (session.latest_parse_job_stage) setStage(normalizeStage(session.latest_parse_job_stage));
+        if (session.state === 'parsed') {
+          setParseStatus('parsed');
+          setStage('completed');
+          void loadParsedContent();
+          return;
+        }
         if (session.state === 'aborted') {
           setParseStatus('aborted');
           setErrorCode(session.latest_parse_job_error_code || session.retry_block_reason || 'USER_ABORTED');
@@ -132,7 +151,7 @@ export function ParsingProgressPage() {
         }
       })
       .catch(() => {});
-  }, [sessionId, navigate]);
+  }, [sessionId, navigate, loadParsedContent]);
 
   useEffect(() => {
     if (!sessionId || parseStatus !== 'parsing') return;
@@ -174,6 +193,14 @@ export function ParsingProgressPage() {
           setErrorMessage('本次解析已中止');
           return;
         }
+        if (newState === 'parsed') {
+          setParseStatus('parsed');
+          setCanRetryParse(false);
+          setRetryBlockReason('PARSE_ALREADY_SUCCEEDED');
+          setStage('completed');
+          void loadParsedContent();
+          return;
+        }
         if (newState === 'scanning' || newState === 'hitl_pending') {
           navigate(`/contracts/${sessionId}/fields`);
         }
@@ -194,7 +221,7 @@ export function ParsingProgressPage() {
     });
 
     return unsubscribe;
-  }, [sessionId, parseStatus, navigate, retryCount, maxRetries]);
+  }, [sessionId, parseStatus, navigate, retryCount, maxRetries, loadParsedContent]);
 
   useEffect(() => {
     if (parseStatus !== 'parsing') return;
@@ -217,12 +244,31 @@ export function ParsingProgressPage() {
       setElapsedSeconds(0);
       setErrorCode('');
       setErrorMessage('');
+      setDocumentContent(null);
+      setDocumentContentError('');
+      setStartReviewError('');
     } catch (err: any) {
       setErrorCode('RETRY_REQUEST_FAILED');
       setErrorMessage(err.message || '重试失败');
       setParseStatus('failed');
     } finally {
       setIsRetrying(false);
+    }
+  };
+
+  const handleStartReview = async () => {
+    if (!sessionId || parseStatus !== 'parsed') return;
+    setIsStartingReview(true);
+    setStartReviewError('');
+    try {
+      const result = await startReview(sessionId);
+      setSessionState(result.state as SessionState);
+      navigate(`/contracts/${sessionId}/fields`);
+    } catch (err: any) {
+      setStartReviewError(err.message || '数据清洗与向量审查失败，MinerU 解析结果已保留');
+      await loadParsedContent();
+    } finally {
+      setIsStartingReview(false);
     }
   };
 
@@ -244,6 +290,8 @@ export function ParsingProgressPage() {
   const activeStage = STAGES[currentStageIndex] ?? STAGES[0];
   const retryRemaining = Math.max(0, maxRetries - retryCount);
   const retryDisabled = !canRetryParse || retryRemaining <= 0 || isRetrying;
+  const parsedBlockCount = documentContent?.pages.reduce((total, page) => total + page.blocks.length, 0) ?? 0;
+  const previewBlocks = documentContent?.pages.flatMap((page) => page.blocks.slice(0, 4)).slice(0, 8) ?? [];
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -254,7 +302,7 @@ export function ParsingProgressPage() {
           <div className="mb-5 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <h1 className="text-xl font-semibold text-slate-950">解析方案文件</h1>
-              <p className="mt-1 text-sm text-slate-600">系统正在创建可审查文本、字段和证据检索数据。</p>
+              <p className="mt-1 text-sm text-slate-600">先完成 MinerU 文件解析；字段、向量和规则审查在下一步执行。</p>
             </div>
             <div
               className={`inline-flex h-9 w-fit items-center gap-2 rounded-full border px-3 text-sm ${
@@ -344,6 +392,90 @@ export function ParsingProgressPage() {
                     </div>
                   )}
                 </div>
+              ) : parseStatus === 'parsed' ? (
+                <div>
+                  <div className="flex items-start gap-4">
+                    <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">
+                      <CheckCircle2 className="h-6 w-6" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-emerald-700">MinerU 解析完成</p>
+                      <h2 className="mt-1 text-lg font-semibold text-slate-950">已生成结构化解析结果</h2>
+                      <p className="mt-1 text-sm text-slate-600">
+                        当前只完成文件解析。字段抽取、向量检索和规则审查需要手动进入下一步。
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                    <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+                      <p className="text-xs text-slate-500">页数</p>
+                      <p className="mt-1 text-lg font-semibold text-slate-950">{documentContent?.page_count ?? '-'}</p>
+                    </div>
+                    <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+                      <p className="text-xs text-slate-500">解析块</p>
+                      <p className="mt-1 text-lg font-semibold text-slate-950">{parsedBlockCount || '-'}</p>
+                    </div>
+                    <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+                      <p className="text-xs text-slate-500">来源</p>
+                      <p className="mt-1 text-sm font-medium text-slate-950">{documentContent?.source || 'MinerU'}</p>
+                    </div>
+                  </div>
+
+                  {documentContentError ? (
+                    <div className="mt-5 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                      {documentContentError}
+                    </div>
+                  ) : (
+                    <div className="mt-5 rounded-md border border-slate-200">
+                      <div className="border-b border-slate-200 px-4 py-3">
+                        <h3 className="text-sm font-semibold text-slate-950">解析内容预览</h3>
+                      </div>
+                      <div className="max-h-80 overflow-auto p-4">
+                        {previewBlocks.length === 0 ? (
+                          <p className="text-sm text-slate-500">暂无可预览文本块。</p>
+                        ) : (
+                          <div className="space-y-3">
+                            {previewBlocks.map((block) => (
+                              <div key={block.block_id} className="rounded-md border border-slate-100 bg-white p-3">
+                                <div className="mb-1 flex items-center gap-2 text-xs text-slate-400">
+                                  <span>第 {block.page} 页</span>
+                                  <span>{block.type}</span>
+                                </div>
+                                <p className="line-clamp-3 text-sm leading-6 text-slate-700">{block.text || block.image_path || '-'}</p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {startReviewError && (
+                    <div className="mt-5 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                      {startReviewError}
+                    </div>
+                  )}
+
+                  <div className="mt-5 flex flex-col gap-3 sm:flex-row">
+                    <button
+                      type="button"
+                      onClick={handleStartReview}
+                      disabled={isStartingReview}
+                      className="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-blue-600 px-4 text-sm font-medium text-white transition-colors hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:bg-slate-300"
+                    >
+                      {isStartingReview ? <Loader2 className="h-4 w-4 animate-spin" /> : <Workflow className="h-4 w-4" />}
+                      {isStartingReview ? '正在启动下一步' : '开始数据清洗与向量审查'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={loadParsedContent}
+                      className="inline-flex h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                    >
+                      刷新解析结果
+                    </button>
+                  </div>
+                </div>
               ) : (
                 <div role="alert" aria-live="assertive">
                   <div className="flex items-start gap-4">
@@ -406,21 +538,21 @@ export function ParsingProgressPage() {
                     <UploadCloud className="mt-0.5 h-4 w-4 shrink-0 text-blue-600" />
                     <div>
                       <p className="text-sm font-medium text-slate-800">PDF / DOCX</p>
-                      <p className="text-xs text-slate-500">先经 MinerU 解析，再进入审查流水线。</p>
+                      <p className="text-xs text-slate-500">先经 MinerU 生成结构化结果，不自动执行审查。</p>
                     </div>
                   </div>
                   <div className="flex gap-2">
                     <FileSearch className="mt-0.5 h-4 w-4 shrink-0 text-blue-600" />
                     <div>
                       <p className="text-sm font-medium text-slate-800">MinerU JSON</p>
-                      <p className="text-xs text-slate-500">跳过远端解析，直接复用字段抽取与向量检索。</p>
+                      <p className="text-xs text-slate-500">作为已解析结果导入，随后可手动进入下一步。</p>
                     </div>
                   </div>
                   <div className="flex gap-2">
                     <Workflow className="mt-0.5 h-4 w-4 shrink-0 text-blue-600" />
                     <div>
                       <p className="text-sm font-medium text-slate-800">失败边界</p>
-                      <p className="text-xs text-slate-500">MinerU 失败和后处理失败会分开提示。</p>
+                      <p className="text-xs text-slate-500">MinerU 失败只影响解析；后续 pipeline 失败不覆盖解析结果。</p>
                     </div>
                   </div>
                 </div>
@@ -430,7 +562,7 @@ export function ParsingProgressPage() {
                 <h2 className="text-sm font-semibold text-slate-950">操作</h2>
                 <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
                   <Clock3 className="mr-1 inline h-3.5 w-3.5 align-[-2px]" />
-                  正常情况下无需停留在本页，解析完成会自动进入字段核对。
+                  解析完成后会停留在本页展示结果，再由你决定是否进入数据清洗与向量审查。
                 </div>
                 {parseStatus === 'aborted' ? (
                   <button

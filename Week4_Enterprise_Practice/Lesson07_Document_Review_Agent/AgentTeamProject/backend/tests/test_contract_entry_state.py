@@ -142,6 +142,24 @@ def test_aborted_contract_cannot_retry_when_source_file_missing(tmp_path):
     assert entry["retry_block_reason"] == "SOURCE_FILE_MISSING"
 
 
+def test_parsed_contract_enters_parse_result_page(tmp_path):
+    SessionLocal = _session_factory()
+    db = SessionLocal()
+    contract, session, job = _make_contract_session(db, tmp_path, state="parsed")
+    job.status = "succeeded"
+    job.stage = "completed"
+    db.add(job)
+    db.commit()
+
+    entry = build_contract_entry(db, contract, session)
+
+    db.close()
+    assert entry["entry_route_type"] == "parsing"
+    assert entry["entry_action_label"] == "查看解析结果"
+    assert entry["can_view_result"] is True
+    assert entry["can_retry_parse"] is False
+
+
 def test_list_contracts_exposes_entry_decision_fields(tmp_path):
     SessionLocal = _session_factory()
     db = SessionLocal()

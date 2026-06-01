@@ -234,6 +234,14 @@ export function retryParse(sessionId: string) {
   }>(`/sessions/${sessionId}/retry-parse`);
 }
 
+export function startReview(sessionId: string) {
+  return apiClient.post<{
+    session_id: string;
+    state: string;
+    message: string;
+  }>(`/sessions/${sessionId}/start-review`);
+}
+
 export function abortSession(sessionId: string, reason?: string) {
   return apiClient.post<{ session_id: string; state: string; message: string }>(
     `/sessions/${sessionId}/abort`,

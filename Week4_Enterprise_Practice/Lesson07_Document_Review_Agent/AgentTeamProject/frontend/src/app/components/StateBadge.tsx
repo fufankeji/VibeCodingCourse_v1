@@ -6,6 +6,7 @@ interface StateBadgeProps {
 const STATE_CONFIG: Record<string, { label: string; className: string }> = {
   processing: { label: '处理中', className: 'bg-slate-100 text-slate-600 border border-slate-300' },
   parsing: { label: '解析中', className: 'bg-gray-100 text-gray-600 border border-gray-300' },
+  parsed: { label: '已解析', className: 'bg-emerald-100 text-emerald-700 border border-emerald-300' },
   scanning: { label: '规则审查中', className: 'bg-blue-100 text-blue-700 border border-blue-300' },
   hitl_field_verify: { label: '字段核对', className: 'bg-sky-100 text-sky-700 border border-sky-300' },
   hitl_pending: { label: '待人工审核', className: 'bg-orange-100 text-orange-700 border border-orange-300' },

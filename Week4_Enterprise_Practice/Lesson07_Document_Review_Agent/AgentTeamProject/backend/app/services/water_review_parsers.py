@@ -37,7 +37,9 @@ def parse_document(file_path: str | None = None) -> list[ParsedBlock]:
         return []
 
     if DEFAULT_MINERU_JSON.exists():
-        return _parse_mineru_json(DEFAULT_MINERU_JSON)
+        blocks = _parse_mineru_json(DEFAULT_MINERU_JSON)
+        if blocks:
+            return blocks
     if DEFAULT_MINERU_MD.exists():
         return _parse_markdown(DEFAULT_MINERU_MD)
     return []
@@ -93,8 +95,6 @@ def _parse_mineru_json(path: Path) -> list[ParsedBlock]:
                     atomic_index=len(blocks),
                 )
             )
-    if not blocks and DEFAULT_MINERU_MD.exists():
-        blocks = _parse_markdown(DEFAULT_MINERU_MD)
     return blocks
 
 

@@ -291,20 +291,15 @@ def test_update_mineru_progress_records_duration_metrics(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_worker_records_pipeline_and_vector_timing_for_json_job(tmp_path, monkeypatch):
+async def test_worker_marks_json_job_succeeded_without_running_pipeline(tmp_path, monkeypatch):
     SessionLocal = _session_factory()
     db = SessionLocal()
-    _, _, job = _make_contract_session_job(db, tmp_path, file_type="json")
+    _, session, job = _make_contract_session_job(db, tmp_path, file_type="json")
+    session_id = session.id
     job_id = job.id
     db.close()
 
-    async def fake_extract_fields(session_id, text, db, file_path=None):
-        return {
-            "timings": {"pipeline_total_duration_ms": 30},
-            "rag": {"index_manifest": {"vector_rebuild_duration_ms": 11, "vector_total_duration_ms": 11}},
-        }
-
-    monkeypatch.setattr(document_parse_worker.ocr_service, "extract_fields", fake_extract_fields)
+    assert not hasattr(document_parse_worker, "ocr_service")
 
     await document_parse_worker.process_next_job(SessionLocal, worker_id="test-worker")
 
@@ -315,12 +310,86 @@ async def test_worker_records_pipeline_and_vector_timing_for_json_job(tmp_path, 
         attempt = timings["attempts"]["1"]
         assert updated_job.status == "succeeded"
         assert updated_job.completed_at is not None
+        assert updated_job.error_code is None
+        updated_session = db.query(ReviewSession).filter(ReviewSession.id == session_id).first()
+        assert updated_session.state == "parsed"
         assert attempt["stages"]["queued"]["duration_ms"] >= 0
         assert attempt["stages"]["extracted"]["duration_ms"] >= 0
-        assert attempt["stages"]["pipeline_running"]["duration_ms"] >= 0
         assert attempt["stages"]["completed"]["duration_ms"] >= 0
-        assert attempt["metrics"]["pipeline_total_duration_ms"] == 30
-        assert attempt["metrics"]["vector_rebuild_duration_ms"] == 11
+        assert "pipeline_running" not in attempt["stages"]
+        assert attempt["metrics"] == {}
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_worker_marks_pdf_job_parsed_after_mineru_artifacts_without_pipeline(tmp_path, monkeypatch):
+    SessionLocal = _session_factory()
+    db = SessionLocal()
+    _, session, job = _make_contract_session_job(db, tmp_path, file_type="pdf")
+    session_id = session.id
+    job_id = job.id
+    db.close()
+
+    monkeypatch.setattr(document_parse_worker.settings, "mineru_token", "test-token")
+
+    def fake_parse_file_to_artifacts(file_path, output_dir, progress_callback=None):
+        output_dir.mkdir(parents=True, exist_ok=True)
+        json_path = output_dir / "parsed.json"
+        json_path.write_text(
+            json.dumps(
+                {
+                    "pdf_info": [
+                        {
+                            "page_idx": 0,
+                            "para_blocks": [
+                                {
+                                    "type": "title",
+                                    "index": 0,
+                                    "lines": [{"spans": [{"content": "测试水保方案"}]}],
+                                }
+                            ],
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        markdown_path = output_dir / "full.md"
+        markdown_path.write_text("# 测试水保方案\n", encoding="utf-8")
+        zip_path = output_dir / "mineru_result.zip"
+        zip_path.write_bytes(b"zip")
+        if progress_callback:
+            progress_callback("uploaded", {"batch_id": "batch-1"})
+            progress_callback("polling", {"batch_id": "batch-1", "task_id": "task-1"})
+            progress_callback("downloading", {"batch_id": "batch-1", "task_id": "task-1"})
+        return document_parse_worker.mineru_service.MinerUParseArtifacts(
+            json_path=json_path,
+            markdown_path=markdown_path,
+            zip_path=zip_path,
+            batch_id="batch-1",
+            task_id="task-1",
+        )
+
+    monkeypatch.setattr(document_parse_worker.mineru_service, "parse_file_to_artifacts", fake_parse_file_to_artifacts)
+    assert not hasattr(document_parse_worker, "ocr_service")
+
+    await document_parse_worker.process_next_job(SessionLocal, worker_id="test-worker")
+
+    db = SessionLocal()
+    try:
+        updated_job = db.query(DocumentParseJob).filter(DocumentParseJob.id == job_id).first()
+        updated_session = db.query(ReviewSession).filter(ReviewSession.id == session_id).first()
+        timings = json.loads(updated_job.timing_json)
+        attempt = timings["attempts"]["1"]
+        assert updated_job.status == "succeeded"
+        assert updated_job.stage == "completed"
+        assert updated_job.result_json_path and updated_job.result_json_path.endswith("parsed.json")
+        assert updated_job.result_markdown_path and updated_job.result_markdown_path.endswith("full.md")
+        assert updated_session.state == "parsed"
+        assert "pipeline_running" not in attempt["stages"]
+        assert attempt["metrics"]["mineru_total_duration_ms"] >= 0
     finally:
         db.close()
 

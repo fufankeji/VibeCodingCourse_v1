@@ -20,7 +20,7 @@ from app.models.audit_log import AuditLog
 from app.models.contract import Contract
 from app.models.document_parse_job import DocumentParseJob
 from app.models.session import ReviewSession
-from app.services import mineru_service, ocr_service
+from app.services import mineru_service
 
 PDF_DOCX_TYPES = {"pdf", "docx"}
 JOB_MAX_ATTEMPTS = 3
@@ -218,34 +218,23 @@ async def _run_claimed_job(db: Session, job: DocumentParseJob) -> None:
     if _is_job_canceled(db, job.id):
         return
     try:
-        parse_path = _prepare_parse_artifact(db, job)
+        _prepare_parse_artifact(db, job)
         if _is_job_canceled(db, job.id):
             return
-        _transition_stage(db, job, "pipeline_running")
-        await _publish(job, "parse_progress", {"stage": job.stage})
-        pipeline = await ocr_service.extract_fields(job.session_id, "", db, file_path=parse_path)
-        _record_pipeline_metrics(db, job, pipeline)
-        if _is_job_canceled(db, job.id):
-            return
-        db.refresh(job)
-        session = db.query(ReviewSession).filter(ReviewSession.id == job.session_id).first()
-        if session and session.state == "aborted":
-            raise DocumentParseError(
-                "PIPELINE_FAILED",
-                "文档解析后处理失败",
-                event_type="system_failure",
-            )
         _mark_job_succeeded(db, job)
+        await _publish(job, "parse_completed", {"state": "parsed"})
+        await sse_manager.publish(job.session_id, "state_changed", {"session_id": job.session_id, "state": "parsed"})
     except DocumentParseError as exc:
         await _mark_job_failed(db, job, exc.error_code, str(exc), timeout=exc.timeout, event_type=exc.event_type)
     except mineru_service.MinerUAPIError as exc:
         await _mark_job_failed(db, job, exc.error_code, str(exc), timeout=exc.timeout)
     except Exception as exc:
-        await _mark_job_failed(db, job, "PIPELINE_FAILED", str(exc), event_type="system_failure")
+        await _mark_job_failed(db, job, "PARSE_JOB_FAILED", str(exc), event_type="system_failure")
 
 
 def _prepare_parse_artifact(db: Session, job: DocumentParseJob) -> str:
     if job.source_file_type == "json":
+        job.result_json_path = job.source_file_path
         _transition_stage(db, job, "extracted")
         return job.source_file_path
     if job.source_file_type not in PDF_DOCX_TYPES:
@@ -309,6 +298,12 @@ def _mark_job_succeeded(db: Session, job: DocumentParseJob) -> None:
     job.locked_at = None
     job.completed_at = now
     job.updated_at = now
+    session = db.query(ReviewSession).filter(ReviewSession.id == job.session_id).first()
+    if session and session.state not in {"aborted", "canceled"}:
+        session.state = "parsed"
+        session.completed_at = None
+        session.updated_at = now
+        db.add(session)
     db.add(job)
     db.add(
         AuditLog(
