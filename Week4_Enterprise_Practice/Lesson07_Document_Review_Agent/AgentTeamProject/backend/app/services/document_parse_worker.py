@@ -26,6 +26,13 @@ PDF_DOCX_TYPES = {"pdf", "docx"}
 JOB_MAX_ATTEMPTS = 3
 LOCK_TIMEOUT_SECONDS = 15 * 60
 WORKER_POLL_SECONDS = 2
+PROGRESS_PAYLOAD_KEYS = {
+    "segment_index",
+    "segment_count",
+    "page_ranges",
+    "page_start",
+    "page_end_requested",
+}
 
 
 class DocumentParseError(RuntimeError):
@@ -280,6 +287,8 @@ def _update_mineru_progress(db: Session, job_id: str, stage: str, values: dict[s
     for key, value in values.items():
         if key.endswith("_duration_ms") and isinstance(value, int | float):
             _record_timing_metric(job, key, int(value))
+        elif key in PROGRESS_PAYLOAD_KEYS:
+            _record_timing_metric(job, f"latest_{key}", value)
     job.updated_at = datetime.utcnow()
     db.add(job)
     db.commit()
@@ -403,18 +412,29 @@ async def _publish(job: DocumentParseJob, event_type: str, data: dict) -> None:
 
 
 def _publish_progress_nowait(job: DocumentParseJob) -> None:
+    timing = _public_timing_payload(job)
+    metrics = timing.get("metrics") or {}
+    progress_payload = {
+        "session_id": job.session_id,
+        "job_id": job.id,
+        "provider": job.provider,
+        "stage": job.stage,
+        "retry_count": job.attempt_count,
+        "max_retries": job.max_attempts,
+        "timing": timing,
+    }
+    for key in PROGRESS_PAYLOAD_KEYS:
+        value = metrics.get(f"latest_{key}")
+        if value is not None:
+            progress_payload[key] = value
+    if job.mineru_batch_id:
+        progress_payload["batch_id"] = job.mineru_batch_id
+    if job.mineru_task_id:
+        progress_payload["task_id"] = job.mineru_task_id
     sse_manager.publish_nowait(
         job.session_id,
         "parse_progress",
-        {
-            "session_id": job.session_id,
-            "job_id": job.id,
-            "provider": job.provider,
-            "stage": job.stage,
-            "retry_count": job.attempt_count,
-            "max_retries": job.max_attempts,
-            "timing": _public_timing_payload(job),
-        },
+        progress_payload,
     )
 
 
@@ -514,7 +534,7 @@ def _finish_current_stage(job: DocumentParseJob, *, now: datetime | None = None)
     _dump_timing_payload(job, payload)
 
 
-def _record_timing_metric(job: DocumentParseJob, key: str, value: int) -> None:
+def _record_timing_metric(job: DocumentParseJob, key: str, value: Any) -> None:
     payload = _timing_payload(job)
     attempt = _attempt_timing(payload, job)
     attempt["metrics"][key] = value

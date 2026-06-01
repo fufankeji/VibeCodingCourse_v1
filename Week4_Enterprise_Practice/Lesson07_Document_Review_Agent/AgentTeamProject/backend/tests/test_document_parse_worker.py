@@ -394,6 +394,66 @@ async def test_worker_marks_pdf_job_parsed_after_mineru_artifacts_without_pipeli
         db.close()
 
 
+@pytest.mark.asyncio
+async def test_worker_records_segmented_mineru_progress_payload(tmp_path, monkeypatch):
+    SessionLocal = _session_factory()
+    db = SessionLocal()
+    _, _, job = _make_contract_session_job(db, tmp_path, file_type="pdf")
+    job_id = job.id
+    db.close()
+
+    monkeypatch.setattr(document_parse_worker.settings, "mineru_token", "test-token")
+    events = []
+    monkeypatch.setattr(
+        document_parse_worker.sse_manager,
+        "publish_nowait",
+        lambda session_id, event, payload: events.append({"event": event, "payload": payload}),
+    )
+
+    def fake_parse_file_to_artifacts(file_path, output_dir, progress_callback=None):
+        output_dir.mkdir(parents=True, exist_ok=True)
+        json_path = output_dir / "parsed.json"
+        json_path.write_text(json.dumps({"pdf_info": [{"page_idx": 0, "para_blocks": []}]}), encoding="utf-8")
+        manifest_path = output_dir / "segment_manifest.json"
+        manifest_path.write_text(
+            json.dumps({"segments": [{"segment_index": 2, "segment_count": 2, "page_ranges": "201-400"}]}),
+            encoding="utf-8",
+        )
+        if progress_callback:
+            progress_callback(
+                "polling",
+                {
+                    "batch_id": "b2",
+                    "task_id": "t2",
+                    "segment_index": 2,
+                    "segment_count": 2,
+                    "page_ranges": "201-400",
+                },
+            )
+        return document_parse_worker.mineru_service.MinerUParseArtifacts(
+            json_path=json_path,
+            batch_id="b2",
+            task_id="t2",
+        )
+
+    monkeypatch.setattr(document_parse_worker.mineru_service, "parse_file_to_artifacts", fake_parse_file_to_artifacts)
+
+    await document_parse_worker.process_next_job(SessionLocal, worker_id="test-worker")
+
+    db = SessionLocal()
+    try:
+        updated_job = db.query(DocumentParseJob).filter(DocumentParseJob.id == job_id).first()
+        assert updated_job.status == "succeeded"
+        assert updated_job.result_json_path.endswith("parsed.json")
+        progress_payloads = [event["payload"] for event in events if event["event"] == "parse_progress"]
+        assert any(payload.get("segment_index") == 2 and payload.get("segment_count") == 2 for payload in progress_payloads)
+        timing = json.loads(updated_job.timing_json)
+        metrics = timing["attempts"]["1"]["metrics"]
+        assert metrics["mineru_total_duration_ms"] >= 0
+    finally:
+        db.close()
+
+
 def test_mark_job_succeeded_does_not_overwrite_canceled_job(tmp_path):
     SessionLocal = _session_factory()
     db1 = SessionLocal()
