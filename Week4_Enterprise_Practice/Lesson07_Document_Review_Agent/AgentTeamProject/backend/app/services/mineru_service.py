@@ -14,9 +14,18 @@ import httpx
 
 from app.config import settings
 
+MAX_ZIP_BYTES = 250 * 1024 * 1024
+MAX_ZIP_MEMBERS = 5000
+MAX_ZIP_MEMBER_BYTES = 100 * 1024 * 1024
+
 
 class MinerUAPIError(RuntimeError):
     """Raised when MinerU parsing cannot produce a usable artifact."""
+
+    def __init__(self, message: str, error_code: str = "MINERU_REMOTE_FAILED", *, timeout: bool = False) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+        self.timeout = timeout
 
 
 @dataclass
@@ -33,10 +42,14 @@ class MinerUParseArtifacts:
         return self.json_path or self.markdown_path
 
 
-def parse_file_to_artifacts(file_path: str, output_dir: Path) -> MinerUParseArtifacts:
+def parse_file_to_artifacts(
+    file_path: str,
+    output_dir: Path,
+    progress_callback: Any | None = None,
+) -> MinerUParseArtifacts:
     token = _auth_token()
     if not token:
-        raise MinerUAPIError("MINERU_TOKEN or MINERU_ACCESS_KEY is required")
+        raise MinerUAPIError("MINERU_TOKEN is required", "MINERU_TOKEN_MISSING")
 
     source = Path(file_path)
     if not source.exists():
@@ -47,41 +60,58 @@ def parse_file_to_artifacts(file_path: str, output_dir: Path) -> MinerUParseArti
     headers = _headers(token)
     with httpx.Client(timeout=settings.mineru_request_timeout) as client:
         batch_id = _submit_local_file(client, base_url, headers, source)
-        task = _wait_batch_result(client, base_url, headers, batch_id)
+        if progress_callback:
+            progress_callback("uploaded", {"batch_id": batch_id})
+        task = _wait_batch_result(client, base_url, headers, batch_id, progress_callback=progress_callback)
         zip_url = str(task.get("full_zip_url") or "").strip()
         if not zip_url:
-            raise MinerUAPIError("MinerU result did not include full_zip_url")
+            raise MinerUAPIError("MinerU result did not include full_zip_url", "MINERU_RESULT_INVALID")
         response = client.get(zip_url, headers=headers)
-        response.raise_for_status()
+        _raise_for_status(response)
 
     artifacts = extract_zip_artifacts(response.content, output_dir)
     artifacts.batch_id = batch_id
     artifacts.task_id = str(task.get("task_id") or "")
     artifacts.zip_url = zip_url
     if artifacts.best_parse_path is None:
-        raise MinerUAPIError("MinerU zip did not contain usable Markdown or structured JSON")
+        raise MinerUAPIError("MinerU zip did not contain usable Markdown or structured JSON", "MINERU_RESULT_INVALID")
     return artifacts
 
 
 def extract_zip_artifacts(zip_bytes: bytes, output_dir: Path) -> MinerUParseArtifacts:
+    if len(zip_bytes) > MAX_ZIP_BYTES:
+        raise MinerUAPIError("MinerU zip exceeds size limit", "MINERU_ZIP_TOO_LARGE")
     output_dir.mkdir(parents=True, exist_ok=True)
     zip_path = output_dir / "mineru_result.zip"
     zip_path.write_bytes(zip_bytes)
 
-    structured_json: dict[str, Any] | None = None
+    structured_jsons: list[dict[str, Any]] = []
     markdown_text = ""
-    with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
-        for name in zf.namelist():
-            lower = name.lower()
-            if lower.endswith(".json"):
-                candidate = _load_json_member(zf, name)
-                if _is_structured_mineru_json(candidate):
-                    structured_json = candidate
-            elif lower.endswith(".md") and (not markdown_text or Path(name).name == "full.md"):
-                markdown_text = zf.read(name).decode("utf-8", errors="replace")
+    try:
+        with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
+            members = zf.infolist()
+            if len(members) > MAX_ZIP_MEMBERS:
+                raise MinerUAPIError("MinerU zip has too many files", "MINERU_ZIP_TOO_LARGE")
+            for member in members:
+                if member.is_dir():
+                    continue
+                if member.file_size > MAX_ZIP_MEMBER_BYTES:
+                    raise MinerUAPIError("MinerU zip member exceeds size limit", "MINERU_ZIP_TOO_LARGE")
+                _safe_zip_member(output_dir, member.filename)
+                name = member.filename
+                lower = name.lower()
+                if lower.endswith(".json"):
+                    candidate = _load_json_member(zf, name)
+                    if _is_structured_mineru_json(candidate):
+                        structured_jsons.append(candidate)
+                elif lower.endswith(".md") and (not markdown_text or Path(name).name == "full.md"):
+                    markdown_text = zf.read(name).decode("utf-8", errors="replace")
+    except zipfile.BadZipFile as exc:
+        raise MinerUAPIError("MinerU result is not a valid zip", "MINERU_RESULT_INVALID") from exc
 
     json_path = None
-    if structured_json is not None:
+    if structured_jsons:
+        structured_json = max(structured_jsons, key=_mineru_block_count)
         json_path = output_dir / "parsed.json"
         json_path.write_text(json.dumps(structured_json, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -94,7 +124,7 @@ def extract_zip_artifacts(zip_bytes: bytes, output_dir: Path) -> MinerUParseArti
 
 
 def _auth_token() -> str:
-    return (settings.mineru_token or settings.mineru_access_key).strip()
+    return settings.mineru_token.strip()
 
 
 def _headers(token: str) -> dict[str, str]:
@@ -119,17 +149,17 @@ def _submit_local_file(
         "language": settings.mineru_language,
     }
     response = client.post(f"{base_url}/file-urls/batch", headers=headers, json=payload)
-    response.raise_for_status()
+    _raise_for_status(response)
     body = response.json()
     _ensure_success(body)
     data = body.get("data") or {}
     batch_id = str(data.get("batch_id") or "").strip()
     upload_urls = data.get("file_urls") or []
     if not batch_id or not upload_urls:
-        raise MinerUAPIError("MinerU upload-url response is missing batch_id or file_urls")
+        raise MinerUAPIError("MinerU upload-url response is missing batch_id or file_urls", "MINERU_RESULT_INVALID")
 
     upload_response = client.put(str(upload_urls[0]), content=source.read_bytes())
-    upload_response.raise_for_status()
+    _raise_for_status(upload_response)
     return batch_id
 
 
@@ -138,25 +168,32 @@ def _wait_batch_result(
     base_url: str,
     headers: dict[str, str],
     batch_id: str,
+    progress_callback: Any | None = None,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + settings.mineru_poll_timeout_seconds
     interval = max(1, settings.mineru_poll_interval_seconds)
     last_state = "pending"
     while time.monotonic() < deadline:
         response = client.get(f"{base_url}/extract-results/batch/{batch_id}", headers=headers)
-        response.raise_for_status()
+        _raise_for_status(response)
         body = response.json()
         _ensure_success(body)
         results = _extract_results(body.get("data") or {})
         if results:
             task = results[0]
             last_state = str(task.get("state") or last_state)
+            if progress_callback:
+                progress_callback("polling", {"batch_id": batch_id, "task_id": str(task.get("task_id") or "")})
             if last_state == "done":
                 return task
             if last_state == "failed":
-                raise MinerUAPIError(str(task.get("err_msg") or "MinerU parsing failed"))
+                raise MinerUAPIError(str(task.get("err_msg") or "MinerU parsing failed"), "MINERU_REMOTE_FAILED")
         time.sleep(interval)
-    raise MinerUAPIError(f"MinerU parsing timed out: batch_id={batch_id}, state={last_state}")
+    raise MinerUAPIError(
+        f"MinerU parsing timed out: batch_id={batch_id}, state={last_state}",
+        "MINERU_TIMEOUT",
+        timeout=True,
+    )
 
 
 def _extract_results(data: dict[str, Any]) -> list[dict[str, Any]]:
@@ -170,7 +207,7 @@ def _extract_results(data: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _ensure_success(body: dict[str, Any]) -> None:
     if body.get("code") not in (0, "0", None):
-        raise MinerUAPIError(str(body.get("msg") or "MinerU API returned an error"))
+        raise MinerUAPIError(str(body.get("msg") or "MinerU API returned an error"), "MINERU_REMOTE_FAILED")
 
 
 def _load_json_member(zf: zipfile.ZipFile, name: str) -> Any:
@@ -185,3 +222,29 @@ def _is_structured_mineru_json(candidate: Any) -> bool:
         return False
     pdf_info = candidate.get("pdf_info")
     return isinstance(pdf_info, list) and bool(pdf_info)
+
+
+def _mineru_block_count(candidate: dict[str, Any]) -> int:
+    pages = candidate.get("pdf_info") or []
+    return sum(len(page.get("para_blocks") or []) for page in pages if isinstance(page, dict))
+
+
+def _safe_zip_member(output_dir: Path, member_name: str) -> None:
+    target = (output_dir / member_name).resolve()
+    root = output_dir.resolve()
+    if target != root and root not in target.parents:
+        raise MinerUAPIError(f"Unsafe zip member path: {member_name}", "MINERU_ZIP_UNSAFE")
+
+
+def _raise_for_status(response: httpx.Response) -> None:
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        if status in {401, 403}:
+            code = "MINERU_AUTH_FAILED"
+        elif status == 429:
+            code = "MINERU_RATE_LIMITED"
+        else:
+            code = "MINERU_REMOTE_FAILED"
+        raise MinerUAPIError(str(exc), code) from exc

@@ -24,8 +24,6 @@ class Settings(BaseSettings):
     langextract_max_chunks: int = 24
     langextract_request_timeout: int = 120
     mineru_token: str = ""
-    mineru_access_key: str = ""
-    mineru_secret_key: str = ""
     mineru_base_url: str = "https://mineru.net/api/v4"
     mineru_model_version: str = "vlm"
     mineru_language: str = "ch"

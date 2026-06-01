@@ -22,6 +22,6 @@ def get_db():
 
 
 def init_db():
-    from app.models import contract, session, review_item, extracted_field, audit_log, report  # noqa: F401
+    from app.models import audit_log, contract, document_parse_job, extracted_field, report, review_item, session  # noqa: F401
 
     Base.metadata.create_all(bind=engine)

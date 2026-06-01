@@ -19,7 +19,20 @@ async def lifespan(app: FastAPI):
     init_db()
     # Ensure storage directory exists
     os.makedirs(settings.storage_path, exist_ok=True)
-    yield
+    from app.database import SessionLocal
+    from app.services.document_parse_worker import worker_loop
+
+    stop_event = asyncio.Event()
+    worker_task = asyncio.create_task(worker_loop(SessionLocal, stop_event=stop_event))
+    try:
+        yield
+    finally:
+        stop_event.set()
+        worker_task.cancel()
+        try:
+            await worker_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(

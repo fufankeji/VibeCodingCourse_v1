@@ -1,4 +1,3 @@
-import asyncio
 import json
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +21,7 @@ from app.schemas.session import (
     SessionRecoveryResponse,
 )
 from app.services import retrieval_debug_service
+from app.services.document_parse_worker import reset_parse_job_for_retry
 
 router = APIRouter()
 
@@ -269,11 +269,11 @@ async def retry_parse(
     if not contract:
         raise APIError.not_found("Contract")
 
-    # Reset state
     now = datetime.utcnow()
-    session.state = "parsing"
-    session.updated_at = now
-    db.add(session)
+    try:
+        job = reset_parse_job_for_retry(db, session_id)
+    except Exception as exc:
+        raise APIError.bad_request(str(exc)) from exc
 
     audit = AuditLog(
         session_id=session_id,
@@ -281,17 +281,19 @@ async def retry_parse(
         actor_id=x_user_id,
         actor_type="user",
         occurred_at=now,
-        metadata_json=json.dumps({"contract_id": contract.id}),
+        metadata_json=json.dumps({"contract_id": contract.id, "parse_job_id": job.id}),
     )
     db.add(audit)
     db.commit()
 
-    # Re-trigger OCR
-    from app.services.upload_service import _background_ocr
-
-    asyncio.create_task(_background_ocr(session_id, contract.file_path, contract.file_type))
-
-    return {"session_id": session_id, "state": "parsing", "message": "重新解析已启动"}
+    return {
+        "session_id": session_id,
+        "job_id": job.id,
+        "state": "parsing",
+        "retry_count": job.attempt_count,
+        "max_retries": job.max_attempts,
+        "message": "重新解析已入队",
+    }
 
 
 @router.post("/{session_id}/abort")
