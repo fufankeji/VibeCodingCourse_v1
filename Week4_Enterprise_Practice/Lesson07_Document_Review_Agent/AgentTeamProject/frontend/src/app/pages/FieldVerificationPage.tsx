@@ -5,6 +5,7 @@ import { GlobalNav } from '../components/GlobalNav';
 import { WorkflowStatusBar } from '../components/WorkflowStatusBar';
 import { ConfidenceBadge } from '../components/ConfidenceBadge';
 import { listFields, verifyField } from '../api/fields';
+import { getSession } from '../api/sessions';
 import type { ExtractedField, VerificationStatus } from '../types';
 
 const FIELD_LABEL: Record<string, string> = {
@@ -55,11 +56,15 @@ export function FieldVerificationPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [isStartingScanning, setIsStartingScanning] = useState(false);
+  const [readOnly, setReadOnly] = useState(false);
 
   // Load fields from backend
   useEffect(() => {
     if (!sessionId) return;
     setIsLoading(true);
+    getSession(sessionId)
+      .then((session) => setReadOnly(Boolean(session.read_only || session.state === 'aborted')))
+      .catch(() => {});
     listFields(sessionId)
       .then((res) => {
         setFields(res.items.map((f) => ({ ...f, editValue: f.field_value, expanded: false })));
@@ -71,7 +76,7 @@ export function FieldVerificationPage() {
   const lowConfidenceFields = fields.filter((f) => f.needs_human_verification && f.verification_status === 'unverified');
 
   const handleAction = async (fieldId: string, action: VerificationStatus, newValue?: string) => {
-    if (!sessionId) return;
+    if (!sessionId || readOnly) return;
     // Optimistic update
     setFields((prev) =>
       prev.map((f) =>
@@ -98,6 +103,7 @@ export function FieldVerificationPage() {
   };
 
   const handleStartScan = async () => {
+    if (readOnly) return;
     setIsStartingScanning(true);
     await new Promise((r) => setTimeout(r, 800));
     navigate(`/contracts/${sessionId}/scanning`);
@@ -147,6 +153,12 @@ export function FieldVerificationPage() {
             </div>
           )}
 
+          {readOnly && (
+            <div className="mb-5 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+              当前会话已中止，本页仅用于查看已抽取字段，不能修改字段或启动 AI 审查。
+            </div>
+          )}
+
           {/* Field Cards */}
           <div className="space-y-3 mb-6">
             {fields.map((field) => {
@@ -171,7 +183,7 @@ export function FieldVerificationPage() {
                         )}
                       </div>
                       <div className="flex-1 min-w-0">
-                        {field.expanded && !isVerified ? (
+                        {field.expanded && !isVerified && !readOnly ? (
                           <input
                             type="text"
                             value={field.editValue ?? field.field_value}
@@ -188,7 +200,9 @@ export function FieldVerificationPage() {
                     </div>
 
                     <div className="flex items-center gap-1.5 ml-3 shrink-0">
-                      {isVerified ? (
+                      {readOnly ? (
+                        <span className="text-xs text-slate-400">只读</span>
+                      ) : isVerified ? (
                         <StatusTag status={field.verification_status} />
                       ) : (
                         <>
@@ -241,12 +255,12 @@ export function FieldVerificationPage() {
           <div className="flex gap-3">
             <button
               onClick={handleStartScan}
-              disabled={isStartingScanning}
+              disabled={isStartingScanning || readOnly}
               className="flex-1 flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white py-3 rounded-xl text-sm transition-colors"
               style={{ fontWeight: 500 }}
             >
               <Zap className="w-4 h-4" />
-              {isStartingScanning ? 'AI 审查启动中…' : '开始 AI 规则审查'}
+              {readOnly ? '只读模式' : isStartingScanning ? 'AI 审查启动中…' : '开始 AI 规则审查'}
             </button>
             <button
               onClick={() => navigate('/contracts')}

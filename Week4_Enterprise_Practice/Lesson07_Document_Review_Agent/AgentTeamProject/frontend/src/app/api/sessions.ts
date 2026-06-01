@@ -21,6 +21,18 @@ export interface SessionResponse {
   completed_at: string | null;
   updated_at: string;
   progress_summary: ProgressSummary;
+  latest_parse_job_status?: string | null;
+  latest_parse_job_stage?: string | null;
+  latest_parse_job_error_code?: string | null;
+  latest_parse_job_error_message?: string | null;
+  retry_count?: number;
+  max_retries?: number;
+  can_retry_parse?: boolean;
+  retry_block_reason?: string | null;
+  can_view_result?: boolean;
+  entry_route_type?: 'parsing' | 'fields' | 'review' | 'batch' | 'report' | 'aborted' | null;
+  entry_action_label?: string;
+  read_only?: boolean;
 }
 
 export interface SessionRecoveryResponse {

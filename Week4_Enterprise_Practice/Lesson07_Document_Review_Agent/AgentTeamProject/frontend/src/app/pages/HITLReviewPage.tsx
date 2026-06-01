@@ -8,6 +8,7 @@ import { listItems, submitDecision, revokeDecision } from '../api/items';
 import {
   getReviewDocumentContent,
   getReviewRuleTopics,
+  getSession,
   runRetrievalDebug,
   type ReviewDocumentContentResponse,
   type ReviewDocumentPage,
@@ -130,6 +131,7 @@ export function HITLReviewPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showHistory, setShowHistory] = useState<string | null>(null);
   const [showBiasWarning, setShowBiasWarning] = useState(false);
+  const [readOnly, setReadOnly] = useState(false);
   const [conditionA, setConditionA] = useState(false); // 原文已进入视野
   const approveTimestamps = useRef<number[]>([]);
   const previewRequestSeq = useRef(0);
@@ -138,6 +140,9 @@ export function HITLReviewPage() {
   // Load items from backend
   useEffect(() => {
     if (!sessionId) return;
+    getSession(sessionId)
+      .then((session) => setReadOnly(Boolean(session.read_only || session.state === 'aborted')))
+      .catch(() => {});
     setIsLoadingItems(true);
     listItems(sessionId, { limit: 100 })
       .then((res) => {
@@ -278,6 +283,7 @@ export function HITLReviewPage() {
   };
 
   const openCreateCheckItem = () => {
+    if (readOnly) return;
     if (!activeRuleTopic) return;
     const executor = executorTypes.find((item) => item.enabled) ?? executorTypes[0];
     resetPreviewState();
@@ -308,6 +314,7 @@ export function HITLReviewPage() {
   };
 
   const openConvertCheckItem = (item: ReviewCheckItem) => {
+    if (readOnly) return;
     if (!activeRuleTopic) return;
     const executor = executorTypes.find((candidate) => candidate.enabled) ?? executorTypes[0];
     resetPreviewState();
@@ -315,13 +322,14 @@ export function HITLReviewPage() {
   };
 
   const openEditCheckItem = (item: ReviewCheckItem) => {
+    if (readOnly) return;
     if (item.ai_or_human_source !== 'configured_checklist') return;
     resetPreviewState();
     setConfigDraft(draftFromItem(item));
   };
 
   const saveCheckItemDraft = async () => {
-    if (!configDraft) return;
+    if (!configDraft || readOnly) return;
     setIsSavingConfig(true);
     try {
       const payload = buildCheckItemPayload(configDraft);
@@ -338,7 +346,7 @@ export function HITLReviewPage() {
   };
 
   const previewCheckItemDraft = async () => {
-    if (!sessionId || !configDraft) return;
+    if (!sessionId || !configDraft || readOnly) return;
     const requestSeq = previewRequestSeq.current + 1;
     previewRequestSeq.current = requestSeq;
     setIsPreviewing(true);
@@ -386,6 +394,7 @@ export function HITLReviewPage() {
   };
 
   const removeCheckItem = async (item: ReviewCheckItem) => {
+    if (readOnly) return;
     if (!item.id || item.ai_or_human_source !== 'configured_checklist') return;
     const confirmed = window.confirm(`确认删除审查项「${item.review_sub_type}」吗？`);
     if (!confirmed) return;
@@ -398,6 +407,7 @@ export function HITLReviewPage() {
   };
 
   const handleOpenAction = (action: ActiveAction) => {
+    if (readOnly) return;
     setActiveAction(action);
     setHumanNote('');
     setEditedFinding('');
@@ -408,7 +418,7 @@ export function HITLReviewPage() {
   };
 
   const handleSubmitDecision = async (decision: HumanDecision) => {
-    if (!activeItem || !sessionId) return;
+    if (!activeItem || !sessionId || readOnly) return;
     setIsSubmitting(true);
 
     try {
@@ -467,7 +477,7 @@ export function HITLReviewPage() {
   };
 
   const handleRevoke = async (itemId: string) => {
-    if (!sessionId) return;
+    if (!sessionId || readOnly) return;
     if (!window.confirm('确定要撤销此决策吗？条款将回到待处理状态。')) return;
     try {
       await revokeDecision(sessionId, itemId);
@@ -496,10 +506,16 @@ export function HITLReviewPage() {
           <StatusPill tone="blue">AI 审查完成 64 / 64</StatusPill>
           <StatusPill tone="amber">待专家确认 9</StatusPill>
           <StatusPill tone="green">解析页数 {documentContent?.page_count ?? '-'}</StatusPill>
-          <button type="button" className="rounded border border-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50">保存快照</button>
-          <button type="button" className="rounded bg-slate-900 px-3 py-1.5 text-xs text-white hover:bg-slate-800">生成审查意见稿</button>
+          <button type="button" disabled={readOnly} className="rounded border border-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">保存快照</button>
+          <button type="button" disabled={readOnly} className="rounded bg-slate-900 px-3 py-1.5 text-xs text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300">生成审查意见稿</button>
         </div>
       </header>
+
+      {readOnly && (
+        <div className="shrink-0 border-b border-slate-200 bg-slate-50 px-4 py-2 text-xs text-slate-600">
+          当前会话已中止，本页仅用于查看审查记录，不能提交、撤销或生成新的审查意见。
+        </div>
+      )}
 
       <main className="grid min-h-0 flex-1 grid-cols-[232px_minmax(560px,1fr)_414px] overflow-hidden">
         <DocumentOutlinePanel
@@ -540,8 +556,10 @@ export function HITLReviewPage() {
           onEditLevelChange={setEditedRiskLevel}
           onEditFindingChange={setEditedFinding}
           onFalsePositiveChange={setIsFalsePositive}
-          onConfirmDecision={(d) => setConfirmModal({ decision: d })}
-          onRevoke={activeItem ? () => handleRevoke(activeItem.id) : undefined}
+          onConfirmDecision={(d) => {
+            if (!readOnly) setConfirmModal({ decision: d });
+          }}
+          onRevoke={!readOnly && activeItem ? () => handleRevoke(activeItem.id) : undefined}
           onOpenCreateCheckItem={openCreateCheckItem}
           ruleTopicCount={ruleTopics.length}
           retrievalDebugResult={retrievalDebugResult}
@@ -576,7 +594,7 @@ export function HITLReviewPage() {
       )}
 
       {/* Confirmation Modal — R05: 不可通过 ESC/遮罩关闭 */}
-      {confirmModal && activeItem && (
+      {confirmModal && activeItem && !readOnly && (
         <ConfirmModal
           item={activeItem}
           decision={confirmModal.decision}

@@ -3,7 +3,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -21,7 +21,8 @@ from app.schemas.session import (
     SessionRecoveryResponse,
 )
 from app.services import retrieval_debug_service
-from app.services.document_parse_worker import cancel_parse_jobs_for_session, reset_parse_job_for_retry
+from app.services.contract_entry_service import build_contract_entry
+from app.services.document_parse_worker import DocumentParseError, cancel_parse_jobs_for_session, reset_parse_job_for_retry
 
 router = APIRouter()
 
@@ -57,6 +58,7 @@ def get_session(session_id: str, db: Session = Depends(get_db)):
     session = db.query(ReviewSession).filter(ReviewSession.id == session_id).first()
     if not session:
         raise APIError.not_found("ReviewSession")
+    contract = db.query(Contract).filter(Contract.id == session.contract_id).first()
 
     data = {
         "id": session.id,
@@ -71,6 +73,8 @@ def get_session(session_id: str, db: Session = Depends(get_db)):
         "updated_at": session.updated_at,
         "progress_summary": _build_progress_summary(session),
     }
+    if contract:
+        data.update(build_contract_entry(db, contract, session))
     return ReviewSessionResponse(**data)
 
 
@@ -272,6 +276,15 @@ async def retry_parse(
     now = datetime.utcnow()
     try:
         job = reset_parse_job_for_retry(db, session_id)
+    except DocumentParseError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error_code": exc.error_code,
+                "message": str(exc),
+                "request_id": "",
+            },
+        ) from exc
     except Exception as exc:
         raise APIError.bad_request(str(exc)) from exc
 
@@ -340,6 +353,11 @@ async def abort_session(
         session_id,
         "session_aborted",
         {"session_id": session_id, "reason": reason},
+    )
+    await sse_manager.publish(
+        session_id,
+        "state_changed",
+        {"session_id": session_id, "state": "aborted"},
     )
 
     return {"session_id": session_id, "state": "aborted", "message": "审核已放弃"}

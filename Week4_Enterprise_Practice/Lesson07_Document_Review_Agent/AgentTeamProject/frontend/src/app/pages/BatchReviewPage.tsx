@@ -7,6 +7,7 @@ import { RiskLevelBadge } from '../components/RiskLevelBadge';
 import { SourceBadge } from '../components/SourceBadge';
 import { ConfidenceBadge } from '../components/ConfidenceBadge';
 import { listItems, batchConfirm } from '../api/items';
+import { getSession } from '../api/sessions';
 import type { ReviewItem } from '../types';
 
 /**
@@ -28,10 +29,14 @@ export function BatchReviewPage() {
   const [batchNote, setBatchNote] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
+  const [readOnly, setReadOnly] = useState(false);
 
   // Load medium-risk items from backend
   useEffect(() => {
     if (!sessionId) return;
+    getSession(sessionId)
+      .then((session) => setReadOnly(Boolean(session.read_only || session.state === 'aborted')))
+      .catch(() => {});
     setIsLoadingItems(true);
     listItems(sessionId, { risk_level: 'MEDIUM', limit: 100 })
       .then((res) => setItems(res.items))
@@ -40,6 +45,7 @@ export function BatchReviewPage() {
   }, [sessionId]);
 
   const toggleSelect = (id: string) => {
+    if (readOnly) return;
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -49,12 +55,13 @@ export function BatchReviewPage() {
   };
 
   const toggleAll = () => {
+    if (readOnly) return;
     if (selectedIds.size === items.length) setSelectedIds(new Set());
     else setSelectedIds(new Set(items.map((i) => i.id)));
   };
 
   const handleBatchConfirm = async () => {
-    if (!sessionId) return;
+    if (!sessionId || readOnly) return;
     setIsSubmitting(true);
     try {
       const result = await batchConfirm(sessionId, Array.from(selectedIds), batchNote);
@@ -108,11 +115,18 @@ export function BatchReviewPage() {
             </div>
           </div>
 
+          {readOnly && (
+            <div className="mb-5 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+              当前会话已中止，本页仅用于查看中风险复核记录，不能选择条款或提交批量确认。
+            </div>
+          )}
+
           {/* Select All */}
           <div className="flex items-center gap-3 mb-3 px-1">
             <button
               onClick={toggleAll}
-              className="flex items-center gap-1.5 text-sm text-blue-600 hover:text-blue-800"
+              disabled={readOnly}
+              className="flex items-center gap-1.5 text-sm text-blue-600 hover:text-blue-800 disabled:cursor-not-allowed disabled:text-slate-300"
             >
               {selectedIds.size === items.length
                 ? <CheckSquare className="w-4 h-4" />
@@ -142,7 +156,7 @@ export function BatchReviewPage() {
                     {/* Checkbox — 中风险允许多选，高风险严禁批量操作(R03) */}
                     <button
                       onClick={() => !isDone && toggleSelect(item.id)}
-                      disabled={isDone}
+                      disabled={isDone || readOnly}
                       className="mt-0.5 shrink-0"
                     >
                       {isDone ? (
@@ -183,7 +197,7 @@ export function BatchReviewPage() {
                     </div>
 
                     {/* Single Action Buttons */}
-                    {!isDone && (
+                    {!isDone && !readOnly && (
                       <div className="flex flex-col gap-2 shrink-0">
                         <button
                           onClick={() => {
@@ -215,7 +229,7 @@ export function BatchReviewPage() {
       </div>
 
       {/* Batch Operation Bar — 底部固定，勾选≥1条时显示 */}
-      {selectedIds.size > 0 && (
+      {selectedIds.size > 0 && !readOnly && (
         <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 px-6 py-3 flex items-center justify-between z-30 shadow-lg">
           <span className="text-sm text-gray-600">
             已选 <span className="text-blue-600" style={{ fontWeight: 600 }}>{selectedIds.size}</span> 条中风险条款
@@ -240,7 +254,7 @@ export function BatchReviewPage() {
       )}
 
       {/* All completed */}
-      {allCompleted && (
+      {allCompleted && !readOnly && (
         <div className="fixed bottom-0 left-0 right-0 bg-green-50 border-t border-green-200 px-6 py-3 flex items-center justify-between z-30">
           <span className="text-sm text-green-700" style={{ fontWeight: 500 }}>
             ✓ 全部中风险条款已复核，正在生成审核报告…
@@ -271,7 +285,7 @@ export function BatchReviewPage() {
             <div className="flex gap-3">
               <button
                 onClick={handleBatchConfirm}
-                disabled={isSubmitting}
+                disabled={isSubmitting || readOnly}
                 className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white py-2.5 rounded-xl text-sm transition-colors"
                 style={{ fontWeight: 500 }}
               >

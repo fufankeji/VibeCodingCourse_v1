@@ -123,18 +123,54 @@ def test_recover_stale_running_jobs_requeues_expired_lock(tmp_path):
 def test_reset_parse_job_for_retry_requeues_failed_job(tmp_path):
     SessionLocal = _session_factory()
     db = SessionLocal()
-    _, session, job = _make_contract_session_job(db, tmp_path, file_type="pdf", status="failed", attempts=1)
+    contract, session, job = _make_contract_session_job(db, tmp_path, file_type="pdf", status="failed", attempts=1)
+    contract.contract_status = "aborted"
+    db.add(contract)
+    db.commit()
 
     result = document_parse_worker.reset_parse_job_for_retry(db, session.id)
 
     updated_job = db.query(DocumentParseJob).filter(DocumentParseJob.id == job.id).first()
     updated_session = db.query(ReviewSession).filter(ReviewSession.id == session.id).first()
+    updated_contract = db.query(Contract).filter(Contract.id == contract.id).first()
     db.close()
     assert result.id == job.id
     assert updated_job.status == "queued"
     assert updated_job.locked_by is None
     assert updated_job.next_run_at is not None
     assert updated_session.state == "parsing"
+    assert updated_contract.contract_status == "processing"
+
+
+def test_reset_parse_job_for_retry_rejects_exhausted_job(tmp_path):
+    SessionLocal = _session_factory()
+    db = SessionLocal()
+    _, session, _ = _make_contract_session_job(db, tmp_path, file_type="pdf", status="failed", attempts=3)
+
+    with pytest.raises(document_parse_worker.DocumentParseError) as exc_info:
+        document_parse_worker.reset_parse_job_for_retry(db, session.id)
+
+    db.close()
+    assert exc_info.value.error_code == "PARSE_RETRY_EXHAUSTED"
+
+
+def test_reset_parse_job_for_retry_rejects_missing_source_file(tmp_path):
+    SessionLocal = _session_factory()
+    db = SessionLocal()
+    _, session, job = _make_contract_session_job(db, tmp_path, file_type="pdf", status="failed", attempts=1)
+    session_id = session.id
+    source = job.source_file_path
+    db.close()
+    import os
+    os.unlink(source)
+
+    db = SessionLocal()
+    try:
+        with pytest.raises(document_parse_worker.DocumentParseError) as exc_info:
+            document_parse_worker.reset_parse_job_for_retry(db, session_id)
+    finally:
+        db.close()
+    assert exc_info.value.error_code == "SOURCE_FILE_MISSING"
 
 
 def test_claim_next_job_picks_retryable_failed_job(tmp_path):

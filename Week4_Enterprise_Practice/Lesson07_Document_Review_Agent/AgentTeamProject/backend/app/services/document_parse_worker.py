@@ -78,10 +78,22 @@ def reset_parse_job_for_retry(db: Session, session_id: str) -> DocumentParseJob:
     session = db.query(ReviewSession).filter(ReviewSession.id == session_id).first()
     if not session:
         raise DocumentParseError("SESSION_NOT_FOUND", "评审会话不存在")
+    if job.status == "running":
+        raise DocumentParseError("PARSE_JOB_RUNNING", "解析任务正在执行，不能重复重试")
+    if job.attempt_count >= job.max_attempts:
+        raise DocumentParseError("PARSE_RETRY_EXHAUSTED", "解析重试次数已达上限")
+    if not Path(job.source_file_path).exists():
+        raise DocumentParseError("SOURCE_FILE_MISSING", "原始文件不存在，无法重新解析")
 
     now = datetime.utcnow()
     session.state = "parsing"
+    session.completed_at = None
     session.updated_at = now
+    contract = db.query(Contract).filter(Contract.id == session.contract_id).first()
+    if contract:
+        contract.contract_status = "processing"
+        contract.updated_at = now
+        db.add(contract)
     job.status = "queued"
     job.stage = "queued"
     job.next_run_at = now

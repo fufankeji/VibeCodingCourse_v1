@@ -9,6 +9,7 @@ from app.models.contract import Contract
 from app.models.session import ReviewSession
 from app.schemas.contract import ContractListResponse, ContractResponse, UploadResponse
 from app.services import upload_service
+from app.services.contract_entry_service import build_contract_entry
 
 router = APIRouter()
 
@@ -65,6 +66,7 @@ def list_contracts(
         if session:
             resp.session_id = session.id
             resp.session_state = session.state
+        _apply_contract_entry(resp, build_contract_entry(db, c, session))
         result_items.append(resp)
 
     return ContractListResponse(
@@ -84,4 +86,10 @@ def get_contract(contract_id: str, db: Session = Depends(get_db)):
     if session:
         resp.session_id = session.id
         resp.session_state = session.state
+    _apply_contract_entry(resp, build_contract_entry(db, contract, session))
     return resp
+
+
+def _apply_contract_entry(resp: ContractResponse, entry: dict) -> None:
+    for key, value in entry.items():
+        setattr(resp, key, value)

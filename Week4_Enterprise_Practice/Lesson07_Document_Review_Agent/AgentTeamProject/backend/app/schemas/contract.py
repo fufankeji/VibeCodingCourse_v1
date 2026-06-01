@@ -28,6 +28,18 @@ class ContractResponse(BaseModel):
     updated_at: datetime
     session_id: Optional[str] = None
     session_state: Optional[str] = None
+    latest_parse_job_status: Optional[str] = None
+    latest_parse_job_stage: Optional[str] = None
+    latest_parse_job_error_code: Optional[str] = None
+    latest_parse_job_error_message: Optional[str] = None
+    retry_count: int = 0
+    max_retries: int = 0
+    can_retry_parse: bool = False
+    retry_block_reason: Optional[str] = None
+    can_view_result: bool = False
+    entry_route_type: Optional[str] = None
+    entry_action_label: str = "不可进入"
+    read_only: bool = False
 
     model_config = {"from_attributes": True}
 

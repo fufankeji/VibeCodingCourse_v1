@@ -183,9 +183,12 @@ export function ContractListPage() {
                       </div>
                       <div className="col-span-1 flex justify-end">
                         {isContractNavigable(contract) ? (
-                          <ChevronRight className="w-4 h-4 text-gray-400" />
+                          <span className="inline-flex items-center gap-1 text-xs text-blue-600">
+                            {contract.entry_action_label || '查看'}
+                            <ChevronRight className="w-4 h-4" />
+                          </span>
                         ) : (
-                          <span className="text-xs text-gray-400">不可进入</span>
+                          <span className="text-xs text-gray-400">{contract.entry_action_label || '不可进入'}</span>
                         )}
                       </div>
                     </div>

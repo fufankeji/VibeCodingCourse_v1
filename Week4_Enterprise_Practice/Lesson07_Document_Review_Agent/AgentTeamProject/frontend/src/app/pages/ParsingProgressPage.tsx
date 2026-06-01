@@ -69,6 +69,8 @@ function errorTitle(status: ParseStatus) {
 
 function errorHint(status: ParseStatus, errorCode: string) {
   if (status === 'aborted') return '本次解析流程已经终止。可以在本页重新入队解析，不需要再次上传同一个文件。';
+  if (errorCode === 'PARSE_RETRY_EXHAUSTED') return '解析重试次数已达上限，需要重新上传文件或联系管理员处理。';
+  if (errorCode === 'SOURCE_FILE_MISSING') return '原始文件已不存在，无法复用当前任务重新解析，需要重新上传。';
   if (status === 'timeout') return '远端解析等待超时。可以重试，或改为上传已解析的 MinerU JSON。';
   if (status === 'system_failure') return '文件解析已返回，但字段抽取、审查流水线或向量检索阶段失败。';
   if (errorCode === 'MINERU_TOKEN_MISSING') return '后端缺少 MINERU_TOKEN，重试不会生效，需要先补齐配置。';
@@ -92,6 +94,8 @@ export function ParsingProgressPage() {
   const [stage, setStage] = useState<ParseStage>('queued');
   const [retryCount, setRetryCount] = useState(0);
   const [maxRetries, setMaxRetries] = useState(3);
+  const [canRetryParse, setCanRetryParse] = useState(true);
+  const [retryBlockReason, setRetryBlockReason] = useState<string | null>(null);
   const [errorCode, setErrorCode] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [isScannedDocument, setIsScannedDocument] = useState(false);
@@ -112,10 +116,15 @@ export function ParsingProgressPage() {
       .then((session) => {
         setSessionState(session.state);
         setIsScannedDocument(session.is_scanned_document);
+        setRetryCount(session.retry_count ?? 0);
+        setMaxRetries(session.max_retries ?? 3);
+        setCanRetryParse(session.can_retry_parse ?? true);
+        setRetryBlockReason(session.retry_block_reason ?? null);
+        if (session.latest_parse_job_stage) setStage(normalizeStage(session.latest_parse_job_stage));
         if (session.state === 'aborted') {
           setParseStatus('aborted');
-          setErrorCode('USER_ABORTED');
-          setErrorMessage('本次解析已中止');
+          setErrorCode(session.latest_parse_job_error_code || session.retry_block_reason || 'USER_ABORTED');
+          setErrorMessage(session.latest_parse_job_error_message || '本次解析已中止');
           return;
         }
         if (session.state === 'scanning' || session.state === 'hitl_pending') {
@@ -136,9 +145,21 @@ export function ParsingProgressPage() {
 
       if (event === 'parse_started' || event === 'parse_progress') {
         setSessionState('parsing');
+        setCanRetryParse(false);
+        setRetryBlockReason(null);
         setStage(normalizeStage(data.stage));
         if (typeof data.retry_count === 'number') setRetryCount(data.retry_count);
         if (typeof data.max_retries === 'number') setMaxRetries(data.max_retries);
+        return;
+      }
+
+      if (event === 'session_aborted') {
+        setSessionState('aborted');
+        setParseStatus('aborted');
+        setCanRetryParse(false);
+        setRetryBlockReason('USER_ABORTED');
+        setErrorCode('USER_ABORTED');
+        setErrorMessage(String(data.reason || '本次解析已中止'));
         return;
       }
 
@@ -147,6 +168,8 @@ export function ParsingProgressPage() {
         if (newState) setSessionState(newState);
         if (newState === 'aborted') {
           setParseStatus('aborted');
+          setCanRetryParse(false);
+          setRetryBlockReason('USER_ABORTED');
           setErrorCode('USER_ABORTED');
           setErrorMessage('本次解析已中止');
           return;
@@ -161,6 +184,10 @@ export function ParsingProgressPage() {
         setParseStatus(event === 'parse_timeout' ? 'timeout' : event === 'system_failure' ? 'system_failure' : 'failed');
         setRetryCount(typeof data.retry_count === 'number' ? data.retry_count : retryCount);
         setMaxRetries(typeof data.max_retries === 'number' ? data.max_retries : maxRetries);
+        const nextRetryCount = typeof data.retry_count === 'number' ? data.retry_count : retryCount;
+        const nextMaxRetries = typeof data.max_retries === 'number' ? data.max_retries : maxRetries;
+        setCanRetryParse(nextRetryCount < nextMaxRetries);
+        setRetryBlockReason(nextRetryCount >= nextMaxRetries ? 'PARSE_RETRY_EXHAUSTED' : null);
         setErrorCode(String(data.error_code || ''));
         setErrorMessage(String(data.message || ''));
       }
@@ -176,11 +203,13 @@ export function ParsingProgressPage() {
   }, [parseStatus]);
 
   const handleRetry = async () => {
-    if (retryCount >= maxRetries || !sessionId) return;
+    if (!canRetryParse || retryCount >= maxRetries || !sessionId) return;
     setIsRetrying(true);
     try {
       const result = await retryParse(sessionId);
       setSessionState('parsing');
+      setCanRetryParse(false);
+      setRetryBlockReason(null);
       setRetryCount(result.retry_count);
       setMaxRetries(result.max_retries);
       setParseStatus('parsing');
@@ -214,6 +243,7 @@ export function ParsingProgressPage() {
 
   const activeStage = STAGES[currentStageIndex] ?? STAGES[0];
   const retryRemaining = Math.max(0, maxRetries - retryCount);
+  const retryDisabled = !canRetryParse || retryRemaining <= 0 || isRetrying;
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -350,11 +380,11 @@ export function ParsingProgressPage() {
                     <button
                       type="button"
                       onClick={handleRetry}
-                      disabled={retryRemaining <= 0 || isRetrying}
+                      disabled={retryDisabled}
                       className="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-blue-600 px-4 text-sm font-medium text-white transition-colors hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:bg-slate-300"
                     >
                       <RotateCcw className={`h-4 w-4 ${isRetrying ? 'animate-spin' : ''}`} />
-                      {retryRemaining <= 0 ? '已达最大重试次数' : `重新解析，剩余 ${retryRemaining} 次`}
+                      {!canRetryParse ? '不可重新解析' : retryRemaining <= 0 ? '已达最大重试次数' : `重新解析，剩余 ${retryRemaining} 次`}
                     </button>
                     <button
                       type="button"
