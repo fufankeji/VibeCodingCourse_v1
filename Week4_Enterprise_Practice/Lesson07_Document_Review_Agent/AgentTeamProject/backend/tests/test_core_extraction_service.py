@@ -1,3 +1,5 @@
+import json
+
 from app.services.core_extraction_service import build_core_extraction_chunks
 from app.services.water_review_models import ReviewChunk
 
@@ -44,3 +46,20 @@ def test_build_core_extraction_chunks_returns_all_chunks_when_no_core_match(tmp_
     assert [chunk.chunk_id for chunk in result.chunks] == ["chunk-0001", "chunk-0002"]
     assert result.mode == "all_chunks_fallback"
     assert result.trace["selected_count"] == 2
+
+
+def test_core_extraction_trace_records_mode_and_selected_chunks(tmp_path):
+    chunks = [
+        _chunk("chunk-0001", "项目名称：测试项目。建设单位：测试公司。建设地点位于北京市。", "项目概况"),
+        _chunk("chunk-0002", "水土保持监测采用定点监测和巡查。", "监测"),
+        _chunk("chunk-0003", "土石方平衡：挖方10.00万m3，填方8.00万m3，借方0.00万m3，弃方2.00万m3。", "土石方平衡"),
+    ]
+
+    result = build_core_extraction_chunks(chunks, "session-trace", tmp_path, store_factory=lambda: None)
+    trace = json.loads((tmp_path / "core_extraction_chunks.json").read_text(encoding="utf-8"))
+
+    assert trace["mode"] == result.mode
+    assert trace["input_count"] == 3
+    assert trace["selected_count"] == 2
+    assert [chunk["chunk_id"] for chunk in trace["chunks"]] == ["chunk-0001", "chunk-0003"]
+    assert [chunk["section"] for chunk in trace["chunks"]] == ["项目概况", "土石方平衡"]

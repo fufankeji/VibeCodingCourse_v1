@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
+from app.services.core_extraction_service import build_core_extraction_chunks
 from app.services.mineru_table_fact_service import extract_table_facts
 from app.services.review_rule_schema import build_review_rule_topics, normalize_review_rules
 from app.services.water_review_chunking import build_chunks
@@ -162,6 +163,15 @@ def run_pipeline(file_path: str, artifact_dir: str, session_id: str) -> dict[str
         len(chunks),
         timings["pipeline_chunk_duration_ms"],
     )
+    core_selection = build_core_extraction_chunks(chunks, session_id, artifact_path)
+    core_chunks = core_selection.chunks
+    logger.info(
+        "water_review_core_extraction_chunks_selected session_id=%s mode=%s selected_count=%s input_count=%s",
+        session_id,
+        core_selection.mode,
+        core_selection.trace.get("selected_count"),
+        core_selection.trace.get("input_count"),
+    )
     cached_prerag = _load_cached_prerag_artifacts(artifact_path) if cache_source_matches else None
     if cached_prerag is not None:
         fields, langextract_facts, fact_index, cross_chapter_findings = cached_prerag
@@ -173,7 +183,7 @@ def run_pipeline(file_path: str, artifact_dir: str, session_id: str) -> dict[str
         _set_stage(stage_statuses, "extracted_fields", "running")
         _write_pipeline_status(artifact_path, session_id, stage_statuses, timings, cache_hits, source_signature)
         started = time.perf_counter()
-        fallback_fields = extract_fields(chunks)
+        fallback_fields = extract_fields(core_chunks)
         timings["pipeline_field_extract_duration_ms"] = int((time.perf_counter() - started) * 1000)
         _set_stage(
             stage_statuses,
@@ -198,7 +208,7 @@ def run_pipeline(file_path: str, artifact_dir: str, session_id: str) -> dict[str
             )
 
             started = time.perf_counter()
-            langextract_facts = [*table_facts, *run_langextract(chunks)]
+            langextract_facts = [*table_facts, *run_langextract(core_chunks)]
             timings["pipeline_langextract_duration_ms"] = int((time.perf_counter() - started) * 1000)
             logger.info(
                 "water_review_langextract_done session_id=%s table_fact_count=%s total_fact_count=%s duration_ms=%s",
