@@ -102,12 +102,12 @@ def _extract_docx_text(file_path: str) -> str:
         return ""
 
 
-async def extract_fields(session_id: str, text: str, db: Session, file_path: str | None = None) -> None:
+async def extract_fields(session_id: str, text: str, db: Session, file_path: str | None = None) -> dict | None:
     """Extract water-soil fields, persist them, and trigger review workflow."""
     # Update session state to scanning
     session: ReviewSession | None = db.query(ReviewSession).filter(ReviewSession.id == session_id).first()
     if not session:
-        return
+        return None
 
     session.state = "scanning"
     session.updated_at = datetime.utcnow()
@@ -162,7 +162,7 @@ async def extract_fields(session_id: str, text: str, db: Session, file_path: str
                 "node_name": "water_review_rag_pipeline",
             },
         )
-        return
+        return None
 
     db.query(ExtractedField).filter(ExtractedField.session_id == session_id).delete()
 
@@ -217,6 +217,7 @@ async def extract_fields(session_id: str, text: str, db: Session, file_path: str
         db,
         precomputed_review_items=(pipeline or {}).get("review_items", []),
     )
+    return pipeline
 
 
 async def _llm_extract_fields(text: str) -> dict[str, str]:

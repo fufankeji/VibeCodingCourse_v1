@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+import time
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
@@ -180,14 +181,20 @@ def _claim_next_job(db: Session, worker_id: str) -> DocumentParseJob | None:
     )
     if not job:
         return None
+    next_attempt_count = job.attempt_count + 1
+    timing = _timing_payload(job)
+    attempt_exists = str(next_attempt_count) in (timing.get("attempts") or {})
+    queued_started_at = now if attempt_exists else (job.created_at if next_attempt_count == 1 else job.next_run_at or now)
     job.status = "running"
     job.stage = "queued"
     job.locked_by = worker_id
     job.locked_at = now
-    job.attempt_count += 1
+    job.started_at = now
+    job.attempt_count = next_attempt_count
     job.error_code = None
     job.error_message = None
     job.updated_at = now
+    _record_stage_transition(job, "queued", now=queued_started_at)
     db.add(job)
     db.commit()
     db.refresh(job)
@@ -202,11 +209,10 @@ async def _run_claimed_job(db: Session, job: DocumentParseJob) -> None:
         parse_path = _prepare_parse_artifact(db, job)
         if _is_job_canceled(db, job.id):
             return
-        job.stage = "pipeline_running"
-        db.add(job)
-        db.commit()
+        _transition_stage(db, job, "pipeline_running")
         await _publish(job, "parse_progress", {"stage": job.stage})
-        await ocr_service.extract_fields(job.session_id, "", db, file_path=parse_path)
+        pipeline = await ocr_service.extract_fields(job.session_id, "", db, file_path=parse_path)
+        _record_pipeline_metrics(db, job, pipeline)
         if _is_job_canceled(db, job.id):
             return
         db.refresh(job)
@@ -228,20 +234,15 @@ async def _run_claimed_job(db: Session, job: DocumentParseJob) -> None:
 
 def _prepare_parse_artifact(db: Session, job: DocumentParseJob) -> str:
     if job.source_file_type == "json":
-        job.stage = "extracted"
-        db.add(job)
-        db.commit()
-        _publish_progress_nowait(job)
+        _transition_stage(db, job, "extracted")
         return job.source_file_path
     if job.source_file_type not in PDF_DOCX_TYPES:
         raise DocumentParseError("UNSUPPORTED_FILE_TYPE", f"不支持的解析文件类型: {job.source_file_type}")
     if not settings.mineru_token.strip():
         raise DocumentParseError("MINERU_TOKEN_MISSING", "MINERU_TOKEN is required")
 
-    job.stage = "upload_url_requested"
-    db.add(job)
-    db.commit()
-    _publish_progress_nowait(job)
+    _transition_stage(db, job, "upload_url_requested")
+    mineru_started = time.monotonic()
     artifacts = mineru_service.parse_file_to_artifacts(
         job.source_file_path,
         Path(job.source_file_path).parent / "mineru",
@@ -254,6 +255,8 @@ def _prepare_parse_artifact(db: Session, job: DocumentParseJob) -> str:
     job.result_zip_path = str(artifacts.zip_path) if artifacts.zip_path else None
     job.result_json_path = str(artifacts.json_path) if artifacts.json_path else None
     job.result_markdown_path = str(artifacts.markdown_path) if artifacts.markdown_path else None
+    _record_stage_transition(job, "extracted")
+    _record_timing_metric(job, "mineru_total_duration_ms", int((time.monotonic() - mineru_started) * 1000))
     db.add(job)
     db.commit()
     _publish_progress_nowait(job)
@@ -263,15 +266,19 @@ def _prepare_parse_artifact(db: Session, job: DocumentParseJob) -> str:
     return str(parse_path)
 
 
-def _update_mineru_progress(db: Session, job_id: str, stage: str, values: dict[str, str]) -> None:
+def _update_mineru_progress(db: Session, job_id: str, stage: str, values: dict[str, Any]) -> None:
     job = db.query(DocumentParseJob).filter(DocumentParseJob.id == job_id).first()
     if not job:
         return
     job.stage = stage
+    _record_stage_transition(job, stage)
     if values.get("batch_id"):
         job.mineru_batch_id = values["batch_id"]
     if values.get("task_id"):
         job.mineru_task_id = values["task_id"]
+    for key, value in values.items():
+        if key.endswith("_duration_ms") and isinstance(value, int | float):
+            _record_timing_metric(job, key, int(value))
     job.updated_at = datetime.utcnow()
     db.add(job)
     db.commit()
@@ -283,9 +290,13 @@ def _mark_job_succeeded(db: Session, job: DocumentParseJob) -> None:
         return
     job.status = "succeeded"
     job.stage = "completed"
+    now = datetime.utcnow()
+    _record_stage_transition(job, "completed", now=now)
+    _finish_current_stage(job, now=now)
     job.locked_by = None
     job.locked_at = None
-    job.updated_at = datetime.utcnow()
+    job.completed_at = now
+    job.updated_at = now
     db.add(job)
     db.add(
         AuditLog(
@@ -293,7 +304,7 @@ def _mark_job_succeeded(db: Session, job: DocumentParseJob) -> None:
             event_type="parse_completed",
             actor_id="system",
             actor_type="system",
-            metadata_json=json.dumps({"job_id": job.id}, ensure_ascii=False),
+            metadata_json=json.dumps({"job_id": job.id, "timing": _public_timing_payload(job)}, ensure_ascii=False),
         )
     )
     db.commit()
@@ -312,6 +323,7 @@ async def _mark_job_failed(
         return
     now = datetime.utcnow()
     job.status = "timeout" if timeout else "failed"
+    _finish_current_stage(job, now=now)
     job.locked_by = None
     job.locked_at = None
     job.error_code = error_code
@@ -343,6 +355,7 @@ async def _mark_job_failed(
                     "error_code": error_code,
                     "retry_count": job.attempt_count,
                     "max_retries": job.max_attempts,
+                    "timing": _public_timing_payload(job),
                 },
                 ensure_ascii=False,
             ),
@@ -358,6 +371,7 @@ async def _mark_job_failed(
             "retry_count": job.attempt_count,
             "max_retries": job.max_attempts,
             "state": session.state if session else "parsing",
+            "timing": _public_timing_payload(job),
         },
     )
 
@@ -375,6 +389,7 @@ async def _publish(job: DocumentParseJob, event_type: str, data: dict) -> None:
         "stage": job.stage,
         "retry_count": job.attempt_count,
         "max_retries": job.max_attempts,
+        "timing": _public_timing_payload(job),
     }
     payload.update(data)
     await sse_manager.publish(job.session_id, event_type, payload)
@@ -391,5 +406,148 @@ def _publish_progress_nowait(job: DocumentParseJob) -> None:
             "stage": job.stage,
             "retry_count": job.attempt_count,
             "max_retries": job.max_attempts,
+            "timing": _public_timing_payload(job),
         },
     )
+
+
+def _timing_payload(job: DocumentParseJob) -> dict[str, Any]:
+    if not job.timing_json:
+        return {"attempts": {}}
+    try:
+        payload = json.loads(job.timing_json)
+    except Exception:
+        return {"attempts": {}}
+    return payload if isinstance(payload, dict) else {"attempts": {}}
+
+
+def _public_timing_payload(job: DocumentParseJob) -> dict[str, Any]:
+    payload = _timing_payload(job)
+    attempt = _attempt_timing(payload, job)
+    return {
+        "attempt": attempt.get("attempt"),
+        "stages": attempt.get("stages") or {},
+        "metrics": attempt.get("metrics") or {},
+        "started_at": attempt.get("started_at"),
+        "completed_at": attempt.get("completed_at"),
+        "duration_ms": attempt.get("duration_ms"),
+    }
+
+
+def _dump_timing_payload(job: DocumentParseJob, payload: dict[str, Any]) -> None:
+    job.timing_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+def _iso(dt: datetime) -> str:
+    return f"{dt.isoformat()}Z"
+
+
+def _attempt_timing(payload: dict[str, Any], job: DocumentParseJob) -> dict[str, Any]:
+    attempts = payload.setdefault("attempts", {})
+    attempt_key = str(max(job.attempt_count, 1))
+    attempt = attempts.setdefault(
+        attempt_key,
+        {
+            "attempt": max(job.attempt_count, 1),
+            "started_at": _iso(job.started_at or datetime.utcnow()),
+            "stages": {},
+            "metrics": {},
+        },
+    )
+    attempt.setdefault("stages", {})
+    attempt.setdefault("metrics", {})
+    return attempt
+
+
+def _record_stage_transition(job: DocumentParseJob, stage: str, *, now: datetime | None = None) -> None:
+    now = now or datetime.utcnow()
+    payload = _timing_payload(job)
+    attempt = _attempt_timing(payload, job)
+    stages = attempt["stages"]
+    current_stage = attempt.get("current_stage")
+    if current_stage and current_stage != stage:
+        current = stages.get(current_stage)
+        if isinstance(current, dict) and not current.get("ended_at"):
+            current["ended_at"] = _iso(now)
+            started_at = _parse_iso(current.get("started_at"))
+            if started_at:
+                current["duration_ms"] = int((now - started_at).total_seconds() * 1000)
+
+    entry = stages.setdefault(stage, {})
+    entry.setdefault("started_at", _iso(now))
+    entry["last_seen_at"] = _iso(now)
+    entry["update_count"] = int(entry.get("update_count") or 0) + 1
+    attempt["current_stage"] = stage
+    attempt["updated_at"] = _iso(now)
+    payload["updated_at"] = _iso(now)
+    _dump_timing_payload(job, payload)
+
+
+def _finish_current_stage(job: DocumentParseJob, *, now: datetime | None = None) -> None:
+    now = now or datetime.utcnow()
+    payload = _timing_payload(job)
+    attempt = _attempt_timing(payload, job)
+    current_stage = attempt.get("current_stage")
+    stages = attempt.get("stages") or {}
+    current = stages.get(current_stage) if current_stage else None
+    if isinstance(current, dict) and not current.get("ended_at"):
+        current["ended_at"] = _iso(now)
+        started_at = _parse_iso(current.get("started_at"))
+        if started_at:
+            current["duration_ms"] = int((now - started_at).total_seconds() * 1000)
+    started_value = attempt.get("started_at")
+    if not started_value and job.started_at:
+        started_value = _iso(job.started_at)
+    started = _parse_iso(started_value)
+    if started:
+        attempt["duration_ms"] = int((now - started).total_seconds() * 1000)
+    attempt["completed_at"] = _iso(now)
+    attempt.pop("current_stage", None)
+    payload["updated_at"] = _iso(now)
+    _dump_timing_payload(job, payload)
+
+
+def _record_timing_metric(job: DocumentParseJob, key: str, value: int) -> None:
+    payload = _timing_payload(job)
+    attempt = _attempt_timing(payload, job)
+    attempt["metrics"][key] = value
+    payload["updated_at"] = _iso(datetime.utcnow())
+    _dump_timing_payload(job, payload)
+
+
+def _record_pipeline_metrics(db: Session, job: DocumentParseJob, pipeline: dict[str, Any] | None) -> None:
+    if not isinstance(pipeline, dict):
+        return
+    timings = pipeline.get("timings")
+    if not isinstance(timings, dict):
+        return
+    for key, value in timings.items():
+        if key.endswith("_duration_ms") and isinstance(value, int | float):
+            _record_timing_metric(job, key, int(value))
+    rag = pipeline.get("rag")
+    manifest = rag.get("index_manifest") if isinstance(rag, dict) else {}
+    if isinstance(manifest, dict):
+        for key in ("vector_rebuild_duration_ms", "vector_total_duration_ms"):
+            value = manifest.get(key)
+            if isinstance(value, int | float):
+                _record_timing_metric(job, key, int(value))
+    db.add(job)
+    db.commit()
+
+
+def _transition_stage(db: Session, job: DocumentParseJob, stage: str) -> None:
+    job.stage = stage
+    _record_stage_transition(job, stage)
+    job.updated_at = datetime.utcnow()
+    db.add(job)
+    db.commit()
+    _publish_progress_nowait(job)
+
+
+def _parse_iso(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", ""))
+    except Exception:
+        return None

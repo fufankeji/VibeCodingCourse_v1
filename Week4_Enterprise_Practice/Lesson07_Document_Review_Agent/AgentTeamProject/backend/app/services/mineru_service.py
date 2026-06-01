@@ -66,6 +66,11 @@ def parse_file_to_artifacts(
         zip_url = str(task.get("full_zip_url") or "").strip()
         if not zip_url:
             raise MinerUAPIError("MinerU result did not include full_zip_url", "MINERU_RESULT_INVALID")
+        if progress_callback:
+            progress_callback(
+                "downloading",
+                {"batch_id": batch_id, "task_id": str(task.get("task_id") or "")},
+            )
         response = client.get(zip_url, headers=headers)
         _raise_for_status(response)
 
@@ -173,6 +178,7 @@ def _wait_batch_result(
     deadline = time.monotonic() + settings.mineru_poll_timeout_seconds
     interval = max(1, settings.mineru_poll_interval_seconds)
     last_state = "pending"
+    poll_started = time.monotonic()
     while time.monotonic() < deadline:
         response = client.get(f"{base_url}/extract-results/batch/{batch_id}", headers=headers)
         _raise_for_status(response)
@@ -185,6 +191,15 @@ def _wait_batch_result(
             if progress_callback:
                 progress_callback("polling", {"batch_id": batch_id, "task_id": str(task.get("task_id") or "")})
             if last_state == "done":
+                if progress_callback:
+                    progress_callback(
+                        "polling",
+                        {
+                            "batch_id": batch_id,
+                            "task_id": str(task.get("task_id") or ""),
+                            "mineru_poll_duration_ms": int((time.monotonic() - poll_started) * 1000),
+                        },
+                    )
                 return task
             if last_state == "failed":
                 raise MinerUAPIError(str(task.get("err_msg") or "MinerU parsing failed"), "MINERU_REMOTE_FAILED")

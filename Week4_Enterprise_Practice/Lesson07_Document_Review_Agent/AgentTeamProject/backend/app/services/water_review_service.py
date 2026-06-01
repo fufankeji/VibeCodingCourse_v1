@@ -14,6 +14,7 @@ handlers and tests.
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -53,10 +54,20 @@ DEFAULT_MINERU_MD = _DEFAULT_MINERU_MD
 
 def run_pipeline(file_path: str, artifact_dir: str, session_id: str) -> dict[str, Any]:
     """Parse, chunk, extract fields, review rules, and persist JSON artifacts."""
+    total_started = time.perf_counter()
+    timings: dict[str, int] = {}
+    started = time.perf_counter()
     blocks = parse_document(file_path)
+    timings["pipeline_parse_document_duration_ms"] = int((time.perf_counter() - started) * 1000)
+    started = time.perf_counter()
     chunks = build_chunks(blocks)
+    timings["pipeline_chunk_duration_ms"] = int((time.perf_counter() - started) * 1000)
+    started = time.perf_counter()
     fallback_fields = extract_fields(chunks)
+    timings["pipeline_field_extract_duration_ms"] = int((time.perf_counter() - started) * 1000)
+    started = time.perf_counter()
     table_facts = extract_table_facts(blocks, chunks)
+    timings["pipeline_table_fact_duration_ms"] = int((time.perf_counter() - started) * 1000)
     langextract_facts: list[dict[str, Any]] = list(table_facts)
     cross_chapter_findings: list[dict[str, Any]] = []
     if settings.langextract_enabled:
@@ -67,7 +78,9 @@ def run_pipeline(file_path: str, artifact_dir: str, session_id: str) -> dict[str
             run_langextract,
         )
 
+        started = time.perf_counter()
         langextract_facts = [*table_facts, *run_langextract(chunks)]
+        timings["pipeline_langextract_duration_ms"] = int((time.perf_counter() - started) * 1000)
         fields = facts_to_extracted_fields(langextract_facts, fallback_fields)
         fact_index = build_fact_index(langextract_facts)
         cross_chapter_findings = build_cross_chapter_findings(langextract_facts)
@@ -86,6 +99,7 @@ def run_pipeline(file_path: str, artifact_dir: str, session_id: str) -> dict[str
     artifact_path.mkdir(parents=True, exist_ok=True)
     from app.services.rag_service import run_rag_review
 
+    started = time.perf_counter()
     rag_result = run_rag_review(
         session_id,
         chunks,
@@ -94,8 +108,10 @@ def run_pipeline(file_path: str, artifact_dir: str, session_id: str) -> dict[str
         facts=langextract_facts,
         findings=cross_chapter_findings,
     )
+    timings["pipeline_rag_duration_ms"] = int((time.perf_counter() - started) * 1000)
     from app.services.review_config_service import list_check_item_specs
 
+    started = time.perf_counter()
     configured_check_items = [item for item in list_check_item_specs() if item.get("enabled") is not False]
     configured_issues = _issues_from_configured_rules(
         session_id,
@@ -106,8 +122,10 @@ def run_pipeline(file_path: str, artifact_dir: str, session_id: str) -> dict[str
         limit=len(configured_check_items),
         evidence_store=_pipeline_evidence_store(session_id, rag_result) if configured_check_items else None,
     )
+    timings["pipeline_configured_review_duration_ms"] = int((time.perf_counter() - started) * 1000)
     issues = [*rag_result["issues"], *configured_issues]
     rule_topics = build_review_rule_topics(rules, issues, configured_check_items=configured_check_items)
+    started = time.perf_counter()
     _write_json(artifact_path / "parsed_blocks.json", [asdict(b) for b in blocks])
     _write_json(artifact_path / "review_chunks.json", [asdict(c) for c in chunks])
     _write_json(artifact_path / "extracted_fields.json", fields)
@@ -116,6 +134,8 @@ def run_pipeline(file_path: str, artifact_dir: str, session_id: str) -> dict[str
     _write_json(artifact_path / "cross_chapter_findings.json", cross_chapter_findings)
     _write_json(artifact_path / "review_rule_topics.json", rule_topics)
     _write_json(artifact_path / "issues.json", issues)
+    timings["pipeline_artifact_write_duration_ms"] = int((time.perf_counter() - started) * 1000)
+    timings["pipeline_total_duration_ms"] = int((time.perf_counter() - total_started) * 1000)
 
     return {
         "full_text": "\n".join(block.text for block in blocks),
@@ -129,6 +149,7 @@ def run_pipeline(file_path: str, artifact_dir: str, session_id: str) -> dict[str
         "rule_topics": rule_topics,
         "rag": rag_result,
         "artifact_dir": str(artifact_path),
+        "timings": timings,
     }
 
 

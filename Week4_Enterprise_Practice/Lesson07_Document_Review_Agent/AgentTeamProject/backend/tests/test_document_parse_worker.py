@@ -227,8 +227,65 @@ def test_update_mineru_progress_publishes_sse_event(tmp_path):
         assert payload["stage"] == "polling"
         assert payload["retry_count"] == 1
         assert payload["max_retries"] == 3
+        timings = json.loads(updated_job.timing_json)
+        attempt = timings["attempts"]["1"]
+        assert attempt["stages"]["polling"]["started_at"]
+        assert attempt["metrics"] == {}
     finally:
         document_parse_worker.sse_manager._queues.pop(session.id, None)
+        db.close()
+
+
+def test_update_mineru_progress_records_duration_metrics(tmp_path):
+    SessionLocal = _session_factory()
+    db = SessionLocal()
+    _, _, job = _make_contract_session_job(db, tmp_path, file_type="pdf", status="running", attempts=1)
+
+    document_parse_worker._update_mineru_progress(
+        db,
+        job.id,
+        "polling",
+        {"mineru_poll_duration_ms": 1234},
+    )
+
+    updated_job = db.query(DocumentParseJob).filter(DocumentParseJob.id == job.id).first()
+    timings = json.loads(updated_job.timing_json)
+    db.close()
+    assert timings["attempts"]["1"]["metrics"]["mineru_poll_duration_ms"] == 1234
+
+
+@pytest.mark.asyncio
+async def test_worker_records_pipeline_and_vector_timing_for_json_job(tmp_path, monkeypatch):
+    SessionLocal = _session_factory()
+    db = SessionLocal()
+    _, _, job = _make_contract_session_job(db, tmp_path, file_type="json")
+    job_id = job.id
+    db.close()
+
+    async def fake_extract_fields(session_id, text, db, file_path=None):
+        return {
+            "timings": {"pipeline_total_duration_ms": 30},
+            "rag": {"index_manifest": {"vector_rebuild_duration_ms": 11, "vector_total_duration_ms": 11}},
+        }
+
+    monkeypatch.setattr(document_parse_worker.ocr_service, "extract_fields", fake_extract_fields)
+
+    await document_parse_worker.process_next_job(SessionLocal, worker_id="test-worker")
+
+    db = SessionLocal()
+    try:
+        updated_job = db.query(DocumentParseJob).filter(DocumentParseJob.id == job_id).first()
+        timings = json.loads(updated_job.timing_json)
+        attempt = timings["attempts"]["1"]
+        assert updated_job.status == "succeeded"
+        assert updated_job.completed_at is not None
+        assert attempt["stages"]["queued"]["duration_ms"] >= 0
+        assert attempt["stages"]["extracted"]["duration_ms"] >= 0
+        assert attempt["stages"]["pipeline_running"]["duration_ms"] >= 0
+        assert attempt["stages"]["completed"]["duration_ms"] >= 0
+        assert attempt["metrics"]["pipeline_total_duration_ms"] == 30
+        assert attempt["metrics"]["vector_rebuild_duration_ms"] == 11
+    finally:
         db.close()
 
 

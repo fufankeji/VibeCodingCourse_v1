@@ -92,7 +92,9 @@ def run_rag_review(
 
     embedder = SiliconFlowEmbeddingProvider()
     store = ChromaChunkStore(vector_dir, session_id, embedder)
+    vector_started = time.perf_counter()
     store.rebuild(chunks)
+    vector_rebuild_duration_ms = int((time.perf_counter() - vector_started) * 1000)
 
     project_type = _infer_project_type(chunks)
     applicable_rules = _filter_applicable_rules(project_type, rules)
@@ -131,6 +133,8 @@ def run_rag_review(
         "rerank_top_n": settings.rag_rerank_top_n,
         "langextract_fact_count": len(structured_facts),
         "cross_chapter_finding_count": len(cross_chapter_findings),
+        "vector_rebuild_duration_ms": vector_rebuild_duration_ms,
+        "vector_total_duration_ms": vector_rebuild_duration_ms,
     }
 
     _write_json(artifact_dir / "rag_index_manifest.json", index_manifest)
