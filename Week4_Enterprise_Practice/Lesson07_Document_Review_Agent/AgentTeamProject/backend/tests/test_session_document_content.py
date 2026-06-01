@@ -299,6 +299,62 @@ def test_langextract_facts_endpoint_reads_water_review_artifacts(tmp_path):
         db.close()
 
 
+def test_review_pipeline_status_reads_cached_stage_artifacts(tmp_path):
+    SessionLocal = _session_factory()
+    source = tmp_path / "original.pdf"
+    source.write_bytes(b"%PDF- fake")
+    parsed_json = tmp_path / "mineru" / "parsed.json"
+    artifact_dir = parsed_json.parent / "water_review"
+    artifact_dir.mkdir(parents=True)
+    parsed_json.write_text(json.dumps({"pdf_info": []}), encoding="utf-8")
+    (artifact_dir / "parsed_blocks.json").write_text(json.dumps([{"block_id": "p1-b1"}]), encoding="utf-8")
+    (artifact_dir / "review_chunks.json").write_text(json.dumps([{"chunk_id": "chunk-0001"}, {"chunk_id": "chunk-0002"}]), encoding="utf-8")
+    (artifact_dir / "extracted_fields.json").write_text(json.dumps([{"field_name": "project_name"}]), encoding="utf-8")
+    (artifact_dir / "langextract_facts.json").write_text(json.dumps([{"fact_id": "fact-1"}]), encoding="utf-8")
+    (artifact_dir / "rag_index_manifest.json").write_text(json.dumps({"chunk_count": 2}), encoding="utf-8")
+    (artifact_dir / "rag_retrievals.json").write_text(json.dumps([{"rule_id": "R1"}]), encoding="utf-8")
+    (artifact_dir / "rag_issues.json").write_text(json.dumps([{"rule_id": "R1"}]), encoding="utf-8")
+
+    db = SessionLocal()
+    try:
+        contract = Contract(
+            title="测试方案",
+            original_filename=source.name,
+            file_type="pdf",
+            file_path=str(source),
+            uploaded_by="tester",
+        )
+        db.add(contract)
+        db.flush()
+        session = ReviewSession(contract_id=contract.id, state="parsed", created_by="tester")
+        db.add(session)
+        db.flush()
+        db.add(
+            DocumentParseJob(
+                session_id=session.id,
+                contract_id=contract.id,
+                source_file_path=str(source),
+                source_file_type="pdf",
+                provider="mineru",
+                status="succeeded",
+                stage="completed",
+                result_json_path=str(parsed_json),
+            )
+        )
+        db.commit()
+
+        result = sessions_api.get_review_pipeline_status(session.id, db)
+
+        assert result["available"] is True
+        assert result["artifact_dir"] == str(artifact_dir.resolve())
+        by_id = {stage["id"]: stage for stage in result["stages"]}
+        assert by_id["parsed_blocks"]["status"] == "completed"
+        assert by_id["review_chunks"]["item_count"] == 2
+        assert by_id["rag_issues"]["artifact_exists"] is True
+    finally:
+        db.close()
+
+
 def test_langextract_facts_endpoint_returns_unavailable_before_pipeline(tmp_path):
     SessionLocal = _session_factory()
     source = tmp_path / "original.pdf"

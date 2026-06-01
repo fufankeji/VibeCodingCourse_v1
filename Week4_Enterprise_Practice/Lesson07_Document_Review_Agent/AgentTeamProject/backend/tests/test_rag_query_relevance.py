@@ -297,3 +297,55 @@ def test_adjudicate_top_rules_degrades_llm_timeout_and_short_circuits(monkeypatc
     assert all(reasoning["conclusion_type"] == "needs_review" for reasoning in reasonings)
     assert reasonings[0]["llm_error"]["short_circuited"] is False
     assert reasonings[1]["llm_error"]["short_circuited"] is True
+
+
+def test_run_rag_review_reuses_cached_retrievals_and_issues_without_vector_service(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    session_id = "cached-rag-session"
+    chunks = [_chunk("chunk-0001", "项目名称：缓存项目。", "综合说明")]
+    rules = [{"rule_id": "R-cache", "rule_name": "缓存规则"}]
+    retrievals = [
+        {
+            "rule_index": 0,
+            "rule_id": "R-cache",
+            "rule_name": "缓存规则",
+            "matches": [{"chunk_id": "chunk-0001", "document": "项目名称：缓存项目。"}],
+            "candidate_score": 1,
+        }
+    ]
+    issues = [
+        {
+            "id": "issue-cache",
+            "session_id": session_id,
+            "rule_id": "R-cache",
+            "ai_finding": "缓存命中",
+        }
+    ]
+    manifest = {
+        "session_id": session_id,
+        "vector_store": str(tmp_path / "vectors"),
+        "collection": "water_review_cached",
+        "chunk_count": 1,
+        "rule_count": 1,
+        "embedding_model": rag_service.settings.siliconflow_embedding_model,
+        "embedding_dimensions": rag_service.settings.siliconflow_embedding_dimensions,
+        "retrieval_enrichment_version": rag_service.RETRIEVAL_ENRICHMENT_VERSION,
+        "reranker_model": rag_service.settings.siliconflow_reranker_model,
+        "retrieval_top_k": rag_service.settings.rag_top_k,
+        "rerank_top_n": rag_service.settings.rag_rerank_top_n,
+    }
+    (artifact_dir / "rag_index_manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    (artifact_dir / "rag_retrievals.json").write_text(json.dumps(retrievals, ensure_ascii=False), encoding="utf-8")
+    (artifact_dir / "rag_issues.json").write_text(json.dumps(issues, ensure_ascii=False), encoding="utf-8")
+
+    monkeypatch.setattr(rag_service.settings, "siliconflow_api_key", "")
+    monkeypatch.setattr(rag_service, "ChromaChunkStore", lambda *_args, **_kwargs: pytest.fail("vector store should use cache"))
+    monkeypatch.setattr(rag_service, "retrieve_for_rules", lambda *_args, **_kwargs: pytest.fail("retrieval should use cache"))
+    monkeypatch.setattr(rag_service, "adjudicate_top_rules", lambda *_args, **_kwargs: pytest.fail("issues should use cache"))
+
+    result = rag_service.run_rag_review(session_id, chunks, rules, artifact_dir)
+
+    assert result["retrievals"] == retrievals
+    assert result["issues"] == issues
+    assert result["cache_hits"] == {"rag_retrievals": True, "rag_issues": True}

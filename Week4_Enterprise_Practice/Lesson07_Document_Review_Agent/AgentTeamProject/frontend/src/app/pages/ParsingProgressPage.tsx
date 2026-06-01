@@ -18,8 +18,16 @@ import {
 import { GlobalNav } from '../components/GlobalNav';
 import { WorkflowStatusBar } from '../components/WorkflowStatusBar';
 import { subscribeSSE } from '../api/sse';
-import { abortSession, getLangExtractFacts, getReviewDocumentContent, getSession, retryParse, startReview } from '../api/sessions';
-import type { LangExtractFactsResponse, ReviewDocumentContentResponse } from '../api/sessions';
+import {
+  abortSession,
+  getLangExtractFacts,
+  getReviewDocumentContent,
+  getReviewPipelineStatus,
+  getSession,
+  retryParse,
+  startReview,
+} from '../api/sessions';
+import type { LangExtractFactsResponse, ReviewDocumentContentResponse, ReviewPipelineStatusResponse, ReviewPipelineStage } from '../api/sessions';
 import type { SessionState } from '../types';
 
 type ParseStatus = 'parsing' | 'parsed' | 'failed' | 'timeout' | 'system_failure' | 'aborted' | 'completed';
@@ -76,6 +84,89 @@ function errorHint(status: ParseStatus, errorCode: string) {
   return '请检查文件是否符合 PDF / DOCX / MinerU JSON 要求，或直接上传 MinerU JSON。';
 }
 
+function stageLabel(stage: ReviewPipelineStage) {
+  if (stage.status === 'cached') return '已复用缓存';
+  if (stage.status === 'completed') return '已完成';
+  if (stage.status === 'running') return '正在执行';
+  if (stage.status === 'failed') return '失败';
+  return '未开始';
+}
+
+function stageTone(stage: ReviewPipelineStage) {
+  if (stage.status === 'cached') return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+  if (stage.status === 'completed') return 'border-blue-200 bg-blue-50 text-blue-700';
+  if (stage.status === 'running') return 'border-amber-200 bg-amber-50 text-amber-700';
+  if (stage.status === 'failed') return 'border-red-200 bg-red-50 text-red-700';
+  return 'border-slate-200 bg-slate-50 text-slate-500';
+}
+
+function formatDurationMs(duration: number | null) {
+  if (duration === null || duration === undefined) return '';
+  if (duration < 1000) return `${duration} ms`;
+  return `${(duration / 1000).toFixed(duration < 10_000 ? 1 : 0)} 秒`;
+}
+
+function ReviewPipelineStatusPanel({
+  status,
+  error,
+  onRefresh,
+  isRunning,
+}: {
+  status: ReviewPipelineStatusResponse | null;
+  error: string;
+  onRefresh: () => void;
+  isRunning: boolean;
+}) {
+  const stages = status?.stages.filter((stage) => stage.id !== 'review_items_db') ?? [];
+  return (
+    <div className="mt-5 rounded-md border border-slate-200 bg-white">
+      <div className="flex flex-col gap-2 border-b border-slate-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h3 className="text-sm font-semibold text-slate-950">数据清洗与审查缓存</h3>
+          <p className="mt-0.5 text-xs text-slate-500">这里展示下一步真实产物；再次执行会优先复用已完成的缓存文件。</p>
+        </div>
+        <button
+          type="button"
+          onClick={onRefresh}
+          className="inline-flex h-9 items-center justify-center rounded-md border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+        >
+          刷新状态
+        </button>
+      </div>
+      <div className="p-4">
+        {error ? (
+          <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">{error}</div>
+        ) : stages.length === 0 ? (
+          <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">尚未开始数据清洗与向量审查。</div>
+        ) : (
+          <div className="space-y-2">
+            {stages.map((stage) => (
+              <div key={stage.id} className="flex flex-col gap-2 rounded-md border border-slate-100 bg-slate-50 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-sm font-medium text-slate-900">{stage.title}</p>
+                    <span className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${stageTone(stage)}`}>
+                      {stage.status === 'running' && isRunning ? '正在执行' : stageLabel(stage)}
+                    </span>
+                  </div>
+                  <p className="mt-1 break-all text-xs text-slate-500">
+                    {stage.artifact ? stage.artifact : '数据库写入'}
+                    {stage.artifact_exists ? ' · 已落盘' : ''}
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-3 text-xs text-slate-500">
+                  {stage.item_count !== null && stage.item_count !== undefined ? <span>{stage.item_count} 条</span> : null}
+                  {stage.duration_ms !== null && stage.duration_ms !== undefined ? <span>{formatDurationMs(stage.duration_ms)}</span> : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /**
  * ParsingProgressPage — P05 解析进度页
  * GET /sessions/{session_id} — 已开发
@@ -107,6 +198,8 @@ export function ParsingProgressPage() {
   const [documentContentError, setDocumentContentError] = useState('');
   const [langExtractFacts, setLangExtractFacts] = useState<LangExtractFactsResponse | null>(null);
   const [langExtractFactsError, setLangExtractFactsError] = useState('');
+  const [reviewPipelineStatus, setReviewPipelineStatus] = useState<ReviewPipelineStatusResponse | null>(null);
+  const [reviewPipelineStatusError, setReviewPipelineStatusError] = useState('');
 
   const currentStageIndex = STAGE_INDEX.get(stage) ?? 0;
   const progressPercent = useMemo(() => {
@@ -138,6 +231,18 @@ export function ParsingProgressPage() {
     }
   }, [sessionId]);
 
+  const loadReviewPipelineStatus = useCallback(async () => {
+    if (!sessionId) return;
+    try {
+      const status = await getReviewPipelineStatus(sessionId);
+      setReviewPipelineStatus(status);
+      setReviewPipelineStatusError('');
+    } catch (err: any) {
+      setReviewPipelineStatus(null);
+      setReviewPipelineStatusError(err.message || '数据清洗与审查状态读取失败');
+    }
+  }, [sessionId]);
+
   useEffect(() => {
     if (!sessionId) return;
     getSession(sessionId)
@@ -154,6 +259,7 @@ export function ParsingProgressPage() {
           setStage('completed');
           void loadParsedContent();
           void loadLangExtractFacts();
+          void loadReviewPipelineStatus();
           return;
         }
         if (session.state === 'aborted') {
@@ -167,7 +273,7 @@ export function ParsingProgressPage() {
         }
       })
       .catch(() => {});
-  }, [sessionId, navigate, loadParsedContent, loadLangExtractFacts]);
+  }, [sessionId, navigate, loadParsedContent, loadLangExtractFacts, loadReviewPipelineStatus]);
 
   useEffect(() => {
     if (!sessionId || parseStatus !== 'parsing') return;
@@ -216,6 +322,7 @@ export function ParsingProgressPage() {
           setStage('completed');
           void loadParsedContent();
           void loadLangExtractFacts();
+          void loadReviewPipelineStatus();
           return;
         }
         if (newState === 'scanning' || newState === 'hitl_pending') {
@@ -238,7 +345,7 @@ export function ParsingProgressPage() {
     });
 
     return unsubscribe;
-  }, [sessionId, parseStatus, navigate, retryCount, maxRetries, loadParsedContent, loadLangExtractFacts]);
+  }, [sessionId, parseStatus, navigate, retryCount, maxRetries, loadParsedContent, loadLangExtractFacts, loadReviewPipelineStatus]);
 
   useEffect(() => {
     if (parseStatus !== 'parsing') return;
@@ -251,6 +358,15 @@ export function ParsingProgressPage() {
     const tick = setInterval(() => setReviewElapsedSeconds((s) => s + 1), 1000);
     return () => clearInterval(tick);
   }, [isStartingReview]);
+
+  useEffect(() => {
+    if (!isStartingReview) return;
+    void loadReviewPipelineStatus();
+    const tick = setInterval(() => {
+      void loadReviewPipelineStatus();
+    }, 2500);
+    return () => clearInterval(tick);
+  }, [isStartingReview, loadReviewPipelineStatus]);
 
   const handleRetry = async () => {
     if (!canRetryParse || retryCount >= maxRetries || !sessionId) return;
@@ -269,8 +385,10 @@ export function ParsingProgressPage() {
       setErrorMessage('');
       setDocumentContent(null);
       setLangExtractFacts(null);
+      setReviewPipelineStatus(null);
       setDocumentContentError('');
       setLangExtractFactsError('');
+      setReviewPipelineStatusError('');
       setStartReviewError('');
     } catch (err: any) {
       setErrorCode('RETRY_REQUEST_FAILED');
@@ -286,6 +404,7 @@ export function ParsingProgressPage() {
     setIsStartingReview(true);
     setReviewElapsedSeconds(0);
     setStartReviewError('');
+    void loadReviewPipelineStatus();
     try {
       const result = await startReview(sessionId);
       setSessionState(result.state as SessionState);
@@ -294,6 +413,7 @@ export function ParsingProgressPage() {
       setStartReviewError(err.message || '数据清洗与向量审查失败，MinerU 解析结果已保留');
       await loadParsedContent();
       await loadLangExtractFacts();
+      await loadReviewPipelineStatus();
     } finally {
       setIsStartingReview(false);
     }
@@ -451,6 +571,13 @@ export function ParsingProgressPage() {
                     </div>
                   </div>
 
+                  <ReviewPipelineStatusPanel
+                    status={reviewPipelineStatus}
+                    error={reviewPipelineStatusError}
+                    onRefresh={loadReviewPipelineStatus}
+                    isRunning={isStartingReview}
+                  />
+
                   {documentContentError ? (
                     <div className="mt-5 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
                       {documentContentError}
@@ -585,7 +712,7 @@ export function ParsingProgressPage() {
                   </div>
                   {isStartingReview && (
                     <div className="mt-3 rounded-md border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-800">
-                      已用时 {formatElapsed(reviewElapsedSeconds)}。正在执行字段抽取、LangExtract 证据抽取、向量索引和规则审查；大文档首次运行会更久，模型超时会保留解析结果并返回需人工复核原因。
+                      已用时 {formatElapsed(reviewElapsedSeconds)}。下方缓存列表会显示真实已落盘产物；如果某一步已经完成，再次进入会优先复用对应文件。
                     </div>
                   )}
                 </div>

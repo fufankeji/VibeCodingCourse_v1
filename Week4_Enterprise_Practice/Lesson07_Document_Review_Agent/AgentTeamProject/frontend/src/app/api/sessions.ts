@@ -121,6 +121,28 @@ export interface LangExtractFactsResponse {
   cross_chapter_findings: CrossChapterFinding[];
 }
 
+export interface ReviewPipelineStage {
+  id: string;
+  title: string;
+  artifact: string;
+  status: 'pending' | 'running' | 'completed' | 'cached' | 'failed' | string;
+  cache_reusable: boolean;
+  artifact_exists: boolean;
+  item_count: number | null;
+  duration_ms: number | null;
+  message: string;
+}
+
+export interface ReviewPipelineStatusResponse {
+  session_id: string;
+  available: boolean;
+  artifact_dir: string;
+  updated_at: string;
+  stages: ReviewPipelineStage[];
+  timings: Record<string, number>;
+  cache_hits: Record<string, boolean>;
+}
+
 export interface ReviewLogicType {
   type: string;
   label: string;
@@ -249,6 +271,10 @@ export function getReviewDocumentContent(sessionId: string): Promise<ReviewDocum
 
 export function getLangExtractFacts(sessionId: string): Promise<LangExtractFactsResponse> {
   return apiClient.get<LangExtractFactsResponse>(`/sessions/${sessionId}/langextract-facts`);
+}
+
+export function getReviewPipelineStatus(sessionId: string): Promise<ReviewPipelineStatusResponse> {
+  return apiClient.get<ReviewPipelineStatusResponse>(`/sessions/${sessionId}/review-pipeline-status`);
 }
 
 export function getReviewRuleTopics(sessionId: string): Promise<ReviewRuleTopicsResponse> {

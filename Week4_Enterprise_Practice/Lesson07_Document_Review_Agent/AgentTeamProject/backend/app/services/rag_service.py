@@ -87,12 +87,52 @@ def run_rag_review(
     facts: list[dict[str, Any]] | None = None,
     findings: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    if not settings.siliconflow_api_key:
-        raise RAGReviewError("SILICONFLOW_API_KEY is required for RAG review")
-
     artifact_dir.mkdir(parents=True, exist_ok=True)
     vector_dir = Path(settings.storage_path) / "vector_stores" / "water_review" / session_id
     vector_dir.mkdir(parents=True, exist_ok=True)
+
+    project_type = _infer_project_type(chunks)
+    applicable_rules = _filter_applicable_rules(project_type, rules)
+    structured_facts = facts or []
+    cross_chapter_findings = findings or []
+    cached = _load_cached_rag_result(
+        session_id,
+        chunks,
+        rules,
+        applicable_rules,
+        artifact_dir,
+        project_type,
+        structured_facts,
+        cross_chapter_findings,
+    )
+    if cached is not None:
+        index_manifest, retrievals, cached_issues = cached
+        index_manifest = dict(index_manifest)
+        index_manifest["cache_hit"] = True
+        if cached_issues is not None:
+            return {
+                "issues": cached_issues,
+                "retrievals": retrievals,
+                "index_manifest": index_manifest,
+                "cache_hits": {"rag_retrievals": True, "rag_issues": True},
+            }
+        issues = adjudicate_top_rules(
+            session_id,
+            chunks,
+            applicable_rules,
+            retrievals,
+            max_issues=settings.rag_max_issues,
+        )
+        _write_json(artifact_dir / "rag_issues.json", issues)
+        return {
+            "issues": issues,
+            "retrievals": retrievals,
+            "index_manifest": index_manifest,
+            "cache_hits": {"rag_retrievals": True, "rag_issues": False},
+        }
+
+    if not settings.siliconflow_api_key:
+        raise RAGReviewError("SILICONFLOW_API_KEY is required for RAG review")
 
     embedder = SiliconFlowEmbeddingProvider()
     store = ChromaChunkStore(vector_dir, session_id, embedder)
@@ -100,10 +140,6 @@ def run_rag_review(
     store.rebuild(chunks)
     vector_rebuild_duration_ms = int((time.perf_counter() - vector_started) * 1000)
 
-    project_type = _infer_project_type(chunks)
-    applicable_rules = _filter_applicable_rules(project_type, rules)
-    structured_facts = facts or []
-    cross_chapter_findings = findings or []
     retrievals = retrieve_for_rules(
         store,
         chunks,
@@ -112,12 +148,59 @@ def run_rag_review(
         facts=structured_facts,
         findings=cross_chapter_findings,
     )
-    index_manifest = {
+    index_manifest = _build_index_manifest(
+        session_id,
+        vector_dir,
+        getattr(store, "collection_name", ""),
+        chunks,
+        rules,
+        applicable_rules,
+        project_type,
+        structured_facts,
+        cross_chapter_findings,
+        vector_rebuild_duration_ms,
+    )
+
+    _write_json(artifact_dir / "rag_index_manifest.json", index_manifest)
+    _write_json(artifact_dir / "rag_retrievals.json", retrievals)
+
+    issues = adjudicate_top_rules(
+        session_id,
+        chunks,
+        applicable_rules,
+        retrievals,
+        max_issues=settings.rag_max_issues,
+    )
+    _write_json(artifact_dir / "rag_issues.json", issues)
+
+    return {
+        "issues": issues,
+        "retrievals": retrievals,
+        "index_manifest": index_manifest,
+        "cache_hits": {"rag_retrievals": False, "rag_issues": False},
+    }
+
+
+def _build_index_manifest(
+    session_id: str,
+    vector_dir: Path,
+    collection_name: str,
+    chunks: list[Any],
+    rules: list[dict[str, Any]],
+    applicable_rules: list[dict[str, Any]],
+    project_type: str,
+    structured_facts: list[dict[str, Any]],
+    cross_chapter_findings: list[dict[str, Any]],
+    vector_rebuild_duration_ms: int,
+) -> dict[str, Any]:
+    return {
         "session_id": session_id,
         "vector_store": str(vector_dir),
-        "collection": store.collection_name,
+        "collection": collection_name,
         "chunk_count": len(chunks),
         "rule_count": len(rules),
+        "rules_content_hash": _rules_content_hash(rules),
+        "index_content_hash": _index_content_hash(chunks),
         "project_type": project_type,
         "applicable_rule_count": len(applicable_rules),
         "review_topic_count": len({rule.get("review_path", {}).get("topic_id") for rule in applicable_rules if rule.get("review_path")}),
@@ -139,25 +222,111 @@ def run_rag_review(
         "cross_chapter_finding_count": len(cross_chapter_findings),
         "vector_rebuild_duration_ms": vector_rebuild_duration_ms,
         "vector_total_duration_ms": vector_rebuild_duration_ms,
+        "cache_hit": False,
     }
 
-    _write_json(artifact_dir / "rag_index_manifest.json", index_manifest)
-    _write_json(artifact_dir / "rag_retrievals.json", retrievals)
 
-    issues = adjudicate_top_rules(
+def _load_cached_rag_result(
+    session_id: str,
+    chunks: list[Any],
+    rules: list[dict[str, Any]],
+    applicable_rules: list[dict[str, Any]],
+    artifact_dir: Path,
+    project_type: str,
+    structured_facts: list[dict[str, Any]],
+    cross_chapter_findings: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]] | None] | None:
+    manifest = _read_json_object(artifact_dir / "rag_index_manifest.json")
+    retrievals = _read_json_list(artifact_dir / "rag_retrievals.json")
+    if manifest is None or retrievals is None:
+        return None
+    if not _rag_manifest_matches(
+        manifest,
         session_id,
         chunks,
+        rules,
         applicable_rules,
-        retrievals,
-        max_issues=settings.rag_max_issues,
+        project_type,
+        structured_facts,
+        cross_chapter_findings,
+    ):
+        return None
+    issues = _read_json_list(artifact_dir / "rag_issues.json")
+    logger.info(
+        "rag_cache_hit session_id=%s retrieval_count=%s issue_cache=%s artifact_dir=%s",
+        session_id,
+        len(retrievals),
+        issues is not None,
+        artifact_dir,
     )
-    _write_json(artifact_dir / "rag_issues.json", issues)
+    return manifest, retrievals, issues
 
-    return {
-        "issues": issues,
-        "retrievals": retrievals,
-        "index_manifest": index_manifest,
+
+def _rag_manifest_matches(
+    manifest: dict[str, Any],
+    session_id: str,
+    chunks: list[Any],
+    rules: list[dict[str, Any]],
+    applicable_rules: list[dict[str, Any]],
+    project_type: str,
+    structured_facts: list[dict[str, Any]],
+    cross_chapter_findings: list[dict[str, Any]],
+) -> bool:
+    expected: dict[str, Any] = {
+        "session_id": session_id,
+        "chunk_count": len(chunks),
+        "rule_count": len(rules),
+        "embedding_model": settings.siliconflow_embedding_model,
+        "embedding_dimensions": settings.siliconflow_embedding_dimensions,
+        "retrieval_enrichment_version": RETRIEVAL_ENRICHMENT_VERSION,
+        "reranker_model": settings.siliconflow_reranker_model,
+        "retrieval_top_k": settings.rag_top_k,
+        "rerank_top_n": settings.rag_rerank_top_n,
     }
+    for key, value in expected.items():
+        if manifest.get(key) != value:
+            return False
+    optional_expected = {
+        "index_content_hash": _index_content_hash(chunks),
+        "rules_content_hash": _rules_content_hash(rules),
+        "project_type": project_type,
+        "applicable_rule_count": len(applicable_rules),
+        "langextract_fact_count": len(structured_facts),
+        "cross_chapter_finding_count": len(cross_chapter_findings),
+    }
+    for key, value in optional_expected.items():
+        if key in manifest and manifest.get(key) != value:
+            return False
+    return True
+
+
+def _read_json_list(path: Path) -> list[dict[str, Any]] | None:
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.warning("rag_cache_read_failed path=%s", path, exc_info=True)
+        return None
+    if not isinstance(data, list):
+        return None
+    return [item for item in data if isinstance(item, dict)]
+
+
+def _read_json_object(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.warning("rag_cache_read_failed path=%s", path, exc_info=True)
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _rules_content_hash(rules: list[dict[str, Any]]) -> str:
+    raw = json.dumps(rules, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
 def _infer_project_type(chunks: list[Any]) -> str:

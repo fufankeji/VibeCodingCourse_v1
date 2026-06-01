@@ -26,7 +26,7 @@ from app.schemas.session import (
     ReviewSessionResponse,
     SessionRecoveryResponse,
 )
-from app.services import ocr_service, retrieval_debug_service
+from app.services import ocr_service, retrieval_debug_service, water_review_service
 from app.services.contract_entry_service import build_contract_entry
 from app.services.document_parse_worker import DocumentParseError, cancel_parse_jobs_for_session, reset_parse_job_for_retry
 from app.services.water_review_parsers import parse_document
@@ -199,6 +199,28 @@ def get_langextract_facts(session_id: str, db: Session = Depends(get_db)) -> dic
         "facts": facts,
         "cross_chapter_findings": findings,
     }
+
+
+@router.get("/{session_id}/review-pipeline-status")
+def get_review_pipeline_status(session_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    session = db.query(ReviewSession).filter(ReviewSession.id == session_id).first()
+    if not session:
+        raise APIError.not_found("ReviewSession")
+
+    contract = db.query(Contract).filter(Contract.id == session.contract_id).first()
+    if not contract:
+        raise APIError.not_found("Contract")
+
+    job = _latest_successful_parse_job(session_id, db)
+    artifact_dir = _latest_water_review_artifact_dir(contract, job)
+    if not artifact_dir:
+        parse_artifact, _ = _best_parse_artifact(job)
+        if parse_artifact:
+            artifact_dir = parse_artifact.parent / "water_review"
+        elif contract.file_path:
+            artifact_dir = Path(contract.file_path).parent / "water_review"
+    review_item_count = db.query(ReviewItem).filter(ReviewItem.session_id == session_id).count()
+    return water_review_service.build_pipeline_status(session_id, artifact_dir, review_item_count=review_item_count)
 
 
 @router.get("/{session_id}/assets/{asset_path:path}")

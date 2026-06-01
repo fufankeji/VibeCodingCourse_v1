@@ -6,6 +6,7 @@ JSON and rule set in backend/data, persists extracted fields, and hands
 precomputed issues to the existing LangGraph/HITL flow.
 """
 
+import asyncio
 import json
 import logging
 import random
@@ -185,7 +186,7 @@ async def extract_fields(session_id: str, text: str, db: Session, file_path: str
     try:
         from app.services import water_review_service
 
-        pipeline = water_review_service.run_pipeline(file_path or "", artifact_dir, session_id)
+        pipeline = await asyncio.to_thread(water_review_service.run_pipeline, file_path or "", artifact_dir, session_id)
         text = pipeline.get("full_text") or text
         extracted_fields = pipeline.get("fields", [])
     except Exception as exc:
