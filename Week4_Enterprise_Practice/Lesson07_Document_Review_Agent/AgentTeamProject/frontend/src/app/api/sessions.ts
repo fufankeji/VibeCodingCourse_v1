@@ -212,7 +212,14 @@ export function runRetrievalDebug(
 }
 
 export function retryParse(sessionId: string) {
-  return apiClient.post<{ session_id: string; state: string; message: string }>(`/sessions/${sessionId}/retry-parse`);
+  return apiClient.post<{
+    session_id: string;
+    job_id: string;
+    state: string;
+    retry_count: number;
+    max_retries: number;
+    message: string;
+  }>(`/sessions/${sessionId}/retry-parse`);
 }
 
 export function abortSession(sessionId: string, reason?: string) {

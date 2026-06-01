@@ -35,7 +35,7 @@ export function GlobalNav() {
       {/* Logo + Product Name */}
       <button
         type="button"
-        className="mr-2 flex h-11 min-w-0 items-center gap-2 rounded-md pr-2 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 sm:mr-8"
+        className="mr-2 flex h-11 w-11 shrink-0 items-center justify-center gap-2 rounded-md text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 sm:mr-8 sm:w-auto sm:justify-start sm:pr-2"
         onClick={() => navigate('/dashboard')}
         aria-label="返回工作台"
       >

@@ -29,7 +29,8 @@ export function subscribeSSE(sessionId: string, onEvent: SSEEventHandler): () =>
       'connected', 'state_changed', 'scan_progress',
       'route_auto_passed', 'route_batch_review', 'route_interrupted',
       'item_decision_saved', 'report_generation_started', 'report_ready',
-      'parse_failed', 'parse_timeout', 'system_failure', 'session_aborted',
+      'parse_started', 'parse_progress', 'parse_failed', 'parse_timeout',
+      'system_failure', 'session_aborted',
     ];
 
     for (const type of eventTypes) {

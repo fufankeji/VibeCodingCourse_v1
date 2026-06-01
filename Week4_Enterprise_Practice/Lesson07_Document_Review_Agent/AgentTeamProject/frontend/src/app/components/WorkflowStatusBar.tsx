@@ -54,7 +54,7 @@ export function WorkflowStatusBar({ sessionState, hitlSubtype, scanningStarted }
       className="fixed top-14 left-0 right-0 z-40 bg-white border-b border-gray-200 flex items-center justify-center shadow-sm"
       style={{ height: 64 }}
     >
-      <div className="flex items-center gap-0">
+      <div className="flex w-full items-center justify-center gap-0 overflow-hidden px-2 sm:w-auto sm:px-0">
         {NODES.map((node, idx) => {
           const status = getNodeStatus(node.id);
           return (
@@ -66,7 +66,7 @@ export function WorkflowStatusBar({ sessionState, hitlSubtype, scanningStarted }
               {/* Connector */}
               {idx < NODES.length - 1 && (
                 <div
-                  className={`w-16 h-0.5 mx-1 ${
+                  className={`mx-0.5 h-0.5 w-4 sm:mx-1 sm:w-16 ${
                     getNodeStatus(NODES[idx + 1].id) !== 'pending' || status === 'completed'
                       ? 'bg-blue-300'
                       : 'bg-gray-200'
@@ -105,7 +105,7 @@ function NodeDot({
   }[status];
 
   return (
-    <div className="flex flex-col items-center gap-1" style={{ minWidth: 72 }}>
+    <div className="flex min-w-10 flex-col items-center gap-1 sm:min-w-[72px]">
       <div
         className={`w-7 h-7 rounded-full border-2 flex items-center justify-center transition-all ${dotClass}`}
         title={status === 'interrupted' ? '流程已暂停 - 等待人工操作' : undefined}
@@ -115,7 +115,7 @@ function NodeDot({
         {status === 'loading' && <Loader2 className="w-3.5 h-3.5 text-blue-500 animate-spin" />}
         {status === 'active' && <div className="w-2 h-2 rounded-full bg-white" />}
       </div>
-      <span className={`text-xs whitespace-nowrap ${textClass}`}>{label}</span>
+      <span className={`hidden text-xs whitespace-nowrap sm:inline ${textClass}`}>{label}</span>
     </div>
   );
 }
