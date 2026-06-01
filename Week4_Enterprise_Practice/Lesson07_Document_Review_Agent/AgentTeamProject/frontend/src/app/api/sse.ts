@@ -5,10 +5,43 @@ export type SSEEventHandler = (event: string, data: Record<string, unknown>) => 
 export function subscribeSSE(sessionId: string, onEvent: SSEEventHandler): () => void {
   const url = `${API_BASE_URL}/sessions/${sessionId}/events`;
   let eventSource: EventSource | null = null;
+  let retryTimer: number | null = null;
+  let abortController: AbortController | null = null;
   let closed = false;
 
-  function connect() {
+  function scheduleReconnect() {
     if (closed) return;
+    if (retryTimer !== null) return;
+    retryTimer = window.setTimeout(() => {
+      retryTimer = null;
+      void connect();
+    }, 3000);
+  }
+
+  async function connect() {
+    if (closed) return;
+
+    abortController = new AbortController();
+    try {
+      const sessionRes = await fetch(`${API_BASE_URL}/sessions/${sessionId}`, {
+        method: 'GET',
+        signal: abortController.signal,
+      });
+      if (closed) return;
+      if (sessionRes.status === 404) {
+        closed = true;
+        onEvent('session_not_found', { session_id: sessionId });
+        return;
+      }
+      if (!sessionRes.ok) {
+        scheduleReconnect();
+        return;
+      }
+    } catch {
+      if (!closed) scheduleReconnect();
+      return;
+    }
+
     eventSource = new EventSource(url);
 
     eventSource.onopen = () => {
@@ -49,14 +82,19 @@ export function subscribeSSE(sessionId: string, onEvent: SSEEventHandler): () =>
       if (closed) return;
       console.warn('[SSE] Connection error, reconnecting in 3s...');
       eventSource?.close();
-      setTimeout(connect, 3000);
+      scheduleReconnect();
     };
   }
 
-  connect();
+  void connect();
 
   return () => {
     closed = true;
+    abortController?.abort();
+    if (retryTimer !== null) {
+      window.clearTimeout(retryTimer);
+      retryTimer = null;
+    }
     eventSource?.close();
   };
 }
