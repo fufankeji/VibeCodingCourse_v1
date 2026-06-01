@@ -166,3 +166,52 @@ def test_plan_pdf_segments_rejects_empty_pdf():
         assert exc.error_code == "MINERU_PDF_PAGE_COUNT_INVALID"
     else:
         raise AssertionError("empty PDF page count should fail")
+
+
+def test_submit_local_file_includes_page_ranges_when_present(tmp_path):
+    from app.services.mineru_service import MinerUSegment, _submit_local_file
+
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"%PDF-1.4\n")
+    captured_payload = {}
+    uploaded = {"called": False}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            captured_payload.update(json.loads(request.content.decode("utf-8")))
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "data": {
+                        "batch_id": "batch-201-400",
+                        "file_urls": ["https://upload.example/part"],
+                    },
+                },
+            )
+        if request.method == "PUT":
+            uploaded["called"] = True
+            return httpx.Response(200)
+        return httpx.Response(404)
+
+    segment = MinerUSegment(
+        segment_index=2,
+        segment_count=2,
+        page_start=201,
+        page_end_requested=400,
+        page_offset=200,
+        page_ranges="201-400",
+    )
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    batch_id = _submit_local_file(
+        client,
+        "https://mineru.example/api/v4",
+        {"Authorization": "Bearer test"},
+        source,
+        segment=segment,
+    )
+
+    assert batch_id == "batch-201-400"
+    assert uploaded["called"] is True
+    assert captured_payload["files"][0]["page_ranges"] == "201-400"

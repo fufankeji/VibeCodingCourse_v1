@@ -196,9 +196,14 @@ def _submit_local_file(
     base_url: str,
     headers: dict[str, str],
     source: Path,
+    *,
+    segment: MinerUSegment | None = None,
 ) -> str:
+    file_payload = {"name": source.name, "data_id": source.stem[:128]}
+    if segment and segment.page_ranges:
+        file_payload["page_ranges"] = segment.page_ranges
     payload = {
-        "files": [{"name": source.name, "data_id": source.stem[:128]}],
+        "files": [file_payload],
         "model_version": settings.mineru_model_version,
         "enable_formula": settings.mineru_enable_formula,
         "enable_table": settings.mineru_enable_table,
