@@ -477,12 +477,21 @@ class HITLService:
 
         db.commit()
 
-        # 推送扫描进度事件
+        high_count = sum(1 for i in items_data if i.get("risk_level") == "HIGH")
+        medium_count = sum(1 for i in items_data if i.get("risk_level") == "MEDIUM")
+        low_count = sum(1 for i in items_data if i.get("risk_level") == "LOW")
+        category_counts: dict[str, int] = {}
+        for item in items_data:
+            category = str(item.get("risk_category") or "未分类").strip() or "未分类"
+            category_counts[category] = category_counts.get(category, 0) + 1
+
+        # 推送真实扫描结果汇总；前端不得自行模拟维度完成状态。
         self._push_sse_event(session_id, "scan_progress", {
             "found_count": len(items_data),
-            "high_count": sum(
-                1 for i in items_data if i.get("risk_level") == "HIGH"
-            ),
+            "high_count": high_count,
+            "medium_count": medium_count,
+            "low_count": low_count,
+            "category_counts": category_counts,
         })
 
     def _push_sse_event(self, session_id: str, event_type: str, data: dict):

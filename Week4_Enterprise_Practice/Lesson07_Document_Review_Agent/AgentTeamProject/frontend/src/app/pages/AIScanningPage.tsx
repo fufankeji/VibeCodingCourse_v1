@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
-import { Loader2, XCircle } from 'lucide-react';
+import { AlertCircle, Loader2, XCircle } from 'lucide-react';
 import { GlobalNav } from '../components/GlobalNav';
 import { WorkflowStatusBar } from '../components/WorkflowStatusBar';
 import { RiskLevelBadge } from '../components/RiskLevelBadge';
@@ -11,23 +11,18 @@ interface ScanProgress {
   high: number;
   medium: number;
   low: number;
+  total: number;
 }
 
-const SCAN_DIMENSIONS_INIT = [
-  { id: 'project_attributes', label: '项目属性判定', status: 'pending' as const },
-  { id: 'formal_completeness', label: '章节与材料完整性', status: 'pending' as const },
-  { id: 'earthwork_balance', label: '土石方平衡核验', status: 'pending' as const },
-  { id: 'topsoil_protection', label: '表土保护措施核验', status: 'pending' as const },
-  { id: 'spoil_borrow', label: '取土弃渣场设置核验', status: 'pending' as const },
-  { id: 'prevention_measures', label: '防治措施与投资核验', status: 'pending' as const },
-];
-
-const SCAN_DIMENSIONS_DONE = SCAN_DIMENSIONS_INIT.map((d) => ({ ...d, status: 'done' as const }));
+interface CategoryCount {
+  label: string;
+  count: number;
+}
 
 /**
  * AIScanningPage — P07 AI 扫描进度页
  * GET /sessions/{session_id}/events (SSE) — 已开发
- * 收到 scan_progress 事件：更新已发现风险计数
+ * 收到 scan_progress 事件：更新真实风险计数和类别分布
  * 收到路由事件后跳转：
  *   route_auto_passed → P10 报告页
  *   route_batch_review → P09 批量复核页
@@ -37,37 +32,11 @@ const SCAN_DIMENSIONS_DONE = SCAN_DIMENSIONS_INIT.map((d) => ({ ...d, status: 'd
 export function AIScanningPage() {
   const { id: sessionId } = useParams();
   const navigate = useNavigate();
-  const [progress, setProgress] = useState<ScanProgress>({ high: 0, medium: 0, low: 0 });
-  const [dimensions, setDimensions] = useState(SCAN_DIMENSIONS_INIT);
+  const [progress, setProgress] = useState<ScanProgress>({ high: 0, medium: 0, low: 0, total: 0 });
+  const [categories, setCategories] = useState<CategoryCount[]>([]);
+  const [hasScanResult, setHasScanResult] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
-  // Simulate scan dimension progression during scanning
-  useEffect(() => {
-    let dimIndex = 0;
-    const advance = setInterval(() => {
-      setDimensions((prev) => {
-        const next = [...prev];
-        // Mark current active as done, next as active
-        const activeIdx = next.findIndex((d) => d.status === 'active');
-        if (activeIdx >= 0) {
-          next[activeIdx] = { ...next[activeIdx], status: 'done' };
-          if (activeIdx + 1 < next.length) {
-            next[activeIdx + 1] = { ...next[activeIdx + 1], status: 'active' };
-          }
-        } else {
-          // Start with first item
-          if (dimIndex < next.length) {
-            next[dimIndex] = { ...next[dimIndex], status: 'active' };
-          }
-        }
-        dimIndex++;
-        return next;
-      });
-    }, 8000); // advance every 8 seconds
-    return () => clearInterval(advance);
-  }, []);
-
-  // SSE subscription for scan_progress and route events
   useEffect(() => {
     if (!sessionId) return;
 
@@ -76,28 +45,42 @@ export function AIScanningPage() {
     const unsubscribe = subscribeSSE(sessionId, (event, data) => {
       if (event === 'scan_progress') {
         const d = data as any;
-        if (d.risk_level === 'HIGH') setProgress((p) => ({ ...p, high: d.found_count ?? p.high + 1 }));
-        else if (d.risk_level === 'MEDIUM') setProgress((p) => ({ ...p, medium: d.found_count ?? p.medium + 1 }));
-        else if (d.risk_level === 'LOW') setProgress((p) => ({ ...p, low: d.found_count ?? p.low + 1 }));
+        setHasScanResult(true);
+        if ('high_count' in d || 'medium_count' in d || 'low_count' in d) {
+          setProgress({
+            high: Number(d.high_count ?? 0),
+            medium: Number(d.medium_count ?? 0),
+            low: Number(d.low_count ?? 0),
+            total: Number(d.found_count ?? 0),
+          });
+        } else if (d.risk_level === 'HIGH') {
+          setProgress((p) => ({ ...p, high: d.found_count ?? p.high + 1, total: p.total + 1 }));
+        } else if (d.risk_level === 'MEDIUM') {
+          setProgress((p) => ({ ...p, medium: d.found_count ?? p.medium + 1, total: p.total + 1 }));
+        } else if (d.risk_level === 'LOW') {
+          setProgress((p) => ({ ...p, low: d.found_count ?? p.low + 1, total: p.total + 1 }));
+        }
+
+        const categoryCounts = d.category_counts && typeof d.category_counts === 'object' ? d.category_counts : {};
+        setCategories(
+          Object.entries(categoryCounts)
+            .map(([label, count]) => ({ label, count: Number(count) || 0 }))
+            .filter((item) => item.count > 0)
+            .sort((a, b) => b.count - a.count)
+        );
       } else if (event === 'route_interrupted') {
-        setDimensions(SCAN_DIMENSIONS_DONE);
         setTimeout(() => navigate(`/contracts/${sessionId}/review`), 500);
       } else if (event === 'route_batch_review') {
-        setDimensions(SCAN_DIMENSIONS_DONE);
         setTimeout(() => navigate(`/contracts/${sessionId}/batch`), 500);
       } else if (event === 'route_auto_passed') {
-        setDimensions(SCAN_DIMENSIONS_DONE);
         setTimeout(() => navigate(`/contracts/${sessionId}/report`), 500);
       } else if (event === 'state_changed') {
         const newState = (data as any).state || (data as any).new_state;
         if (newState === 'hitl_pending' || newState === 'hitl_high_risk') {
-          setDimensions(SCAN_DIMENSIONS_DONE);
           setTimeout(() => navigate(`/contracts/${sessionId}/review`), 500);
         } else if (newState === 'hitl_medium_confirm') {
-          setDimensions(SCAN_DIMENSIONS_DONE);
           setTimeout(() => navigate(`/contracts/${sessionId}/batch`), 500);
         } else if (newState === 'report_ready' || newState === 'completed') {
-          setDimensions(SCAN_DIMENSIONS_DONE);
           setTimeout(() => navigate(`/contracts/${sessionId}/report`), 500);
         }
       }
@@ -113,71 +96,78 @@ export function AIScanningPage() {
     <div className="min-h-screen bg-gray-50">
       <GlobalNav />
       <WorkflowStatusBar sessionState="scanning" scanningStarted={true} />
-      <div style={{ paddingTop: 78 }}>
-        <div className="max-w-2xl mx-auto px-6 py-10">
-          <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-8">
-            {/* Scanning Animation */}
-            <div className="text-center mb-8">
-              <div className="relative inline-flex mb-4">
-                <div className="w-16 h-16 bg-blue-50 rounded-full flex items-center justify-center">
-                  <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
+      <main className="pt-[118px]">
+        <div className="mx-auto max-w-2xl px-4 py-6 sm:px-6">
+          <div className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm sm:p-8">
+            <div className="mb-8 text-center">
+              <div className="relative mb-4 inline-flex">
+                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-blue-50">
+                  <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
                 </div>
-                <div className="absolute inset-0 border-2 border-blue-200 rounded-full animate-ping opacity-50" />
+                <div className="absolute inset-0 rounded-full border-2 border-blue-200 opacity-50 animate-ping" />
               </div>
-              <h2 className="text-gray-800" style={{ fontWeight: 600, fontSize: 18 }}>
-                AI 正在进行水保方案规则审查…
-              </h2>
-              {/* R01: 禁止显示「无风险」「扫描通过」等绝对化文字 */}
-              <p className="text-sm text-gray-500 mt-2">已用时 {elapsedSeconds} 秒 · 系统正在召回证据并匹配审查规则，请稍候</p>
+              <h2 className="text-lg font-semibold text-gray-800">AI 正在进行水保方案规则审查…</h2>
+              <p className="mt-2 text-sm text-gray-500">
+                已用时 {elapsedSeconds} 秒 · {hasScanResult ? '已收到后端审查结果，正在路由下一步' : '等待后端返回真实审查事件'}
+              </p>
             </div>
 
-            {/* Risk Counter — SSE scan_progress */}
-            <div className="grid grid-cols-3 gap-3 mb-7">
-              <div className="text-center bg-red-50 border border-red-100 rounded-xl py-4">
-                <p className="text-2xl text-red-600" style={{ fontWeight: 700 }}>{progress.high}</p>
+            <div className="mb-7 grid grid-cols-3 gap-3">
+              <div className="rounded-lg border border-red-100 bg-red-50 py-4 text-center">
+                <p className="text-2xl font-bold text-red-600">{progress.high}</p>
                 <RiskLevelBadge level="HIGH" />
               </div>
-              <div className="text-center bg-amber-50 border border-amber-100 rounded-xl py-4">
-                <p className="text-2xl text-amber-600" style={{ fontWeight: 700 }}>{progress.medium}</p>
+              <div className="rounded-lg border border-amber-100 bg-amber-50 py-4 text-center">
+                <p className="text-2xl font-bold text-amber-600">{progress.medium}</p>
                 <RiskLevelBadge level="MEDIUM" />
               </div>
-              <div className="text-center bg-green-50 border border-green-100 rounded-xl py-4">
-                <p className="text-2xl text-green-600" style={{ fontWeight: 700 }}>{progress.low}</p>
+              <div className="rounded-lg border border-green-100 bg-green-50 py-4 text-center">
+                <p className="text-2xl font-bold text-green-600">{progress.low}</p>
                 <RiskLevelBadge level="LOW" />
               </div>
             </div>
 
-            {/* Scan Dimensions */}
-            <div className="space-y-2 mb-8">
-              <p className="text-xs text-gray-400 mb-2">审查维度</p>
-              {dimensions.map((dim) => (
-                <div key={dim.id} className="flex items-center gap-3">
-                  <div className={`w-2 h-2 rounded-full ${
-                    dim.status === 'done' ? 'bg-green-500' :
-                    dim.status === 'active' ? 'bg-blue-500 animate-pulse' :
-                    'bg-gray-200'
-                  }`} />
-                  <span className={`text-sm ${dim.status === 'pending' ? 'text-gray-400' : 'text-gray-700'}`}>
-                    {dim.label}
-                  </span>
-                  {dim.status === 'active' && (
-                    <span className="text-xs text-blue-500 flex items-center gap-1">
-                      <Loader2 className="w-3 h-3 animate-spin" /> 进行中
-                    </span>
-                  )}
-                  {dim.status === 'done' && (
-                    <span className="text-xs text-green-500">✓</span>
-                  )}
+            <div className="mb-8 rounded-md border border-slate-200 bg-slate-50 p-4">
+              <p className="text-xs font-medium text-slate-500">真实审查结果</p>
+              {!hasScanResult ? (
+                <div className="mt-3 flex items-start gap-2 text-sm text-slate-600">
+                  <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-blue-600" />
+                  <p>尚未收到后端 scan_progress。此处不再展示模拟维度或自动打勾。</p>
                 </div>
-              ))}
+              ) : categories.length > 0 ? (
+                <div className="mt-3 space-y-2">
+                  {categories.map((item) => (
+                    <div key={item.label} className="flex items-center justify-between gap-3 rounded-md border border-slate-200 bg-white px-3 py-2">
+                      <span className="text-sm text-slate-700">{item.label}</span>
+                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700">{item.count} 项</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="mt-3 flex items-start gap-2 text-sm text-slate-600">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                  <p>后端已返回审查结果，但没有返回风险类别分布。不能据此判断文档合格。</p>
+                </div>
+              )}
+              {hasScanResult && (
+                <p className="mt-3 text-xs text-slate-500">当前仅展示后端返回的风险项汇总；不代表所有规则维度均已通过。</p>
+              )}
             </div>
 
+            {hasScanResult && progress.total === 0 && (
+              <div className="mb-8 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                <div className="flex gap-2">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <p>后端返回 0 条待复核风险项。这不是“文档合格”的证明，可能是文档内容不足、解析质量不足、规则未命中或审查链路降级。</p>
+                </div>
+              </div>
+            )}
+
             <div className="border-t border-gray-100 pt-5 text-center text-xs text-gray-400">
-              等待后端审查事件：route_interrupted / route_batch_review / route_auto_passed
+              等待后端路由事件：route_interrupted / route_batch_review / route_auto_passed
             </div>
           </div>
 
-          {/* Abort */}
           <div className="mt-4 flex justify-center">
             <button
               onClick={async () => {
@@ -190,13 +180,13 @@ export function AIScanningPage() {
                   alert(err.message || '放弃失败');
                 }
               }}
-              className="flex items-center gap-2 text-sm text-red-500 hover:text-red-700 hover:bg-red-50 px-4 py-2 rounded-lg transition-colors"
+              className="flex h-11 items-center gap-2 rounded-md px-4 text-sm text-red-500 transition-colors hover:bg-red-50 hover:text-red-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
             >
-              <XCircle className="w-4 h-4" /> 放弃并返回
+              <XCircle className="h-4 w-4" /> 放弃并返回
             </button>
           </div>
         </div>
-      </div>
+      </main>
     </div>
   );
 }
