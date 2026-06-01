@@ -21,7 +21,7 @@ from app.schemas.session import (
     SessionRecoveryResponse,
 )
 from app.services import retrieval_debug_service
-from app.services.document_parse_worker import reset_parse_job_for_retry
+from app.services.document_parse_worker import cancel_parse_jobs_for_session, reset_parse_job_for_retry
 
 router = APIRouter()
 
@@ -324,13 +324,14 @@ async def abort_session(
         db.add(contract)
 
     reason = (body.reason if body and body.reason else "") or "用户主动放弃"
+    canceled_parse_jobs = cancel_parse_jobs_for_session(db, session_id, reason=reason)
     audit = AuditLog(
         session_id=session_id,
         event_type="session_aborted",
         actor_id=x_user_id,
         actor_type="user",
         occurred_at=now,
-        metadata_json=json.dumps({"reason": reason}),
+        metadata_json=json.dumps({"reason": reason, "canceled_parse_jobs": canceled_parse_jobs}),
     )
     db.add(audit)
     db.commit()

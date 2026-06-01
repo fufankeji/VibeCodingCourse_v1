@@ -95,6 +95,29 @@ def reset_parse_job_for_retry(db: Session, session_id: str) -> DocumentParseJob:
     return job
 
 
+def cancel_parse_jobs_for_session(db: Session, session_id: str, reason: str = "用户主动放弃") -> int:
+    now = datetime.utcnow()
+    jobs = (
+        db.query(DocumentParseJob)
+        .filter(
+            DocumentParseJob.session_id == session_id,
+            DocumentParseJob.status.in_(["queued", "running", "failed", "timeout"]),
+        )
+        .all()
+    )
+    for job in jobs:
+        job.status = "canceled"
+        job.locked_by = None
+        job.locked_at = None
+        job.next_run_at = None
+        job.error_code = "USER_ABORTED"
+        job.error_message = reason
+        job.updated_at = now
+        db.add(job)
+    db.flush()
+    return len(jobs)
+
+
 def recover_stale_running_jobs(db: Session, stale_after_seconds: int = LOCK_TIMEOUT_SECONDS) -> int:
     cutoff = datetime.utcnow() - timedelta(seconds=stale_after_seconds)
     jobs = (
@@ -171,13 +194,19 @@ def _claim_next_job(db: Session, worker_id: str) -> DocumentParseJob | None:
 
 async def _run_claimed_job(db: Session, job: DocumentParseJob) -> None:
     await _publish(job, "parse_started", {"stage": job.stage})
+    if _is_job_canceled(db, job.id):
+        return
     try:
         parse_path = _prepare_parse_artifact(db, job)
+        if _is_job_canceled(db, job.id):
+            return
         job.stage = "pipeline_running"
         db.add(job)
         db.commit()
         await _publish(job, "parse_progress", {"stage": job.stage})
         await ocr_service.extract_fields(job.session_id, "", db, file_path=parse_path)
+        if _is_job_canceled(db, job.id):
+            return
         db.refresh(job)
         session = db.query(ReviewSession).filter(ReviewSession.id == job.session_id).first()
         if session and session.state == "aborted":
@@ -244,6 +273,8 @@ def _update_mineru_progress(db: Session, job_id: str, stage: str, values: dict[s
 
 
 def _mark_job_succeeded(db: Session, job: DocumentParseJob) -> None:
+    if _is_job_canceled(db, job.id):
+        return
     job.status = "succeeded"
     job.stage = "completed"
     job.locked_by = None
@@ -271,6 +302,8 @@ async def _mark_job_failed(
     timeout: bool = False,
     event_type: str | None = None,
 ) -> None:
+    if _is_job_canceled(db, job.id):
+        return
     now = datetime.utcnow()
     job.status = "timeout" if timeout else "failed"
     job.locked_by = None
@@ -321,6 +354,11 @@ async def _mark_job_failed(
             "state": session.state if session else "parsing",
         },
     )
+
+
+def _is_job_canceled(db: Session, job_id: str) -> bool:
+    status = db.query(DocumentParseJob.status).filter(DocumentParseJob.id == job_id).scalar()
+    return status == "canceled"
 
 
 async def _publish(job: DocumentParseJob, event_type: str, data: dict) -> None:

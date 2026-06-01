@@ -164,3 +164,46 @@ def test_claim_next_job_skips_exhausted_failed_job(tmp_path):
 
     assert claimed is None
     db.close()
+
+
+def test_cancel_parse_jobs_for_session_marks_job_canceled_and_unclaimable(tmp_path):
+    SessionLocal = _session_factory()
+    db = SessionLocal()
+    _, session, job = _make_contract_session_job(db, tmp_path, file_type="pdf", status="queued")
+
+    canceled = document_parse_worker.cancel_parse_jobs_for_session(db, session.id, reason="用户主动放弃")
+    claimed = document_parse_worker._claim_next_job(db, "test-worker")
+
+    updated_job = db.query(DocumentParseJob).filter(DocumentParseJob.id == job.id).first()
+    assert canceled == 1
+    assert claimed is None
+    assert updated_job.status == "canceled"
+    assert updated_job.error_code == "USER_ABORTED"
+    assert updated_job.locked_by is None
+    assert updated_job.next_run_at is None
+    db.close()
+
+
+def test_mark_job_succeeded_does_not_overwrite_canceled_job(tmp_path):
+    SessionLocal = _session_factory()
+    db1 = SessionLocal()
+    _, _, job = _make_contract_session_job(db1, tmp_path, file_type="pdf", status="running")
+    job_id = job.id
+
+    db2 = SessionLocal()
+    try:
+        same_job = db2.query(DocumentParseJob).filter(DocumentParseJob.id == job_id).first()
+        same_job.status = "canceled"
+        same_job.error_code = "USER_ABORTED"
+        db2.add(same_job)
+        db2.commit()
+    finally:
+        db2.close()
+
+    document_parse_worker._mark_job_succeeded(db1, job)
+
+    db1.expire_all()
+    updated_job = db1.query(DocumentParseJob).filter(DocumentParseJob.id == job_id).first()
+    assert updated_job.status == "canceled"
+    assert updated_job.error_code == "USER_ABORTED"
+    db1.close()
