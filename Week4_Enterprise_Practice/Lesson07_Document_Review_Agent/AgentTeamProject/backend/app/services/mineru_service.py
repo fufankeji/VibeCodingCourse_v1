@@ -111,21 +111,42 @@ def parse_file_to_artifacts(
     output_dir.mkdir(parents=True, exist_ok=True)
     base_url = settings.mineru_base_url.rstrip("/")
     headers = _headers(token)
+    source_page_count = _pdf_page_count(source) if source.suffix.lower() == ".pdf" else 1
+    segments = _plan_pdf_segments(source_page_count)
     with httpx.Client(timeout=settings.mineru_request_timeout) as client:
-        batch_id = _submit_local_file(client, base_url, headers, source)
+        if len(segments) == 1 and segments[0].page_ranges is None:
+            return _parse_single_mineru_task(client, base_url, headers, source, output_dir, progress_callback)
+
         if progress_callback:
-            progress_callback("uploaded", {"batch_id": batch_id})
-        task = _wait_batch_result(client, base_url, headers, batch_id, progress_callback=progress_callback)
-        zip_url = str(task.get("full_zip_url") or "").strip()
-        if not zip_url:
-            raise MinerUAPIError("MinerU result did not include full_zip_url", "MINERU_RESULT_INVALID")
-        if progress_callback:
-            progress_callback(
-                "downloading",
-                {"batch_id": batch_id, "task_id": str(task.get("task_id") or "")},
-            )
-        response = client.get(zip_url, headers=headers)
-        _raise_for_status(response)
+            progress_callback("segmenting", {"segment_count": len(segments), "source_page_count": source_page_count})
+        return _parse_segmented_pdf(client, base_url, headers, source, output_dir, source_page_count, segments, progress_callback)
+
+
+def _parse_single_mineru_task(
+    client: httpx.Client,
+    base_url: str,
+    headers: dict[str, str],
+    source: Path,
+    output_dir: Path,
+    progress_callback: Any | None = None,
+    *,
+    segment: MinerUSegment | None = None,
+) -> MinerUParseArtifacts:
+    batch_id = _submit_local_file(client, base_url, headers, source, segment=segment)
+    if progress_callback:
+        progress_callback("uploaded", {"batch_id": batch_id, **_segment_progress(segment)})
+    task = _wait_batch_result(client, base_url, headers, batch_id, progress_callback=progress_callback, segment=segment)
+    zip_url = str(task.get("full_zip_url") or "").strip()
+    if not zip_url:
+        code = "MINERU_SEGMENT_ZIP_MISSING" if segment else "MINERU_RESULT_INVALID"
+        raise MinerUAPIError("MinerU result did not include full_zip_url", code)
+    if progress_callback:
+        progress_callback(
+            "downloading",
+            {"batch_id": batch_id, "task_id": str(task.get("task_id") or ""), **_segment_progress(segment)},
+        )
+    response = client.get(zip_url, headers=headers)
+    _raise_for_status(response)
 
     artifacts = extract_zip_artifacts(response.content, output_dir)
     artifacts.batch_id = batch_id
@@ -134,6 +155,89 @@ def parse_file_to_artifacts(
     if artifacts.best_parse_path is None:
         raise MinerUAPIError("MinerU zip did not contain usable Markdown or structured JSON", "MINERU_RESULT_INVALID")
     return artifacts
+
+
+def _parse_segmented_pdf(
+    client: httpx.Client,
+    base_url: str,
+    headers: dict[str, str],
+    source: Path,
+    output_dir: Path,
+    source_page_count: int,
+    segments: list[MinerUSegment],
+    progress_callback: Any | None = None,
+) -> MinerUParseArtifacts:
+    segment_results: list[dict[str, Any]] = []
+    for segment in segments:
+        segment_dir = output_dir / "segments" / segment.part_name
+        if progress_callback:
+            progress_callback("polling", {"message": "MinerU segment started", **_segment_progress(segment)})
+        started = time.monotonic()
+        try:
+            artifacts = _parse_single_mineru_task(
+                client,
+                base_url,
+                headers,
+                source,
+                segment_dir,
+                progress_callback,
+                segment=segment,
+            )
+        except MinerUAPIError as exc:
+            raise _segment_error(exc) from exc
+        if not artifacts.json_path:
+            raise MinerUAPIError(f"MinerU segment {segment.part_name} did not produce JSON", "MINERU_SEGMENT_JSON_MISSING")
+        segment_results.append(
+            {
+                "segment": segment,
+                "json_path": artifacts.json_path,
+                "markdown_path": artifacts.markdown_path,
+                "zip_path": artifacts.zip_path,
+                "batch_id": artifacts.batch_id,
+                "task_id": artifacts.task_id,
+                "duration_ms": int((time.monotonic() - started) * 1000),
+            }
+        )
+
+    return _merge_segment_artifacts(
+        source_file_path=str(source),
+        source_page_count=source_page_count,
+        output_dir=output_dir,
+        segments=segments,
+        segment_results=segment_results,
+    )
+
+
+def _segment_progress(segment: MinerUSegment | None) -> dict[str, Any]:
+    if not segment:
+        return {}
+    return {
+        "segment_index": segment.segment_index,
+        "segment_count": segment.segment_count,
+        "page_ranges": segment.page_ranges,
+        "page_start": segment.page_start,
+        "page_end_requested": segment.page_end_requested,
+    }
+
+
+def _segment_error(exc: MinerUAPIError) -> MinerUAPIError:
+    if exc.error_code == "MINERU_TIMEOUT":
+        return MinerUAPIError(str(exc), "MINERU_SEGMENT_TIMEOUT", timeout=True)
+    if exc.error_code in {"MINERU_AUTH_FAILED", "MINERU_RATE_LIMITED", "MINERU_TOKEN_MISSING"}:
+        return MinerUAPIError(str(exc), exc.error_code, timeout=exc.timeout)
+    if exc.error_code.startswith("MINERU_SEGMENT_"):
+        return exc
+    return MinerUAPIError(str(exc), "MINERU_SEGMENT_FAILED", timeout=exc.timeout)
+
+
+def _pdf_page_count(source: Path) -> int:
+    try:
+        import fitz
+
+        with fitz.open(source) as doc:
+            return int(doc.page_count)
+    except Exception as exc:
+        raise MinerUAPIError(f"Unable to read PDF page count: {source}", "MINERU_PDF_PAGE_COUNT_INVALID") from exc
 
 
 def extract_zip_artifacts(zip_bytes: bytes, output_dir: Path) -> MinerUParseArtifacts:
@@ -354,6 +458,8 @@ def _wait_batch_result(
     headers: dict[str, str],
     batch_id: str,
     progress_callback: Any | None = None,
+    *,
+    segment: MinerUSegment | None = None,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + settings.mineru_poll_timeout_seconds
     interval = max(1, settings.mineru_poll_interval_seconds)
@@ -369,7 +475,10 @@ def _wait_batch_result(
             task = results[0]
             last_state = str(task.get("state") or last_state)
             if progress_callback:
-                progress_callback("polling", {"batch_id": batch_id, "task_id": str(task.get("task_id") or "")})
+                progress_callback(
+                    "polling",
+                    {"batch_id": batch_id, "task_id": str(task.get("task_id") or ""), **_segment_progress(segment)},
+                )
             if last_state == "done":
                 if progress_callback:
                     progress_callback(
@@ -378,6 +487,7 @@ def _wait_batch_result(
                             "batch_id": batch_id,
                             "task_id": str(task.get("task_id") or ""),
                             "mineru_poll_duration_ms": int((time.monotonic() - poll_started) * 1000),
+                            **_segment_progress(segment),
                         },
                     )
                 return task

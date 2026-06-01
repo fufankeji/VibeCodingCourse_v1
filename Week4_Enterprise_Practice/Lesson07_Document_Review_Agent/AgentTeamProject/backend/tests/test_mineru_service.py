@@ -314,3 +314,67 @@ def test_merge_segment_json_rejects_page_count_mismatch(tmp_path):
         assert exc.error_code == "MINERU_MERGE_PAGE_MISMATCH"
     else:
         raise AssertionError("page count mismatch should fail")
+
+
+def test_parse_file_to_artifacts_uses_single_parse_for_pdf_at_200_pages(tmp_path, monkeypatch):
+    from app.services import mineru_service
+
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"%PDF-1.4\n")
+    calls = []
+
+    monkeypatch.setattr(mineru_service, "_auth_token", lambda: "token")
+    monkeypatch.setattr(mineru_service, "_pdf_page_count", lambda path: 200)
+
+    def fake_parse_single(client, base_url, headers, source_path, output_dir, progress_callback=None, segment=None):
+        calls.append(segment)
+        json_path = output_dir / "parsed.json"
+        json_path.write_text(json.dumps({"pdf_info": [{"page_idx": 0, "para_blocks": []}]}), encoding="utf-8")
+        return mineru_service.MinerUParseArtifacts(json_path=json_path, batch_id="b1", task_id="t1")
+
+    monkeypatch.setattr(mineru_service, "_parse_single_mineru_task", fake_parse_single)
+
+    artifacts = mineru_service.parse_file_to_artifacts(str(source), tmp_path / "mineru")
+
+    assert artifacts.json_path.name == "parsed.json"
+    assert calls == [None]
+
+
+def test_parse_file_to_artifacts_segments_pdf_over_200_pages(tmp_path, monkeypatch):
+    from app.services import mineru_service
+
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"%PDF-1.4\n")
+    seen_ranges = []
+
+    monkeypatch.setattr(mineru_service, "_auth_token", lambda: "token")
+    monkeypatch.setattr(mineru_service, "_pdf_page_count", lambda path: 278)
+
+    def fake_parse_single(client, base_url, headers, source_path, output_dir, progress_callback=None, segment=None):
+        assert segment is not None
+        seen_ranges.append(segment.page_ranges)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        pages = [{"page_idx": idx, "para_blocks": []} for idx in range(200 if segment.segment_index == 1 else 78)]
+        json_path = output_dir / "parsed.json"
+        json_path.write_text(json.dumps({"pdf_info": pages}), encoding="utf-8")
+        markdown_path = output_dir / "full.md"
+        markdown_path.write_text(f"segment {segment.segment_index}", encoding="utf-8")
+        zip_path = output_dir / "mineru_result.zip"
+        zip_path.write_bytes(b"zip")
+        return mineru_service.MinerUParseArtifacts(
+            json_path=json_path,
+            markdown_path=markdown_path,
+            zip_path=zip_path,
+            batch_id=f"b{segment.segment_index}",
+            task_id=f"t{segment.segment_index}",
+        )
+
+    monkeypatch.setattr(mineru_service, "_parse_single_mineru_task", fake_parse_single)
+
+    artifacts = mineru_service.parse_file_to_artifacts(str(source), tmp_path / "mineru")
+
+    assert seen_ranges == ["1-200", "201-400"]
+    merged = json.loads(artifacts.json_path.read_text(encoding="utf-8"))
+    assert len(merged["pdf_info"]) == 278
+    assert merged["pdf_info"][200]["page_idx"] == 200
+    assert (tmp_path / "mineru" / "segment_manifest.json").exists()
