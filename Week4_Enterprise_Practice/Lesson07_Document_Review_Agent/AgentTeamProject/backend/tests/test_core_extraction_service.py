@@ -38,7 +38,7 @@ def test_build_core_extraction_chunks_falls_back_to_project_and_earthwork_keywor
     assert (tmp_path / "core_extraction_chunks.json").exists()
 
 
-def test_build_core_extraction_chunks_returns_all_chunks_when_no_core_match(tmp_path):
+def test_build_core_extraction_chunks_returns_empty_selection_when_no_core_match(tmp_path):
     chunks = [
         _chunk("chunk-0001", "附图目录。", "附图"),
         _chunk("chunk-0002", "附件清单。", "附件"),
@@ -46,9 +46,11 @@ def test_build_core_extraction_chunks_returns_all_chunks_when_no_core_match(tmp_
 
     result = build_core_extraction_chunks(chunks, "session-empty", tmp_path, store_factory=lambda: None)
 
-    assert [chunk.chunk_id for chunk in result.chunks] == ["chunk-0001", "chunk-0002"]
-    assert result.mode == "all_chunks_fallback"
-    assert result.trace["selected_count"] == 2
+    assert result.chunks == []
+    assert result.mode == "no_core_match"
+    assert result.trace["selected_count"] == 0
+    assert result.trace["input_count"] == 2
+    assert result.trace["fallback_used"] is True
 
 
 def test_build_core_extraction_chunks_does_not_build_vector_store_by_default(tmp_path, monkeypatch):

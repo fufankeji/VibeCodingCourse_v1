@@ -82,7 +82,11 @@ def test_facts_to_extracted_fields_ignores_non_core_langextract_fact():
     assert fact is None
     assert len(fields) == len(FIELD_ORDER)
     assert by_name["topsoil_stripping"]["value"] == ""
+    assert by_name["topsoil_stripping"]["extraction_status"] == "not_targeted"
     assert by_name["monitoring"]["value"] == ""
+    assert by_name["monitoring"]["extraction_status"] == "not_targeted"
+    assert by_name["borrow_volume"]["value"] == ""
+    assert by_name["borrow_volume"]["extraction_status"] == "not_found"
 
 
 def test_facts_to_extracted_fields_prefers_langextract_fact():
@@ -104,6 +108,7 @@ def test_facts_to_extracted_fields_prefers_langextract_fact():
     assert project["value"] == "北京航空航天大学沙河校区图书馆项目"
     assert project["fact_id"] == "fact-project"
     assert project["source_page_number"] == 1
+    assert project["extraction_status"] == "found"
 
 
 def test_build_fact_index_groups_by_field():

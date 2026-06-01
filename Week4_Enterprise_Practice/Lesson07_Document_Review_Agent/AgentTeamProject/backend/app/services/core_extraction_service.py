@@ -126,8 +126,7 @@ def build_core_extraction_chunks(
 
     fallback_used = store is None or bool(errors) or mode in {"bm25", "keyword"}
     if not selected:
-        selected = list(chunks)
-        mode = "all_chunks_fallback"
+        mode = "no_core_match"
         fallback_used = True
 
     trace = _trace(chunks, selected, mode, fallback_used, errors)

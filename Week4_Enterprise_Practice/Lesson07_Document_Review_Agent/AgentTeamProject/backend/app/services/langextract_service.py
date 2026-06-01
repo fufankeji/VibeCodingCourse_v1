@@ -428,6 +428,7 @@ def facts_to_extracted_fields(
             "source_evidence_text": fact.get("source_text", ""),
             "source_page_number": page_range[0] if page_range else 1,
             "fact_id": fact.get("fact_id"),
+            "extraction_status": "found",
         }
 
     return [by_name.get(name) or _empty_field(name) for name in FIELD_ORDER]
@@ -821,6 +822,7 @@ def _empty_field(name: str) -> dict[str, Any]:
         "source_span": None,
         "section": "",
         "confidence": 35,
+        "extraction_status": "not_found" if name in LANGEXTRACT_ALLOWED_FIELDS else "not_targeted",
     }
 
 

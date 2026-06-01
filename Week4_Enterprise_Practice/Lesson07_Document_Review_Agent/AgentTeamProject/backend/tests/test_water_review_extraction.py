@@ -40,6 +40,7 @@ def test_extract_fields_keeps_output_shape_but_only_populates_core_fields():
     assert [field["field_name"] for field in fields] == WATER_FIELDS
     assert by_name["project_name"]["value"] == "清河综合治理工程"
     assert by_name["construction_unit"]["value"] == "清河建设有限公司"
+    assert by_name["construction_unit"]["extraction_status"] == "found"
     assert by_name["land_area"]["normalized_value"] == "12.50"
     assert by_name["comprehensive_utilization"]["value"] == "综合利用"
     assert by_name["spoil_destination"]["value"] == "外运"
@@ -58,6 +59,10 @@ def test_extract_fields_keeps_output_shape_but_only_populates_core_fields():
         assert by_name[name]["normalized_value"] == ""
         assert by_name[name]["source_span"] is None
         assert by_name[name]["confidence"] == 35
+        assert by_name[name]["extraction_status"] == "not_targeted"
+
+    assert by_name["borrow_volume"]["value"] == ""
+    assert by_name["borrow_volume"]["extraction_status"] == "not_found"
 
 
 def test_extract_fields_populates_core_earthwork_fields():

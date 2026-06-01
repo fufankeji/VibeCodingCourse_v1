@@ -52,6 +52,7 @@ def extract_fields(chunks: list[ReviewChunk]) -> list[dict[str, Any]]:
 
 def _field(name: str, match: dict[str, Any] | None, chunks: list[ReviewChunk]) -> dict[str, Any]:
     if not match:
+        status = "not_found" if name in CORE_EXTRACTION_FIELDS else "not_targeted"
         return {
             "field_name": name,
             "value": "",
@@ -59,6 +60,7 @@ def _field(name: str, match: dict[str, Any] | None, chunks: list[ReviewChunk]) -
             "source_span": None,
             "section": "",
             "confidence": 35,
+            "extraction_status": status,
         }
     chunk = _chunk_for_span(chunks, match["start"])
     return {
@@ -68,6 +70,7 @@ def _field(name: str, match: dict[str, Any] | None, chunks: list[ReviewChunk]) -
         "source_span": {"char_start": match["start"], "char_end": match["end"]},
         "section": chunk.section if chunk else "",
         "confidence": match.get("confidence", 78),
+        "extraction_status": "found",
     }
 
 
