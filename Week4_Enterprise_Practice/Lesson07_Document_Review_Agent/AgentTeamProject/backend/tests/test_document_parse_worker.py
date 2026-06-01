@@ -166,6 +166,20 @@ def test_claim_next_job_skips_exhausted_failed_job(tmp_path):
     db.close()
 
 
+def test_claim_next_job_skips_aborted_session_job(tmp_path):
+    SessionLocal = _session_factory()
+    db = SessionLocal()
+    _, session, _ = _make_contract_session_job(db, tmp_path, file_type="pdf", status="queued")
+    session.state = "aborted"
+    db.add(session)
+    db.commit()
+
+    claimed = document_parse_worker._claim_next_job(db, "test-worker")
+
+    assert claimed is None
+    db.close()
+
+
 def test_cancel_parse_jobs_for_session_marks_job_canceled_and_unclaimable(tmp_path):
     SessionLocal = _session_factory()
     db = SessionLocal()

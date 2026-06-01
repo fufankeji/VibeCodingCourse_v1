@@ -163,7 +163,9 @@ def _claim_next_job(db: Session, worker_id: str) -> DocumentParseJob | None:
     now = datetime.utcnow()
     job = (
         db.query(DocumentParseJob)
+        .join(ReviewSession, ReviewSession.id == DocumentParseJob.session_id)
         .filter(
+            ReviewSession.state != "aborted",
             or_(
                 DocumentParseJob.status == "queued",
                 and_(
