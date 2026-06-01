@@ -1,6 +1,9 @@
 import json
 
+import pytest
+
 from app.config import settings
+from app.services import langextract_service
 from app.services import rag_service, review_agent_service, review_config_service, water_review_service
 from app.services.langextract_service import facts_to_extracted_fields
 from app.services.mineru_table_fact_service import extract_table_facts
@@ -158,6 +161,68 @@ def test_run_pipeline_persists_mineru_table_facts_before_prose_fallback(tmp_path
     assert by_fact["excavation_volume"]["attributes"]["source"] == "mineru_table_html"
     assert by_fact["spoil_volume"]["block_ids"] == ["p1-b1"]
     assert by_field["excavation_volume"]["fact_id"].startswith("mineru-table-")
+
+
+def test_run_pipeline_persists_langextract_facts_before_rag_failure(tmp_path, monkeypatch):
+    source = tmp_path / "mineru.json"
+    artifact_dir = tmp_path / "artifacts"
+    source.write_text(
+        json.dumps(
+            {
+                "pdf_info": [
+                    {
+                        "page_idx": 0,
+                        "para_blocks": [
+                            {
+                                "bbox": [69, 120, 525, 168],
+                                "type": "text",
+                                "index": 1,
+                                "lines": [{"spans": [{"content": "项目名称：测试项目。"}]}],
+                            }
+                        ],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    fact = {
+        "fact_id": "fact-project-001",
+        "field_name": "project_name",
+        "value": "测试项目",
+        "normalized_value": "测试项目",
+        "unit": "",
+        "section": "综合说明",
+        "chunk_id": "chunk-0001",
+        "page_range": [1, 1],
+        "source_text": "项目名称：测试项目",
+        "char_interval": {"start_pos": 0, "end_pos": 9},
+        "block_ids": ["p1-b1"],
+        "bbox_list": [{"block_id": "p1-b1", "page": 1, "bbox": [69, 120, 525, 168]}],
+        "confidence": 92,
+        "attributes": {},
+    }
+
+    monkeypatch.setattr(settings, "langextract_enabled", True)
+    monkeypatch.setattr(langextract_service, "run_langextract", lambda chunks: [fact])
+    monkeypatch.setattr(water_review_service, "load_rule_set", lambda: [])
+
+    def fail_rag(*args, **kwargs):
+        raise RuntimeError("rag failed after facts")
+
+    monkeypatch.setattr(rag_service, "run_rag_review", fail_rag)
+
+    with pytest.raises(RuntimeError, match="rag failed after facts"):
+        water_review_service.run_pipeline(str(source), str(artifact_dir), "facts-before-rag-failure")
+
+    facts = json.loads((artifact_dir / "langextract_facts.json").read_text(encoding="utf-8"))
+    fact_index = json.loads((artifact_dir / "langextract_fact_index.json").read_text(encoding="utf-8"))
+    fields = json.loads((artifact_dir / "extracted_fields.json").read_text(encoding="utf-8"))
+
+    assert facts[0]["fact_id"] == "fact-project-001"
+    assert fact_index["fact_count"] == 1
+    assert next(field for field in fields if field["field_name"] == "project_name")["fact_id"] == "fact-project-001"
 
 
 def test_run_pipeline_reviews_configured_check_items_with_rag_evidence_store(tmp_path, monkeypatch):

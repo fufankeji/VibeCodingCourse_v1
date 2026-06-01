@@ -18,8 +18,8 @@ import {
 import { GlobalNav } from '../components/GlobalNav';
 import { WorkflowStatusBar } from '../components/WorkflowStatusBar';
 import { subscribeSSE } from '../api/sse';
-import { abortSession, getReviewDocumentContent, getSession, retryParse, startReview } from '../api/sessions';
-import type { ReviewDocumentContentResponse } from '../api/sessions';
+import { abortSession, getLangExtractFacts, getReviewDocumentContent, getSession, retryParse, startReview } from '../api/sessions';
+import type { LangExtractFactsResponse, ReviewDocumentContentResponse } from '../api/sessions';
 import type { SessionState } from '../types';
 
 type ParseStatus = 'parsing' | 'parsed' | 'failed' | 'timeout' | 'system_failure' | 'aborted' | 'completed';
@@ -105,6 +105,8 @@ export function ParsingProgressPage() {
   const [sseConnected, setSseConnected] = useState(false);
   const [documentContent, setDocumentContent] = useState<ReviewDocumentContentResponse | null>(null);
   const [documentContentError, setDocumentContentError] = useState('');
+  const [langExtractFacts, setLangExtractFacts] = useState<LangExtractFactsResponse | null>(null);
+  const [langExtractFactsError, setLangExtractFactsError] = useState('');
 
   const currentStageIndex = STAGE_INDEX.get(stage) ?? 0;
   const progressPercent = useMemo(() => {
@@ -124,6 +126,18 @@ export function ParsingProgressPage() {
     }
   }, [sessionId]);
 
+  const loadLangExtractFacts = useCallback(async () => {
+    if (!sessionId) return;
+    try {
+      const facts = await getLangExtractFacts(sessionId);
+      setLangExtractFacts(facts);
+      setLangExtractFactsError('');
+    } catch (err: any) {
+      setLangExtractFacts(null);
+      setLangExtractFactsError(err.message || 'LangExtract 证据事实读取失败');
+    }
+  }, [sessionId]);
+
   useEffect(() => {
     if (!sessionId) return;
     getSession(sessionId)
@@ -139,6 +153,7 @@ export function ParsingProgressPage() {
           setParseStatus('parsed');
           setStage('completed');
           void loadParsedContent();
+          void loadLangExtractFacts();
           return;
         }
         if (session.state === 'aborted') {
@@ -152,7 +167,7 @@ export function ParsingProgressPage() {
         }
       })
       .catch(() => {});
-  }, [sessionId, navigate, loadParsedContent]);
+  }, [sessionId, navigate, loadParsedContent, loadLangExtractFacts]);
 
   useEffect(() => {
     if (!sessionId || parseStatus !== 'parsing') return;
@@ -200,6 +215,7 @@ export function ParsingProgressPage() {
           setRetryBlockReason('PARSE_ALREADY_SUCCEEDED');
           setStage('completed');
           void loadParsedContent();
+          void loadLangExtractFacts();
           return;
         }
         if (newState === 'scanning' || newState === 'hitl_pending') {
@@ -222,7 +238,7 @@ export function ParsingProgressPage() {
     });
 
     return unsubscribe;
-  }, [sessionId, parseStatus, navigate, retryCount, maxRetries, loadParsedContent]);
+  }, [sessionId, parseStatus, navigate, retryCount, maxRetries, loadParsedContent, loadLangExtractFacts]);
 
   useEffect(() => {
     if (parseStatus !== 'parsing') return;
@@ -252,7 +268,9 @@ export function ParsingProgressPage() {
       setErrorCode('');
       setErrorMessage('');
       setDocumentContent(null);
+      setLangExtractFacts(null);
       setDocumentContentError('');
+      setLangExtractFactsError('');
       setStartReviewError('');
     } catch (err: any) {
       setErrorCode('RETRY_REQUEST_FAILED');
@@ -275,6 +293,7 @@ export function ParsingProgressPage() {
     } catch (err: any) {
       setStartReviewError(err.message || '数据清洗与向量审查失败，MinerU 解析结果已保留');
       await loadParsedContent();
+      await loadLangExtractFacts();
     } finally {
       setIsStartingReview(false);
     }
@@ -300,6 +319,8 @@ export function ParsingProgressPage() {
   const retryDisabled = !canRetryParse || retryRemaining <= 0 || isRetrying;
   const parsedBlockCount = documentContent?.pages.reduce((total, page) => total + page.blocks.length, 0) ?? 0;
   const previewBlocks = documentContent?.pages.flatMap((page) => page.blocks.slice(0, 4)).slice(0, 8) ?? [];
+  const factPreview = langExtractFacts?.facts.slice(0, 8) ?? [];
+  const topFieldCounts = Object.entries(langExtractFacts?.field_counts ?? {}).slice(0, 8);
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -458,6 +479,85 @@ export function ParsingProgressPage() {
                       </div>
                     </div>
                   )}
+
+                  <div className="mt-5 rounded-md border border-slate-200">
+                    <div className="flex flex-col gap-2 border-b border-slate-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <h3 className="text-sm font-semibold text-slate-950">LangExtract 证据事实库</h3>
+                        <p className="mt-0.5 text-xs text-slate-500">字段抽取、公式核验和规则审查复用这里的 fact_id、chunk_id、页码与 bbox 证据。</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={loadLangExtractFacts}
+                        className="inline-flex h-9 items-center justify-center rounded-md border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                      >
+                        刷新事实库
+                      </button>
+                    </div>
+                    <div className="p-4">
+                      {langExtractFactsError ? (
+                        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                          {langExtractFactsError}
+                        </div>
+                      ) : !langExtractFacts?.available ? (
+                        <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
+                          {langExtractFacts?.message || '尚未生成。点击“开始数据清洗与向量审查”后，会先生成并保存这一份事实库。'}
+                        </div>
+                      ) : (
+                        <div className="space-y-4">
+                          <div className="grid gap-3 sm:grid-cols-3">
+                            <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+                              <p className="text-xs text-slate-500">事实数</p>
+                              <p className="mt-1 text-lg font-semibold text-slate-950">{langExtractFacts.fact_count}</p>
+                            </div>
+                            <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+                              <p className="text-xs text-slate-500">字段种类</p>
+                              <p className="mt-1 text-lg font-semibold text-slate-950">{Object.keys(langExtractFacts.field_counts).length}</p>
+                            </div>
+                            <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+                              <p className="text-xs text-slate-500">跨章节线索</p>
+                              <p className="mt-1 text-lg font-semibold text-slate-950">{langExtractFacts.finding_count}</p>
+                            </div>
+                          </div>
+
+                          {topFieldCounts.length > 0 && (
+                            <div className="flex flex-wrap gap-2">
+                              {topFieldCounts.map(([field, count]) => (
+                                <span key={field} className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700">
+                                  {field} × {count}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+
+                          <div className="max-h-80 overflow-auto space-y-3">
+                            {factPreview.map((fact, index) => {
+                              const pageRange = Array.isArray(fact.page_range) && fact.page_range.length > 0 ? fact.page_range.join('-') : '-';
+                              return (
+                                <div key={fact.fact_id || `${fact.field_name}-${index}`} className="rounded-md border border-slate-100 bg-white p-3">
+                                  <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-slate-400">
+                                    <span>{fact.field_name || 'unknown_field'}</span>
+                                    <span>第 {pageRange} 页</span>
+                                    <span>{fact.confidence ?? '-'}%</span>
+                                  </div>
+                                  <p className="text-sm font-medium leading-6 text-slate-900">
+                                    {fact.value || fact.normalized_value || '-'}
+                                    {fact.unit ? <span className="ml-1 text-slate-500">{fact.unit}</span> : null}
+                                  </p>
+                                  {fact.source_text && (
+                                    <p className="mt-1 line-clamp-2 text-xs leading-5 text-slate-500">{fact.source_text}</p>
+                                  )}
+                                  <p className="mt-2 text-xs text-slate-400">
+                                    {fact.fact_id || '-'} · {fact.chunk_id || '-'}
+                                  </p>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
 
                   {startReviewError && (
                     <div className="mt-5 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">

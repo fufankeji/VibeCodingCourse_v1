@@ -78,6 +78,49 @@ export interface ReviewDocumentContentResponse {
   pages: ReviewDocumentPage[];
 }
 
+export interface LangExtractFact {
+  fact_id?: string;
+  field_name?: string;
+  value?: string;
+  normalized_value?: string;
+  unit?: string;
+  section?: string;
+  chunk_id?: string;
+  page_range?: number[];
+  source_text?: string;
+  confidence?: number;
+  bbox_list?: Array<Record<string, unknown>>;
+  attributes?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface CrossChapterFinding {
+  finding_id?: string;
+  finding_type?: string;
+  field_name?: string;
+  description?: string;
+  risk_level?: string;
+  actual_value?: string;
+  expected_value?: string;
+  source_pages?: number[];
+  evidence_text?: string;
+  [key: string]: unknown;
+}
+
+export interface LangExtractFactsResponse {
+  session_id: string;
+  contract_id: string;
+  available: boolean;
+  source: string;
+  message: string;
+  fact_count: number;
+  finding_count: number;
+  field_counts: Record<string, number>;
+  fact_index: Record<string, unknown>;
+  facts: LangExtractFact[];
+  cross_chapter_findings: CrossChapterFinding[];
+}
+
 export interface ReviewLogicType {
   type: string;
   label: string;
@@ -202,6 +245,10 @@ export function getSessionRecovery(sessionId: string): Promise<SessionRecoveryRe
 
 export function getReviewDocumentContent(sessionId: string): Promise<ReviewDocumentContentResponse> {
   return apiClient.get<ReviewDocumentContentResponse>(`/sessions/${sessionId}/document-content`);
+}
+
+export function getLangExtractFacts(sessionId: string): Promise<LangExtractFactsResponse> {
+  return apiClient.get<LangExtractFactsResponse>(`/sessions/${sessionId}/langextract-facts`);
 }
 
 export function getReviewRuleTopics(sessionId: string): Promise<ReviewRuleTopicsResponse> {

@@ -121,10 +121,19 @@ def run_pipeline(file_path: str, artifact_dir: str, session_id: str) -> dict[str
         else:
             fields = fallback_fields
             fact_index = {"fact_count": 0, "fields": [], "by_field": {}}
-    rules = load_rule_set()
-
     artifact_path = Path(artifact_dir)
     artifact_path.mkdir(parents=True, exist_ok=True)
+    started = time.perf_counter()
+    _write_json(artifact_path / "parsed_blocks.json", [asdict(b) for b in blocks])
+    _write_json(artifact_path / "review_chunks.json", [asdict(c) for c in chunks])
+    _write_json(artifact_path / "extracted_fields.json", fields)
+    _write_json(artifact_path / "langextract_facts.json", langextract_facts)
+    _write_json(artifact_path / "langextract_fact_index.json", fact_index)
+    _write_json(artifact_path / "cross_chapter_findings.json", cross_chapter_findings)
+    timings["pipeline_prerag_artifact_write_duration_ms"] = int((time.perf_counter() - started) * 1000)
+
+    rules = load_rule_set()
+
     from app.services.rag_service import run_rag_review
 
     started = time.perf_counter()

@@ -1,5 +1,6 @@
 import json
 import logging
+from collections import Counter
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -157,6 +158,46 @@ def get_review_document_content(session_id: str, db: Session = Depends(get_db)) 
         "page_count": max(pages) if pages else 0,
         "outline": _build_document_outline(normalized_blocks),
         "pages": ordered_pages,
+    }
+
+
+@router.get("/{session_id}/langextract-facts")
+def get_langextract_facts(session_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    session = db.query(ReviewSession).filter(ReviewSession.id == session_id).first()
+    if not session:
+        raise APIError.not_found("ReviewSession")
+
+    contract = db.query(Contract).filter(Contract.id == session.contract_id).first()
+    if not contract:
+        raise APIError.not_found("Contract")
+
+    job = _latest_successful_parse_job(session_id, db)
+    artifact_dir = _latest_water_review_artifact_dir(contract, job)
+    if not artifact_dir:
+        return _empty_langextract_facts(session_id, contract.id, "LangExtract 证据事实尚未生成")
+
+    facts_path = artifact_dir / "langextract_facts.json"
+    if not facts_path.exists():
+        return _empty_langextract_facts(session_id, contract.id, "LangExtract 证据事实尚未生成")
+
+    facts = _load_json_list(facts_path, "LangExtract 证据事实读取失败")
+    fact_index = _load_json_object(artifact_dir / "langextract_fact_index.json")
+    findings = _load_json_list(artifact_dir / "cross_chapter_findings.json", "跨章节核验线索读取失败")
+    field_counts = Counter(str(fact.get("field_name") or "") for fact in facts if isinstance(fact, dict))
+    field_counts.pop("", None)
+
+    return {
+        "session_id": session_id,
+        "contract_id": contract.id,
+        "available": True,
+        "source": "water_review_artifacts",
+        "message": "LangExtract 证据事实已生成",
+        "fact_count": len(facts),
+        "finding_count": len(findings),
+        "field_counts": dict(sorted(field_counts.items())),
+        "fact_index": fact_index,
+        "facts": facts,
+        "cross_chapter_findings": findings,
     }
 
 
@@ -367,6 +408,62 @@ def _parse_artifact_candidates(job: DocumentParseJob | None) -> list[tuple[Path,
         if path.exists():
             candidates.append((path, source))
     return candidates
+
+
+def _latest_water_review_artifact_dir(contract: Contract, job: DocumentParseJob | None) -> Path | None:
+    candidates: list[Path] = []
+    for path, _ in _parse_artifact_candidates(job):
+        candidates.append(path.parent / "water_review")
+    if contract.file_path:
+        candidates.append(Path(contract.file_path).parent / "water_review")
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if resolved.exists() and resolved.is_dir():
+            return resolved
+    return None
+
+
+def _empty_langextract_facts(session_id: str, contract_id: str, message: str) -> dict[str, Any]:
+    return {
+        "session_id": session_id,
+        "contract_id": contract_id,
+        "available": False,
+        "source": "water_review_artifacts",
+        "message": message,
+        "fact_count": 0,
+        "finding_count": 0,
+        "field_counts": {},
+        "fact_index": {},
+        "facts": [],
+        "cross_chapter_findings": [],
+    }
+
+
+def _load_json_list(path: Path, error_message: str) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        raise APIError.internal(error_message)
+    if not isinstance(data, list):
+        raise APIError.internal(error_message)
+    return [item for item in data if isinstance(item, dict)]
+
+
+def _load_json_object(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _latest_system_failure_reason(session_id: str, db: Session) -> str:

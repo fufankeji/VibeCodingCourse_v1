@@ -207,6 +207,144 @@ def test_session_asset_rejects_path_traversal(tmp_path):
         db.close()
 
 
+def test_langextract_facts_endpoint_reads_water_review_artifacts(tmp_path):
+    SessionLocal = _session_factory()
+    source = tmp_path / "original.pdf"
+    source.write_bytes(b"%PDF- fake")
+    parsed_json = tmp_path / "mineru" / "parsed.json"
+    artifact_dir = parsed_json.parent / "water_review"
+    artifact_dir.mkdir(parents=True)
+    parsed_json.write_text(json.dumps({"pdf_info": []}), encoding="utf-8")
+    facts = [
+        {
+            "fact_id": "fact-project-001",
+            "field_name": "project_name",
+            "value": "测试项目",
+            "normalized_value": "测试项目",
+            "unit": "",
+            "section": "综合说明",
+            "chunk_id": "chunk-0001",
+            "page_range": [2, 2],
+            "source_text": "项目名称：测试项目",
+            "confidence": 90,
+            "bbox_list": [{"block_id": "p2-b1", "page": 2, "bbox": [1, 2, 3, 4]}],
+        },
+        {
+            "fact_id": "fact-area-001",
+            "field_name": "disturbed_area",
+            "value": "1.2hm²",
+            "normalized_value": "1.2",
+            "unit": "hm²",
+            "section": "项目概况",
+            "chunk_id": "chunk-0002",
+            "page_range": [8, 8],
+            "source_text": "扰动面积1.2hm²",
+            "confidence": 82,
+            "bbox_list": [],
+        },
+    ]
+    findings = [
+        {
+            "finding_id": "finding-area-001",
+            "finding_type": "area_cross_chapter_conflict",
+            "field_name": "disturbed_area",
+            "description": "扰动面积跨章节口径不一致",
+            "risk_level": "MEDIUM",
+        }
+    ]
+    (artifact_dir / "langextract_facts.json").write_text(json.dumps(facts, ensure_ascii=False), encoding="utf-8")
+    (artifact_dir / "langextract_fact_index.json").write_text(
+        json.dumps({"fact_count": 2, "fields": ["project_name", "disturbed_area"]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (artifact_dir / "cross_chapter_findings.json").write_text(json.dumps(findings, ensure_ascii=False), encoding="utf-8")
+
+    db = SessionLocal()
+    try:
+        contract = Contract(
+            title="测试方案",
+            original_filename=source.name,
+            file_type="pdf",
+            file_path=str(source),
+            uploaded_by="tester",
+        )
+        db.add(contract)
+        db.flush()
+        session = ReviewSession(contract_id=contract.id, state="parsed", created_by="tester")
+        db.add(session)
+        db.flush()
+        db.add(
+            DocumentParseJob(
+                session_id=session.id,
+                contract_id=contract.id,
+                source_file_path=str(source),
+                source_file_type="pdf",
+                provider="mineru",
+                status="succeeded",
+                stage="completed",
+                result_json_path=str(parsed_json),
+            )
+        )
+        db.commit()
+
+        result = sessions_api.get_langextract_facts(session.id, db)
+
+        assert result["available"] is True
+        assert result["fact_count"] == 2
+        assert result["finding_count"] == 1
+        assert result["field_counts"] == {"disturbed_area": 1, "project_name": 1}
+        assert result["facts"][0]["fact_id"] == "fact-project-001"
+        assert result["cross_chapter_findings"][0]["finding_id"] == "finding-area-001"
+    finally:
+        db.close()
+
+
+def test_langextract_facts_endpoint_returns_unavailable_before_pipeline(tmp_path):
+    SessionLocal = _session_factory()
+    source = tmp_path / "original.pdf"
+    source.write_bytes(b"%PDF- fake")
+    parsed_json = tmp_path / "mineru" / "parsed.json"
+    parsed_json.parent.mkdir(parents=True)
+    parsed_json.write_text(json.dumps({"pdf_info": []}), encoding="utf-8")
+
+    db = SessionLocal()
+    try:
+        contract = Contract(
+            title="测试方案",
+            original_filename=source.name,
+            file_type="pdf",
+            file_path=str(source),
+            uploaded_by="tester",
+        )
+        db.add(contract)
+        db.flush()
+        session = ReviewSession(contract_id=contract.id, state="parsed", created_by="tester")
+        db.add(session)
+        db.flush()
+        db.add(
+            DocumentParseJob(
+                session_id=session.id,
+                contract_id=contract.id,
+                source_file_path=str(source),
+                source_file_type="pdf",
+                provider="mineru",
+                status="succeeded",
+                stage="completed",
+                result_json_path=str(parsed_json),
+            )
+        )
+        db.commit()
+
+        result = sessions_api.get_langextract_facts(session.id, db)
+
+        assert result["available"] is False
+        assert result["fact_count"] == 0
+        assert result["facts"] == []
+        assert result["message"] == "LangExtract 证据事实尚未生成"
+    finally:
+        db.close()
+
+
 @pytest.mark.asyncio
 async def test_start_review_runs_pipeline_from_mineru_artifact_after_parse(tmp_path, monkeypatch):
     SessionLocal = _session_factory()
