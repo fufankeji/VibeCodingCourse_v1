@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import logging
 import math
 import re
 import time
@@ -22,6 +23,9 @@ import httpx
 from app.config import get_llm, settings
 from app.services.review_retrieval_defaults import EVIDENCE_SLOT_RETRIEVAL_DEFAULTS
 from app.services.review_rule_schema import execute_rule_precheck
+
+
+logger = logging.getLogger(__name__)
 
 
 class RAGReviewError(RuntimeError):
@@ -852,6 +856,7 @@ def adjudicate_top_rules(
 ) -> list[dict[str, Any]]:
     ranked = sorted(retrievals, key=lambda item: item.get("candidate_score", 0), reverse=True)
     issues: list[dict[str, Any]] = []
+    llm_disabled_reason = ""
     for retrieval in ranked:
         if len(issues) >= max_issues:
             break
@@ -863,8 +868,43 @@ def adjudicate_top_rules(
             continue
         if not evidence:
             continue
-        issues.append(_adjudicate_rule(session_id, rule, evidence, retrieval))
+        if llm_disabled_reason:
+            issues.append(_llm_adjudication_failed_issue(session_id, rule, evidence, retrieval, llm_disabled_reason, short_circuited=True))
+            continue
+        try:
+            issues.append(_adjudicate_rule(session_id, rule, evidence, retrieval))
+        except RAGReviewError as exc:
+            error_message = str(exc)
+            logger.warning(
+                "rag_adjudication_degraded session_id=%s rule_id=%s rule_name=%s error=%s",
+                session_id,
+                rule.get("rule_id", ""),
+                rule.get("rule_name", ""),
+                error_message,
+                exc_info=True,
+            )
+            if _should_disable_llm_after_error(error_message):
+                llm_disabled_reason = error_message
+            issues.append(_llm_adjudication_failed_issue(session_id, rule, evidence, retrieval, error_message, short_circuited=False))
     return issues
+
+
+def _should_disable_llm_after_error(error_message: str) -> bool:
+    normalized = error_message.lower()
+    return any(
+        marker in normalized
+        for marker in [
+            "timed out",
+            "timeout",
+            "rate limit",
+            "429",
+            "connection",
+            "connect",
+            "network",
+            "api",
+            "temporarily unavailable",
+        ]
+    )
 
 
 def _adjudicate_rule(
@@ -963,6 +1003,112 @@ def _adjudicate_rule(
         "ai_finding": payload.get("issue_desc") or f"{rule.get('rule_name', '规则审查')}：召回证据显示该规则需要人工复核。",
         "ai_reasoning": json.dumps(reasoning, ensure_ascii=False),
         "suggested_revision": payload.get("fix_suggestion") or _generic_suggestion(rule),
+        "human_decision": "pending",
+    }
+
+
+def _llm_adjudication_failed_issue(
+    session_id: str,
+    rule: dict[str, Any],
+    evidence: list[dict[str, Any]],
+    retrieval: dict[str, Any],
+    error_message: str,
+    short_circuited: bool,
+) -> dict[str, Any]:
+    first = evidence[0] if evidence else {}
+    meta = first.get("metadata", {}) if isinstance(first.get("metadata"), dict) else {}
+    structured_facts = retrieval.get("structured_facts", []) or []
+    cross_chapter_findings = retrieval.get("cross_chapter_findings", []) or []
+    try:
+        execution_result = execute_rule_precheck(rule, evidence, structured_facts, cross_chapter_findings)
+    except Exception as exc:
+        execution_result = {
+            "execution_status": "needs_review",
+            "llm_required": False,
+            "checks": [
+                {
+                    "type": "rule_precheck",
+                    "status": "needs_review",
+                    "reason": f"规则预检查失败：{exc}",
+                }
+            ],
+        }
+    bbox_list = []
+    evidence_nodes = []
+    for match in evidence:
+        bbox_list.extend(_match_evidence_bboxes(match))
+        evidence_nodes.extend(_match_evidence_block_ids(match))
+    for fact in structured_facts:
+        bbox_list.extend(fact.get("bbox_list") or [])
+        evidence_nodes.extend(fact.get("block_ids") or [])
+    for finding in cross_chapter_findings:
+        bbox_list.extend(finding.get("bbox_list") or [])
+
+    rule_name = str(rule.get("rule_name") or "规则审查")
+    risk_level = _severity_from_policy(str(rule.get("severity_policy") or "")) or "MEDIUM"
+    evidence_text = "\n\n".join(_match_evidence_text(match)[:800] for match in evidence[:3])
+    issue_desc = f"{rule_name}：规则审查模型判定失败，已保留召回证据，需人工复核。"
+    reasoning = {
+        "issue_type": rule.get("category", "规则库审查"),
+        "rule_id": rule.get("rule_id", ""),
+        "rule_name": rule_name,
+        "rule_source": rule.get("rule_source", ""),
+        "rule_description": _rule_description(rule),
+        "review_topic": rule.get("review_topic", {}),
+        "review_item": rule.get("review_item", {}),
+        "review_logic": rule.get("review_logic", []),
+        "evidence_scope": rule.get("evidence_scope", {}),
+        "rule_execution": {
+            "plan": rule.get("rule_execution", {}),
+            "result": execution_result,
+        },
+        "severity_policy": rule.get("severity_policy", ""),
+        "evidence_requirement": rule.get("evidence_requirement", ""),
+        "actual_value": "LLM 判定阶段超时或不可用，未形成最终自动结论。",
+        "expected_value": rule.get("evidence_requirement", "应由模型结合召回证据完成规则判定。"),
+        "evidence_nodes": evidence_nodes,
+        "source_bbox_list": bbox_list,
+        "fact_ids": retrieval.get("fact_ids", []),
+        "structured_facts": structured_facts,
+        "cross_chapter_findings": cross_chapter_findings,
+        "evidence_slot_retrievals": retrieval.get("slot_retrievals", []),
+        "missing_required_slot_ids": retrieval.get("missing_required_slot_ids", []),
+        "llm_error": {
+            "error": error_message,
+            "short_circuited": short_circuited,
+        },
+        "retrieval_scores": [
+            {
+                "chunk_id": match.get("chunk_id"),
+                "score": match.get("score"),
+                "vector_score": match.get("vector_score"),
+                "bm25_score": match.get("bm25_score"),
+                "rerank_score": match.get("rerank_score"),
+                "rerank_rank": match.get("rerank_rank"),
+                "evidence_slot_ids": match.get("evidence_slot_ids", []),
+                "slot_queries": match.get("slot_queries", []),
+            }
+            for match in evidence
+        ],
+        "review_status": "needs_review",
+        "conclusion_type": "needs_review",
+    }
+    return {
+        "id": str(uuid.uuid4()),
+        "session_id": session_id,
+        "clause_text": evidence_text or issue_desc,
+        "page_number": int(meta.get("page_start") or 1),
+        "paragraph_index": int(meta.get("chunk_index") or 0),
+        "highlight_anchor": first.get("chunk_id", "") if isinstance(first, dict) else "",
+        "char_offset_start": 0,
+        "char_offset_end": len(evidence_text or issue_desc),
+        "risk_level": risk_level,
+        "confidence_score": 40,
+        "source_type": "hybrid",
+        "risk_category": rule.get("category", "规则库审查"),
+        "ai_finding": issue_desc,
+        "ai_reasoning": json.dumps(reasoning, ensure_ascii=False),
+        "suggested_revision": "模型判定未完成；请基于已召回证据进行人工复核，或稍后重试自动审查。",
         "human_decision": "pending",
     }
 

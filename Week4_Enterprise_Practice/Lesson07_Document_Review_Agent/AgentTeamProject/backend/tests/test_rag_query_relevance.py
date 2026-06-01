@@ -256,3 +256,44 @@ def test_adjudicate_top_rules_reports_missing_required_slot_even_without_matches
     reasoning = json.loads(issues[0]["ai_reasoning"])
     assert reasoning["missing_required_slot_ids"] == ["approval_or_design_content"]
     assert reasoning["review_status"] == "needs_evidence"
+
+
+def test_adjudicate_top_rules_degrades_llm_timeout_and_short_circuits(monkeypatch: pytest.MonkeyPatch):
+    calls = 0
+
+    def fail_llm(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        raise rag_service.RAGReviewError("DeepSeek rule adjudication failed: Request timed out.")
+
+    monkeypatch.setattr(rag_service, "_call_deepseek_adjudicator", fail_llm)
+    match = {
+        "chunk_id": "chunk-0001",
+        "document": "本项目水土保持措施体系完整，但仍需人工复核。",
+        "metadata": {
+            "chunk_index": 0,
+            "page_start": 12,
+            "bbox_json": json.dumps([{"block_id": "p12-b1", "page": 12, "bbox": [1, 2, 3, 4]}], ensure_ascii=False),
+            "block_ids_json": json.dumps(["p12-b1"], ensure_ascii=False),
+        },
+        "score": 0.8,
+    }
+    rules = [
+        {"rule_id": "R-timeout-1", "rule_name": "规则判定超时 1", "severity_policy": "一般"},
+        {"rule_id": "R-timeout-2", "rule_name": "规则判定超时 2", "severity_policy": "一般"},
+    ]
+    retrievals = [
+        {"rule_index": 0, "matches": [match], "missing_required_slot_ids": [], "candidate_score": 2},
+        {"rule_index": 1, "matches": [match], "missing_required_slot_ids": [], "candidate_score": 1},
+    ]
+
+    issues = rag_service.adjudicate_top_rules("session", [], rules, retrievals, max_issues=2)
+
+    assert calls == 1
+    assert len(issues) == 2
+    assert all("规则审查模型判定失败" in issue["ai_finding"] for issue in issues)
+    reasonings = [json.loads(issue["ai_reasoning"]) for issue in issues]
+    assert all(reasoning["review_status"] == "needs_review" for reasoning in reasonings)
+    assert all(reasoning["conclusion_type"] == "needs_review" for reasoning in reasonings)
+    assert reasonings[0]["llm_error"]["short_circuited"] is False
+    assert reasonings[1]["llm_error"]["short_circuited"] is True

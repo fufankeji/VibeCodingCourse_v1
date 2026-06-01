@@ -101,6 +101,7 @@ export function ParsingProgressPage() {
   const [isStartingReview, setIsStartingReview] = useState(false);
   const [startReviewError, setStartReviewError] = useState('');
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [reviewElapsedSeconds, setReviewElapsedSeconds] = useState(0);
   const [sseConnected, setSseConnected] = useState(false);
   const [documentContent, setDocumentContent] = useState<ReviewDocumentContentResponse | null>(null);
   const [documentContentError, setDocumentContentError] = useState('');
@@ -229,6 +230,12 @@ export function ParsingProgressPage() {
     return () => clearInterval(tick);
   }, [parseStatus]);
 
+  useEffect(() => {
+    if (!isStartingReview) return;
+    const tick = setInterval(() => setReviewElapsedSeconds((s) => s + 1), 1000);
+    return () => clearInterval(tick);
+  }, [isStartingReview]);
+
   const handleRetry = async () => {
     if (!canRetryParse || retryCount >= maxRetries || !sessionId) return;
     setIsRetrying(true);
@@ -259,6 +266,7 @@ export function ParsingProgressPage() {
   const handleStartReview = async () => {
     if (!sessionId || parseStatus !== 'parsed') return;
     setIsStartingReview(true);
+    setReviewElapsedSeconds(0);
     setStartReviewError('');
     try {
       const result = await startReview(sessionId);
@@ -465,7 +473,7 @@ export function ParsingProgressPage() {
                       className="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-blue-600 px-4 text-sm font-medium text-white transition-colors hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:bg-slate-300"
                     >
                       {isStartingReview ? <Loader2 className="h-4 w-4 animate-spin" /> : <Workflow className="h-4 w-4" />}
-                      {isStartingReview ? '正在启动下一步' : '开始数据清洗与向量审查'}
+                      {isStartingReview ? '正在执行清洗与审查' : '开始数据清洗与向量审查'}
                     </button>
                     <button
                       type="button"
@@ -475,6 +483,11 @@ export function ParsingProgressPage() {
                       刷新解析结果
                     </button>
                   </div>
+                  {isStartingReview && (
+                    <div className="mt-3 rounded-md border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-800">
+                      已用时 {formatElapsed(reviewElapsedSeconds)}。正在执行字段抽取、LangExtract 证据抽取、向量索引和规则审查；大文档首次运行会更久，模型超时会保留解析结果并返回需人工复核原因。
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div role="alert" aria-live="assertive">
