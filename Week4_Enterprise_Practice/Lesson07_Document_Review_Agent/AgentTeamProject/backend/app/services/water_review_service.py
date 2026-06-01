@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
-from app.services.core_extraction_service import build_core_extraction_chunks
+from app.services.core_extraction_service import CORE_FIELD_NAMES, build_core_extraction_chunks
 from app.services.mineru_table_fact_service import extract_table_facts
 from app.services.review_rule_schema import build_review_rule_topics, normalize_review_rules
 from app.services.water_review_chunking import build_chunks
@@ -54,6 +54,7 @@ from app.services.water_review_utils import _write_json
 DEFAULT_MINERU_JSON = _DEFAULT_MINERU_JSON
 DEFAULT_MINERU_MD = _DEFAULT_MINERU_MD
 logger = logging.getLogger(__name__)
+PRERAG_CACHE_POLICY_VERSION = "core-section-extraction-v1"
 
 PIPELINE_STAGE_DEFS: tuple[dict[str, str], ...] = (
     {"id": "parsed_blocks", "title": "读取 MinerU 结构化解析结果", "artifact": "parsed_blocks.json"},
@@ -251,6 +252,7 @@ def run_pipeline(file_path: str, artifact_dir: str, session_id: str) -> dict[str
         _write_json(artifact_path / "langextract_facts.json", langextract_facts)
         _write_json(artifact_path / "langextract_fact_index.json", fact_index)
         _write_json(artifact_path / "cross_chapter_findings.json", cross_chapter_findings)
+        _write_json(artifact_path / "prerag_cache_manifest.json", _prerag_cache_manifest())
         timings["pipeline_prerag_artifact_write_duration_ms"] = int((time.perf_counter() - started) * 1000)
         _set_stage(stage_statuses, "extracted_fields", "completed", item_count=len(fields))
         if run_sync_langextract and langextract_failed:
@@ -524,6 +526,7 @@ def _clear_pipeline_cache(artifact_path: Path) -> None:
         {
             "langextract_fact_index.json",
             "cross_chapter_findings.json",
+            "prerag_cache_manifest.json",
             "pipeline_status.json",
         }
     )
@@ -570,6 +573,9 @@ def _load_cached_dataclass_list(path: Path, model: type[Any]) -> list[Any] | Non
 def _load_cached_prerag_artifacts(
     artifact_path: Path,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any], list[dict[str, Any]]] | None:
+    manifest = _read_json_object(artifact_path / "prerag_cache_manifest.json")
+    if manifest != _prerag_cache_manifest():
+        return None
     fields = _read_json_list(artifact_path / "extracted_fields.json")
     facts = _read_json_list(artifact_path / "langextract_facts.json")
     fact_index = _read_json_object(artifact_path / "langextract_fact_index.json")
@@ -577,6 +583,15 @@ def _load_cached_prerag_artifacts(
     if fields is None or facts is None or fact_index is None or findings is None:
         return None
     return fields, facts, fact_index, findings
+
+
+def _prerag_cache_manifest() -> dict[str, Any]:
+    return {
+        "policy_version": PRERAG_CACHE_POLICY_VERSION,
+        "core_field_names": sorted(CORE_FIELD_NAMES),
+        "langextract_enabled": settings.langextract_enabled,
+        "langextract_main_pipeline_enabled": settings.langextract_main_pipeline_enabled,
+    }
 
 
 def _read_json_list(path: Path) -> list[dict[str, Any]] | None:

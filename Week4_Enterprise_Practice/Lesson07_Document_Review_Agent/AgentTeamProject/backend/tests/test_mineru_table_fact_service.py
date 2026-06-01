@@ -400,6 +400,10 @@ def test_run_pipeline_reuses_cached_prerag_artifacts(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     (artifact_dir / "cross_chapter_findings.json").write_text("[]", encoding="utf-8")
+    (artifact_dir / "prerag_cache_manifest.json").write_text(
+        json.dumps(water_review_service._prerag_cache_manifest(), ensure_ascii=False),
+        encoding="utf-8",
+    )
 
     monkeypatch.setattr(settings, "langextract_enabled", True)
     monkeypatch.setattr(water_review_service, "parse_document", lambda *_args, **_kwargs: pytest.fail("parse should use cache"))
