@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import io
 import json
 import time
@@ -18,6 +19,7 @@ MAX_ZIP_BYTES = 250 * 1024 * 1024
 MAX_ZIP_MEMBERS = 5000
 MAX_ZIP_MEMBER_BYTES = 100 * 1024 * 1024
 MAX_MINERU_PAGES_PER_TASK = 200
+ASSET_PATH_KEYS = {"image_path", "img_path", "table_image_path"}
 
 
 class MinerUAPIError(RuntimeError):
@@ -177,6 +179,128 @@ def extract_zip_artifacts(zip_bytes: bytes, output_dir: Path) -> MinerUParseArti
         markdown_path.write_text(markdown_text, encoding="utf-8")
 
     return MinerUParseArtifacts(json_path=json_path, markdown_path=markdown_path, zip_path=zip_path)
+
+
+def _merge_segment_artifacts(
+    *,
+    source_file_path: str,
+    source_page_count: int,
+    output_dir: Path,
+    segments: list[MinerUSegment],
+    segment_results: list[dict[str, Any]],
+) -> MinerUParseArtifacts:
+    merged: dict[str, Any] = {"pdf_info": []}
+    merged_pages: list[dict[str, Any]] = []
+    markdown_parts: list[str] = []
+    manifest_segments: list[dict[str, Any]] = []
+
+    for result in segment_results:
+        segment = result["segment"]
+        json_path = result.get("json_path")
+        if not json_path:
+            raise MinerUAPIError(f"MinerU segment {segment.part_name} did not produce JSON", "MINERU_SEGMENT_JSON_MISSING")
+        try:
+            raw = json.loads(Path(json_path).read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise MinerUAPIError(f"MinerU segment {segment.part_name} JSON is invalid", "MINERU_MERGE_INVALID_JSON") from exc
+        pages = raw.get("pdf_info") if isinstance(raw, dict) else None
+        if not isinstance(pages, list) or not pages:
+            raise MinerUAPIError(f"MinerU segment {segment.part_name} JSON missing pdf_info", "MINERU_SEGMENT_JSON_MISSING")
+        if not merged_pages:
+            merged = copy.deepcopy(raw)
+            merged["pdf_info"] = []
+        for local_order, page in enumerate(pages):
+            if not isinstance(page, dict):
+                raise MinerUAPIError(f"MinerU segment {segment.part_name} contains invalid page", "MINERU_MERGE_INVALID_JSON")
+            page_copy = copy.deepcopy(page)
+            page_copy["page_idx"] = segment.page_offset + local_order
+            _rewrite_asset_paths(page_copy, f"segments/{segment.part_name}")
+            merged_pages.append(page_copy)
+
+        markdown_path = result.get("markdown_path")
+        if markdown_path and Path(markdown_path).exists():
+            markdown_parts.append(
+                f"<!-- MinerU segment {segment.segment_index}/{segment.segment_count} pages "
+                f"{segment.page_start}-{segment.page_end_requested} -->\n"
+                + Path(markdown_path).read_text(encoding="utf-8")
+            )
+        manifest_segments.append(
+            {
+                "segment_index": segment.segment_index,
+                "segment_count": segment.segment_count,
+                "page_start": segment.page_start,
+                "page_end_requested": segment.page_end_requested,
+                "page_offset": segment.page_offset,
+                "page_ranges": segment.page_ranges,
+                "batch_id": result.get("batch_id") or "",
+                "task_id": result.get("task_id") or "",
+                "status": "succeeded",
+                "page_count_returned": len(pages),
+                "duration_ms": int(result.get("duration_ms") or 0),
+                "zip_path": _relative_to_output(result.get("zip_path"), output_dir),
+                "json_path": _relative_to_output(result.get("json_path"), output_dir),
+                "markdown_path": _relative_to_output(result.get("markdown_path"), output_dir),
+            }
+        )
+
+    merged_pages.sort(key=lambda page: int(page.get("page_idx", -1)))
+    _validate_merged_pages(merged_pages, source_page_count)
+    merged["pdf_info"] = merged_pages
+
+    json_path = output_dir / "parsed.json"
+    json_path.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+    markdown_path = output_dir / "full.md"
+    markdown_path.write_text("\n\n".join(markdown_parts), encoding="utf-8")
+    manifest_path = output_dir / "segment_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "source_file_path": source_file_path,
+                "source_page_count": source_page_count,
+                "segment_size": MAX_MINERU_PAGES_PER_TASK,
+                "segments": manifest_segments,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return MinerUParseArtifacts(json_path=json_path, markdown_path=markdown_path)
+
+
+def _rewrite_asset_paths(value: Any, prefix: str) -> None:
+    if isinstance(value, dict):
+        for key, item in list(value.items()):
+            if key in ASSET_PATH_KEYS and isinstance(item, str) and item and not item.startswith(("http://", "https://", "/")):
+                original_key = f"original_{key}"
+                value.setdefault(original_key, item)
+                value[key] = f"{prefix}/{item}"
+            else:
+                _rewrite_asset_paths(item, prefix)
+    elif isinstance(value, list):
+        for item in value:
+            _rewrite_asset_paths(item, prefix)
+
+
+def _validate_merged_pages(pages: list[dict[str, Any]], source_page_count: int) -> None:
+    page_indexes = [page.get("page_idx") for page in pages]
+    expected = list(range(source_page_count))
+    if page_indexes != expected:
+        raise MinerUAPIError(
+            f"Merged MinerU pages are not continuous: expected 0..{source_page_count - 1}, "
+            f"got {page_indexes[:5]}...{page_indexes[-5:]}",
+            "MINERU_MERGE_PAGE_MISMATCH",
+        )
+
+
+def _relative_to_output(path_value: Any, output_dir: Path) -> str | None:
+    if not path_value:
+        return None
+    path = Path(path_value)
+    try:
+        return str(path.relative_to(output_dir))
+    except ValueError:
+        return str(path)
 
 
 def _auth_token() -> str:

@@ -215,3 +215,102 @@ def test_submit_local_file_includes_page_ranges_when_present(tmp_path):
     assert batch_id == "batch-201-400"
     assert uploaded["called"] is True
     assert captured_payload["files"][0]["page_ranges"] == "201-400"
+
+
+def test_merge_segment_json_rewrites_page_indexes_and_asset_paths(tmp_path):
+    from app.services.mineru_service import MinerUSegment, _merge_segment_artifacts
+
+    segments = [
+        MinerUSegment(1, 2, 1, 200, 0, "1-200"),
+        MinerUSegment(2, 2, 201, 400, 200, "201-400"),
+    ]
+    part1 = tmp_path / "segments" / "part-001"
+    part2 = tmp_path / "segments" / "part-002"
+    part1.mkdir(parents=True)
+    part2.mkdir(parents=True)
+    part1_pages = [{"page_idx": idx, "para_blocks": []} for idx in range(200)]
+    part1_pages[0]["para_blocks"] = [{"type": "image", "image_path": "images/a.jpg"}]
+    part2_pages = [
+        {"page_idx": 0, "para_blocks": [{"type": "image", "image_path": "images/a.jpg"}]},
+        {"page_idx": 1, "para_blocks": [{"type": "text", "lines": [{"spans": [{"content": "尾页"}]}]}]},
+    ]
+    (part1 / "parsed.json").write_text(json.dumps({"pdf_info": part1_pages}), encoding="utf-8")
+    (part2 / "parsed.json").write_text(json.dumps({"pdf_info": part2_pages}), encoding="utf-8")
+    (part1 / "full.md").write_text("第一页\n", encoding="utf-8")
+    (part2 / "full.md").write_text("尾页\n", encoding="utf-8")
+
+    artifacts = _merge_segment_artifacts(
+        source_file_path="/tmp/source.pdf",
+        source_page_count=202,
+        output_dir=tmp_path,
+        segments=segments,
+        segment_results=[
+            {
+                "segment": segments[0],
+                "json_path": part1 / "parsed.json",
+                "markdown_path": part1 / "full.md",
+                "zip_path": part1 / "mineru_result.zip",
+                "batch_id": "b1",
+                "task_id": "t1",
+                "duration_ms": 10,
+            },
+            {
+                "segment": segments[1],
+                "json_path": part2 / "parsed.json",
+                "markdown_path": part2 / "full.md",
+                "zip_path": part2 / "mineru_result.zip",
+                "batch_id": "b2",
+                "task_id": "t2",
+                "duration_ms": 20,
+            },
+        ],
+    )
+
+    assert artifacts.json_path is not None
+    assert artifacts.markdown_path is not None
+    merged = json.loads(artifacts.json_path.read_text(encoding="utf-8"))
+    assert [page["page_idx"] for page in merged["pdf_info"]] == list(range(202))
+    first_block = merged["pdf_info"][0]["para_blocks"][0]
+    segment_two_block = merged["pdf_info"][200]["para_blocks"][0]
+    assert first_block["image_path"] == "segments/part-001/images/a.jpg"
+    assert first_block["original_image_path"] == "images/a.jpg"
+    assert segment_two_block["image_path"] == "segments/part-002/images/a.jpg"
+    assert segment_two_block["original_image_path"] == "images/a.jpg"
+    markdown = artifacts.markdown_path.read_text(encoding="utf-8")
+    assert "MinerU segment 1/2 pages 1-200" in markdown
+    assert "MinerU segment 2/2 pages 201-400" in markdown
+    manifest = json.loads((tmp_path / "segment_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["source_page_count"] == 202
+    assert [item["batch_id"] for item in manifest["segments"]] == ["b1", "b2"]
+
+
+def test_merge_segment_json_rejects_page_count_mismatch(tmp_path):
+    from app.services.mineru_service import MinerUAPIError, MinerUSegment, _merge_segment_artifacts
+
+    segment = MinerUSegment(1, 1, 1, 200, 0, "1-200")
+    part = tmp_path / "segments" / "part-001"
+    part.mkdir(parents=True)
+    (part / "parsed.json").write_text(json.dumps({"pdf_info": [{"page_idx": 0, "para_blocks": []}]}), encoding="utf-8")
+
+    try:
+        _merge_segment_artifacts(
+            source_file_path="/tmp/source.pdf",
+            source_page_count=2,
+            output_dir=tmp_path,
+            segments=[segment],
+            segment_results=[
+                {
+                    "segment": segment,
+                    "json_path": part / "parsed.json",
+                    "markdown_path": None,
+                    "zip_path": None,
+                    "batch_id": "b1",
+                    "task_id": "t1",
+                    "duration_ms": 10,
+                }
+            ],
+        )
+    except MinerUAPIError as exc:
+        assert exc.error_code == "MINERU_MERGE_PAGE_MISMATCH"
+    else:
+        raise AssertionError("page count mismatch should fail")
