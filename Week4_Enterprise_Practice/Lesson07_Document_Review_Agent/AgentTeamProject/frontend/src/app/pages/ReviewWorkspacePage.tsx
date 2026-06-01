@@ -68,6 +68,19 @@ export function ReviewWorkspacePage() {
     };
   }, [sessionId]);
 
+  useEffect(() => {
+    if (!sessionId) return;
+    let canceled = false;
+    getSession(sessionId)
+      .then((res) => {
+        if (!canceled) setSession(res);
+      })
+      .catch(() => {});
+    return () => {
+      canceled = true;
+    };
+  }, [sessionId, location.pathname]);
+
   const activePage = useMemo(() => findPage(content, activePageNumber), [content, activePageNumber]);
   const sessionState = (session?.state || 'parsed') as SessionState;
   const readOnly = isReadOnlySession(session);
@@ -77,6 +90,7 @@ export function ReviewWorkspacePage() {
     setIsStartingReview(true);
     try {
       await startReview(sessionId);
+      setSession((current) => (current ? { ...current, state: 'scanning' } : current));
       navigate(`/contracts/${sessionId}/scanning`);
     } finally {
       setIsStartingReview(false);
