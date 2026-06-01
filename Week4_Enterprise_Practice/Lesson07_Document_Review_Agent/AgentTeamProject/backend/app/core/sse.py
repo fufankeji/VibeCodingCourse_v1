@@ -34,6 +34,13 @@ class SSEManager:
         for queue in list(self._queues.get(session_id, [])):
             await queue.put(event)
 
+    def publish_nowait(self, session_id: str, event_type: str, data: dict) -> None:
+        if session_id not in self._queues:
+            return
+        event = {"event": event_type, "data": json.dumps(data, ensure_ascii=False)}
+        for queue in list(self._queues.get(session_id, [])):
+            queue.put_nowait(event)
+
     async def close_session(self, session_id: str) -> None:
         """Send sentinel to all subscribers to terminate their generators."""
         if session_id not in self._queues:

@@ -1,5 +1,15 @@
 export type UserRole = 'reviewer' | 'submitter' | 'admin';
-export type SessionState = 'parsing' | 'scanning' | 'hitl_pending' | 'completed' | 'report_ready' | 'aborted';
+export type SessionState =
+  | 'parsing'
+  | 'parsed'
+  | 'scanning'
+  | 'hitl_field_verify'
+  | 'hitl_pending'
+  | 'hitl_high_risk'
+  | 'hitl_medium_confirm'
+  | 'completed'
+  | 'report_ready'
+  | 'aborted';
 export type HitlSubtype = 'interrupt' | 'batch_review' | null;
 export type RiskLevel = 'HIGH' | 'MEDIUM' | 'LOW';
 export type SourceType = 'rule_engine' | 'ai_inference' | 'hybrid';
@@ -27,6 +37,18 @@ export interface ReviewSession {
     total_medium_risk: number;
     total_low_risk: number;
   };
+  latest_parse_job_status?: string | null;
+  latest_parse_job_stage?: string | null;
+  latest_parse_job_error_code?: string | null;
+  latest_parse_job_error_message?: string | null;
+  retry_count?: number;
+  max_retries?: number;
+  can_retry_parse?: boolean;
+  retry_block_reason?: string | null;
+  can_view_result?: boolean;
+  entry_route_type?: 'parsing' | 'fields' | 'review' | 'batch' | 'report' | 'aborted' | null;
+  entry_action_label?: string;
+  read_only?: boolean;
 }
 
 export interface Contract {
@@ -76,6 +98,25 @@ export interface RiskEvidence {
   is_primary: boolean;
 }
 
+export interface ReviewResult {
+  issue_id?: string;
+  review_topic?: string;
+  review_item?: string;
+  rule_id?: string;
+  rule_name?: string;
+  risk_level?: RiskLevel | string;
+  issue_desc?: string;
+  evidence_text?: string;
+  evidence_nodes?: Array<Record<string, unknown>>;
+  source_pages?: number[];
+  source_bbox_list?: Array<Record<string, unknown>>;
+  reasoning_summary?: string;
+  fix_suggestion?: string;
+  confidence?: number;
+  review_status?: string;
+  [key: string]: unknown;
+}
+
 export interface DecisionHistory {
   id: string;
   decision_type: HumanDecision;
@@ -101,6 +142,13 @@ export interface ReviewItem {
   risk_category: string;
   ai_finding: string;
   ai_reasoning: string;
+  evidence_slot_package?: Record<string, unknown> | null;
+  formula_check_results?: Record<string, unknown> | null;
+  earthwork_audit_results?: Record<string, unknown> | null;
+  project_composition_consistency?: Record<string, unknown> | null;
+  review_result?: ReviewResult | null;
+  review_status?: string | null;
+  conclusion_type?: string | null;
   suggested_revision: string;
   human_decision: HumanDecision;
   human_note: string | null;
@@ -124,6 +172,11 @@ export interface ReportData {
   report_status: 'generating' | 'ready';
   generated_at: string;
   summary: {
+    project_name?: string;
+    construction_unit?: string;
+    project_location?: string;
+    construction_nature?: string;
+    investment_estimate?: string;
     contract_parties: string[];
     contract_amount: string;
     effective_date: string;

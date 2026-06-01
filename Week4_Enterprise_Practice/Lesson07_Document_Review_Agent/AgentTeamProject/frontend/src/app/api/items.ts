@@ -1,5 +1,5 @@
 import { apiClient } from './client';
-import type { ReviewItem } from '../types';
+import type { ReviewItem, ReviewResult, RiskEvidence } from '../types';
 
 /** Backend returns a flat ReviewItem without nested clause_location/risk_evidence */
 interface BackendReviewItem {
@@ -17,6 +17,13 @@ interface BackendReviewItem {
   risk_category: string;
   ai_finding: string;
   ai_reasoning: string;
+  evidence_slot_package?: Record<string, unknown> | null;
+  formula_check_results?: Record<string, unknown> | null;
+  earthwork_audit_results?: Record<string, unknown> | null;
+  project_composition_consistency?: Record<string, unknown> | null;
+  review_result?: ReviewResult | null;
+  review_status?: string | null;
+  conclusion_type?: string | null;
   suggested_revision: string | null;
   human_decision: string;
   human_note: string | null;
@@ -41,6 +48,8 @@ function mapDecision(raw: string): string {
 
 /** Transform flat backend item to nested frontend structure */
 function transformItem(raw: BackendReviewItem): ReviewItem {
+  const reasoning = parseReasoning(raw.ai_reasoning);
+  const reviewResult = raw.review_result ?? reasoning?.review_result ?? null;
   return {
     id: raw.id,
     session_id: raw.session_id,
@@ -50,6 +59,13 @@ function transformItem(raw: BackendReviewItem): ReviewItem {
     risk_category: raw.risk_category,
     ai_finding: raw.ai_finding,
     ai_reasoning: raw.ai_reasoning,
+    evidence_slot_package: raw.evidence_slot_package ?? null,
+    formula_check_results: raw.formula_check_results ?? null,
+    earthwork_audit_results: raw.earthwork_audit_results ?? null,
+    project_composition_consistency: raw.project_composition_consistency ?? null,
+    review_result: reviewResult,
+    review_status: raw.review_status ?? null,
+    conclusion_type: raw.conclusion_type ?? null,
     suggested_revision: raw.suggested_revision ?? '',
     human_decision: mapDecision(raw.human_decision) as any,
     human_note: raw.human_note,
@@ -63,21 +79,56 @@ function transformItem(raw: BackendReviewItem): ReviewItem {
       paragraph_index: raw.paragraph_index,
       highlight_anchor: raw.highlight_anchor,
     },
-    risk_evidence: [
-      {
-        id: `ev-${raw.id}`,
-        evidence_text: raw.clause_text,
+    risk_evidence: buildRiskEvidence(raw, reviewResult),
+  };
+}
+
+function parseReasoning(raw: string): Record<string, any> | null {
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildRiskEvidence(raw: BackendReviewItem, reviewResult: ReviewResult | null): RiskEvidence[] {
+  const highlightColor = raw.risk_level === 'HIGH' ? '#FFEBEE' : raw.risk_level === 'MEDIUM' ? '#FFF3E0' : '#E8F5E9';
+  const nodes = Array.isArray(reviewResult?.evidence_nodes) ? reviewResult.evidence_nodes : [];
+  const evidenceFromNodes = nodes
+    .map((node, index): RiskEvidence | null => {
+      const text = String(node.text || '').trim();
+      const page = Number(node.page || node.primary_page || raw.page_number);
+      if (!text) return null;
+      return {
+        id: `ev-${raw.id}-${String(node.chunk_id || index)}`,
+        evidence_text: text,
         context_before: '',
         context_after: '',
-        page_number: raw.page_number,
-        paragraph_index: raw.paragraph_index,
+        page_number: Number.isFinite(page) ? page : raw.page_number,
+        paragraph_index: index,
         char_offset_start: raw.char_offset_start,
         char_offset_end: raw.char_offset_end,
-        highlight_color: raw.risk_level === 'HIGH' ? '#FFEBEE' : raw.risk_level === 'MEDIUM' ? '#FFF3E0' : '#E8F5E9',
-        is_primary: true,
-      },
-    ],
-  };
+        highlight_color: highlightColor,
+        is_primary: index === 0,
+      };
+    })
+    .filter((item): item is RiskEvidence => Boolean(item));
+  if (evidenceFromNodes.length > 0) return evidenceFromNodes;
+  return [
+    {
+      id: `ev-${raw.id}`,
+      evidence_text: raw.clause_text,
+      context_before: '',
+      context_after: '',
+      page_number: raw.page_number,
+      paragraph_index: raw.paragraph_index,
+      char_offset_start: raw.char_offset_start,
+      char_offset_end: raw.char_offset_end,
+      highlight_color: highlightColor,
+      is_primary: true,
+    },
+  ];
 }
 
 export interface ReviewItemListResponse {

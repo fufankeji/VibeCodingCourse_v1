@@ -18,6 +18,8 @@ from app.schemas.field import (
 
 router = APIRouter()
 
+FIELD_VERIFY_ACTIVE_STATES = {"scanning", "hitl_field_verify"}
+
 
 @router.get("/{session_id}/fields", response_model=FieldListResponse)
 def list_fields(session_id: str, db: Session = Depends(get_db)):
@@ -43,6 +45,8 @@ def verify_field(
     session = db.query(ReviewSession).filter(ReviewSession.id == session_id).first()
     if not session:
         raise APIError.not_found("ReviewSession")
+    if session.state not in FIELD_VERIFY_ACTIVE_STATES:
+        raise APIError.session_state_invalid(session.state, "scanning/hitl_field_verify")
 
     field = db.query(ExtractedField).filter(
         ExtractedField.id == field_id, ExtractedField.session_id == session_id

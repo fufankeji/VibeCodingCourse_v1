@@ -1,0 +1,511 @@
+import asyncio
+import json
+from datetime import datetime, timedelta
+
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from app.database import Base
+from app.models.contract import Contract
+from app.models.audit_log import AuditLog
+from app.models.document_parse_job import DocumentParseJob
+from app.models.session import ReviewSession
+from app.services import document_parse_worker
+
+
+def _session_factory():
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    return sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+def _make_contract_session_job(db, tmp_path, file_type="pdf", status="queued", attempts=0):
+    source = tmp_path / f"original.{file_type}"
+    source.write_bytes(b"%PDF- fake" if file_type == "pdf" else b"{}")
+    contract = Contract(
+        title="测试方案",
+        original_filename=source.name,
+        file_type=file_type,
+        file_path=str(source),
+        uploaded_by="tester",
+    )
+    db.add(contract)
+    db.flush()
+    session = ReviewSession(contract_id=contract.id, state="parsing", created_by="tester")
+    db.add(session)
+    db.flush()
+    job = DocumentParseJob(
+        session_id=session.id,
+        contract_id=contract.id,
+        source_file_path=str(source),
+        source_file_type=file_type,
+        provider="mineru" if file_type in {"pdf", "docx"} else "mineru_json",
+        status=status,
+        attempt_count=attempts,
+        max_attempts=3,
+    )
+    db.add(job)
+    db.commit()
+    return contract, session, job
+
+
+@pytest.mark.asyncio
+async def test_worker_missing_mineru_token_marks_retryable_failed_without_aborting(tmp_path, monkeypatch):
+    SessionLocal = _session_factory()
+    db = SessionLocal()
+    _, session, job = _make_contract_session_job(db, tmp_path, file_type="pdf")
+    session_id = session.id
+    job_id = job.id
+    db.close()
+    monkeypatch.setattr(document_parse_worker.settings, "mineru_token", "")
+
+    await document_parse_worker.process_next_job(SessionLocal, worker_id="test-worker")
+
+    db = SessionLocal()
+    try:
+        updated_job = db.query(DocumentParseJob).filter(DocumentParseJob.id == job_id).first()
+        updated_session = db.query(ReviewSession).filter(ReviewSession.id == session_id).first()
+        assert updated_job.status == "failed"
+        assert updated_job.error_code == "MINERU_TOKEN_MISSING"
+        assert updated_job.attempt_count == 1
+        assert updated_session.state == "parsing"
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_worker_aborts_session_after_max_attempts(tmp_path, monkeypatch):
+    SessionLocal = _session_factory()
+    db = SessionLocal()
+    _, session, job = _make_contract_session_job(db, tmp_path, file_type="pdf", attempts=2)
+    session_id = session.id
+    job_id = job.id
+    db.close()
+    monkeypatch.setattr(document_parse_worker.settings, "mineru_token", "")
+
+    await document_parse_worker.process_next_job(SessionLocal, worker_id="test-worker")
+
+    db = SessionLocal()
+    try:
+        updated_job = db.query(DocumentParseJob).filter(DocumentParseJob.id == job_id).first()
+        updated_session = db.query(ReviewSession).filter(ReviewSession.id == session_id).first()
+        assert updated_job.status == "failed"
+        assert updated_job.attempt_count == 3
+        assert updated_session.state == "aborted"
+    finally:
+        db.close()
+
+
+def test_recover_stale_running_jobs_requeues_expired_lock(tmp_path):
+    SessionLocal = _session_factory()
+    db = SessionLocal()
+    _, _, job = _make_contract_session_job(db, tmp_path, file_type="pdf", status="running")
+    job.locked_by = "dead-worker"
+    job.locked_at = datetime.utcnow() - timedelta(minutes=30)
+    db.add(job)
+    db.commit()
+
+    recovered = document_parse_worker.recover_stale_running_jobs(db, stale_after_seconds=60)
+
+    updated_job = db.query(DocumentParseJob).filter(DocumentParseJob.id == job.id).first()
+    db.close()
+    assert recovered == 1
+    assert updated_job.status == "queued"
+    assert updated_job.locked_by is None
+    assert updated_job.locked_at is None
+
+
+def test_update_mineru_progress_refreshes_running_lock(tmp_path):
+    SessionLocal = _session_factory()
+    db = SessionLocal()
+    _, _, job = _make_contract_session_job(db, tmp_path, file_type="pdf", status="running", attempts=1)
+    old_locked_at = datetime.utcnow() - timedelta(minutes=30)
+    job.locked_by = "active-worker"
+    job.locked_at = old_locked_at
+    db.add(job)
+    db.commit()
+
+    document_parse_worker._update_mineru_progress(db, job.id, "polling", {"batch_id": "batch-1"})
+
+    updated_job = db.query(DocumentParseJob).filter(DocumentParseJob.id == job.id).first()
+    assert updated_job.locked_at > old_locked_at
+
+    recovered = document_parse_worker.recover_stale_running_jobs(db, stale_after_seconds=60)
+    updated_job = db.query(DocumentParseJob).filter(DocumentParseJob.id == job.id).first()
+    db.close()
+    assert recovered == 0
+    assert updated_job.status == "running"
+    assert updated_job.locked_by == "active-worker"
+
+
+def test_reset_parse_job_for_retry_requeues_failed_job(tmp_path):
+    SessionLocal = _session_factory()
+    db = SessionLocal()
+    contract, session, job = _make_contract_session_job(db, tmp_path, file_type="pdf", status="failed", attempts=1)
+    contract.contract_status = "aborted"
+    db.add(contract)
+    db.commit()
+
+    result = document_parse_worker.reset_parse_job_for_retry(db, session.id)
+
+    updated_job = db.query(DocumentParseJob).filter(DocumentParseJob.id == job.id).first()
+    updated_session = db.query(ReviewSession).filter(ReviewSession.id == session.id).first()
+    updated_contract = db.query(Contract).filter(Contract.id == contract.id).first()
+    db.close()
+    assert result.id == job.id
+    assert updated_job.status == "queued"
+    assert updated_job.locked_by is None
+    assert updated_job.next_run_at is not None
+    assert updated_session.state == "parsing"
+    assert updated_contract.contract_status == "processing"
+
+
+def test_reset_parse_job_for_retry_rejects_exhausted_job(tmp_path):
+    SessionLocal = _session_factory()
+    db = SessionLocal()
+    _, session, _ = _make_contract_session_job(db, tmp_path, file_type="pdf", status="failed", attempts=3)
+
+    with pytest.raises(document_parse_worker.DocumentParseError) as exc_info:
+        document_parse_worker.reset_parse_job_for_retry(db, session.id)
+
+    db.close()
+    assert exc_info.value.error_code == "PARSE_RETRY_EXHAUSTED"
+
+
+def test_reset_parse_job_for_retry_rejects_missing_source_file(tmp_path):
+    SessionLocal = _session_factory()
+    db = SessionLocal()
+    _, session, job = _make_contract_session_job(db, tmp_path, file_type="pdf", status="failed", attempts=1)
+    session_id = session.id
+    source = job.source_file_path
+    db.close()
+    import os
+    os.unlink(source)
+
+    db = SessionLocal()
+    try:
+        with pytest.raises(document_parse_worker.DocumentParseError) as exc_info:
+            document_parse_worker.reset_parse_job_for_retry(db, session_id)
+    finally:
+        db.close()
+    assert exc_info.value.error_code == "SOURCE_FILE_MISSING"
+
+
+def test_claim_next_job_picks_retryable_failed_job(tmp_path):
+    SessionLocal = _session_factory()
+    db = SessionLocal()
+    _, _, job = _make_contract_session_job(db, tmp_path, file_type="pdf", status="failed", attempts=1)
+    job.next_run_at = datetime.utcnow() - timedelta(seconds=1)
+    db.add(job)
+    db.commit()
+
+    claimed = document_parse_worker._claim_next_job(db, "test-worker")
+
+    assert claimed is not None
+    assert claimed.id == job.id
+    assert claimed.status == "running"
+    assert claimed.attempt_count == 2
+    db.close()
+
+
+def test_claim_next_job_skips_exhausted_failed_job(tmp_path):
+    SessionLocal = _session_factory()
+    db = SessionLocal()
+    _, _, job = _make_contract_session_job(db, tmp_path, file_type="pdf", status="failed", attempts=3)
+    job.next_run_at = datetime.utcnow() - timedelta(seconds=1)
+    db.add(job)
+    db.commit()
+
+    claimed = document_parse_worker._claim_next_job(db, "test-worker")
+
+    assert claimed is None
+    db.close()
+
+
+def test_claim_next_job_skips_aborted_session_job(tmp_path):
+    SessionLocal = _session_factory()
+    db = SessionLocal()
+    _, session, _ = _make_contract_session_job(db, tmp_path, file_type="pdf", status="queued")
+    session.state = "aborted"
+    db.add(session)
+    db.commit()
+
+    claimed = document_parse_worker._claim_next_job(db, "test-worker")
+
+    assert claimed is None
+    db.close()
+
+
+def test_cancel_parse_jobs_for_session_marks_job_canceled_and_unclaimable(tmp_path):
+    SessionLocal = _session_factory()
+    db = SessionLocal()
+    _, session, job = _make_contract_session_job(db, tmp_path, file_type="pdf", status="queued")
+
+    canceled = document_parse_worker.cancel_parse_jobs_for_session(db, session.id, reason="用户主动放弃")
+    claimed = document_parse_worker._claim_next_job(db, "test-worker")
+
+    updated_job = db.query(DocumentParseJob).filter(DocumentParseJob.id == job.id).first()
+    assert canceled == 1
+    assert claimed is None
+    assert updated_job.status == "canceled"
+    assert updated_job.error_code == "USER_ABORTED"
+    assert updated_job.locked_by is None
+    assert updated_job.next_run_at is None
+    db.close()
+
+
+def test_update_mineru_progress_publishes_sse_event(tmp_path):
+    SessionLocal = _session_factory()
+    db = SessionLocal()
+    _, session, job = _make_contract_session_job(db, tmp_path, file_type="pdf", status="running", attempts=1)
+    queue = asyncio.Queue()
+    document_parse_worker.sse_manager._queues[session.id] = [queue]
+
+    try:
+        document_parse_worker._update_mineru_progress(
+            db,
+            job.id,
+            "polling",
+            {"batch_id": "batch-1", "task_id": "task-1"},
+        )
+
+        updated_job = db.query(DocumentParseJob).filter(DocumentParseJob.id == job.id).first()
+        event = queue.get_nowait()
+        payload = json.loads(event["data"])
+        assert updated_job.stage == "polling"
+        assert updated_job.mineru_batch_id == "batch-1"
+        assert updated_job.mineru_task_id == "task-1"
+        assert event["event"] == "parse_progress"
+        assert payload["session_id"] == session.id
+        assert payload["job_id"] == job.id
+        assert payload["stage"] == "polling"
+        assert payload["retry_count"] == 1
+        assert payload["max_retries"] == 3
+        timings = json.loads(updated_job.timing_json)
+        attempt = timings["attempts"]["1"]
+        assert attempt["stages"]["polling"]["started_at"]
+        assert attempt["metrics"] == {}
+    finally:
+        document_parse_worker.sse_manager._queues.pop(session.id, None)
+        db.close()
+
+
+def test_update_mineru_progress_records_duration_metrics(tmp_path):
+    SessionLocal = _session_factory()
+    db = SessionLocal()
+    _, _, job = _make_contract_session_job(db, tmp_path, file_type="pdf", status="running", attempts=1)
+
+    document_parse_worker._update_mineru_progress(
+        db,
+        job.id,
+        "polling",
+        {"mineru_poll_duration_ms": 1234},
+    )
+
+    updated_job = db.query(DocumentParseJob).filter(DocumentParseJob.id == job.id).first()
+    timings = json.loads(updated_job.timing_json)
+    db.close()
+    assert timings["attempts"]["1"]["metrics"]["mineru_poll_duration_ms"] == 1234
+
+
+@pytest.mark.asyncio
+async def test_worker_marks_json_job_succeeded_without_running_pipeline(tmp_path, monkeypatch):
+    SessionLocal = _session_factory()
+    db = SessionLocal()
+    _, session, job = _make_contract_session_job(db, tmp_path, file_type="json")
+    session_id = session.id
+    job_id = job.id
+    db.close()
+
+    assert not hasattr(document_parse_worker, "ocr_service")
+
+    await document_parse_worker.process_next_job(SessionLocal, worker_id="test-worker")
+
+    db = SessionLocal()
+    try:
+        updated_job = db.query(DocumentParseJob).filter(DocumentParseJob.id == job_id).first()
+        timings = json.loads(updated_job.timing_json)
+        attempt = timings["attempts"]["1"]
+        assert updated_job.status == "succeeded"
+        assert updated_job.completed_at is not None
+        assert updated_job.error_code is None
+        updated_session = db.query(ReviewSession).filter(ReviewSession.id == session_id).first()
+        assert updated_session.state == "parsed"
+        assert attempt["stages"]["queued"]["duration_ms"] >= 0
+        assert attempt["stages"]["extracted"]["duration_ms"] >= 0
+        assert attempt["stages"]["completed"]["duration_ms"] >= 0
+        assert "pipeline_running" not in attempt["stages"]
+        assert attempt["metrics"] == {}
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_worker_marks_pdf_job_parsed_after_mineru_artifacts_without_pipeline(tmp_path, monkeypatch):
+    SessionLocal = _session_factory()
+    db = SessionLocal()
+    _, session, job = _make_contract_session_job(db, tmp_path, file_type="pdf")
+    session_id = session.id
+    job_id = job.id
+    db.close()
+
+    monkeypatch.setattr(document_parse_worker.settings, "mineru_token", "test-token")
+
+    def fake_parse_file_to_artifacts(file_path, output_dir, progress_callback=None):
+        output_dir.mkdir(parents=True, exist_ok=True)
+        json_path = output_dir / "parsed.json"
+        json_path.write_text(
+            json.dumps(
+                {
+                    "pdf_info": [
+                        {
+                            "page_idx": 0,
+                            "para_blocks": [
+                                {
+                                    "type": "title",
+                                    "index": 0,
+                                    "lines": [{"spans": [{"content": "测试水保方案"}]}],
+                                }
+                            ],
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        markdown_path = output_dir / "full.md"
+        markdown_path.write_text("# 测试水保方案\n", encoding="utf-8")
+        zip_path = output_dir / "mineru_result.zip"
+        zip_path.write_bytes(b"zip")
+        if progress_callback:
+            progress_callback("uploaded", {"batch_id": "batch-1"})
+            progress_callback("polling", {"batch_id": "batch-1", "task_id": "task-1"})
+            progress_callback("downloading", {"batch_id": "batch-1", "task_id": "task-1"})
+        return document_parse_worker.mineru_service.MinerUParseArtifacts(
+            json_path=json_path,
+            markdown_path=markdown_path,
+            zip_path=zip_path,
+            batch_id="batch-1",
+            task_id="task-1",
+        )
+
+    monkeypatch.setattr(document_parse_worker.mineru_service, "parse_file_to_artifacts", fake_parse_file_to_artifacts)
+    assert not hasattr(document_parse_worker, "ocr_service")
+
+    await document_parse_worker.process_next_job(SessionLocal, worker_id="test-worker")
+
+    db = SessionLocal()
+    try:
+        updated_job = db.query(DocumentParseJob).filter(DocumentParseJob.id == job_id).first()
+        updated_session = db.query(ReviewSession).filter(ReviewSession.id == session_id).first()
+        timings = json.loads(updated_job.timing_json)
+        attempt = timings["attempts"]["1"]
+        assert updated_job.status == "succeeded"
+        assert updated_job.stage == "completed"
+        assert updated_job.result_json_path and updated_job.result_json_path.endswith("parsed.json")
+        assert updated_job.result_markdown_path and updated_job.result_markdown_path.endswith("full.md")
+        assert updated_session.state == "parsed"
+        assert "pipeline_running" not in attempt["stages"]
+        assert attempt["metrics"]["mineru_total_duration_ms"] >= 0
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_worker_records_segmented_mineru_progress_payload(tmp_path, monkeypatch):
+    SessionLocal = _session_factory()
+    db = SessionLocal()
+    _, _, job = _make_contract_session_job(db, tmp_path, file_type="pdf")
+    job_id = job.id
+    db.close()
+
+    monkeypatch.setattr(document_parse_worker.settings, "mineru_token", "test-token")
+    events = []
+    monkeypatch.setattr(
+        document_parse_worker.sse_manager,
+        "publish_nowait",
+        lambda session_id, event, payload: events.append({"event": event, "payload": payload}),
+    )
+
+    def fake_parse_file_to_artifacts(file_path, output_dir, progress_callback=None):
+        output_dir.mkdir(parents=True, exist_ok=True)
+        json_path = output_dir / "parsed.json"
+        json_path.write_text(json.dumps({"pdf_info": [{"page_idx": 0, "para_blocks": []}]}), encoding="utf-8")
+        manifest_path = output_dir / "segment_manifest.json"
+        manifest_path.write_text(
+            json.dumps({"segments": [{"segment_index": 2, "segment_count": 2, "page_ranges": "201-400"}]}),
+            encoding="utf-8",
+        )
+        if progress_callback:
+            progress_callback(
+                "polling",
+                {
+                    "batch_id": "b2",
+                    "task_id": "t2",
+                    "segment_index": 2,
+                    "segment_count": 2,
+                    "page_ranges": "201-400",
+                },
+            )
+        return document_parse_worker.mineru_service.MinerUParseArtifacts(
+            json_path=json_path,
+            batch_id="b2",
+            task_id="t2",
+            segment_manifest_path=manifest_path,
+            segment_summary=[{"segment_index": 2, "segment_count": 2, "batch_id": "b2", "task_id": "t2"}],
+        )
+
+    monkeypatch.setattr(document_parse_worker.mineru_service, "parse_file_to_artifacts", fake_parse_file_to_artifacts)
+
+    await document_parse_worker.process_next_job(SessionLocal, worker_id="test-worker")
+
+    db = SessionLocal()
+    try:
+        updated_job = db.query(DocumentParseJob).filter(DocumentParseJob.id == job_id).first()
+        assert updated_job.status == "succeeded"
+        assert updated_job.result_json_path.endswith("parsed.json")
+        progress_payloads = [event["payload"] for event in events if event["event"] == "parse_progress"]
+        assert any(payload.get("segment_index") == 2 and payload.get("segment_count") == 2 for payload in progress_payloads)
+        assert any(payload.get("current_batch_id") == "b2" and payload.get("current_task_id") == "t2" for payload in progress_payloads)
+        timing = json.loads(updated_job.timing_json)
+        metrics = timing["attempts"]["1"]["metrics"]
+        assert metrics["mineru_total_duration_ms"] >= 0
+        assert metrics["mineru_segment_manifest_path"].endswith("segment_manifest.json")
+        assert metrics["mineru_segments"][0]["batch_id"] == "b2"
+        audit = db.query(AuditLog).filter(AuditLog.session_id == updated_job.session_id, AuditLog.event_type == "parse_completed").first()
+        audit_payload = json.loads(audit.metadata_json)
+        assert audit_payload["timing"]["metrics"]["mineru_segments"][0]["task_id"] == "t2"
+    finally:
+        db.close()
+
+
+def test_mark_job_succeeded_does_not_overwrite_canceled_job(tmp_path):
+    SessionLocal = _session_factory()
+    db1 = SessionLocal()
+    _, _, job = _make_contract_session_job(db1, tmp_path, file_type="pdf", status="running")
+    job_id = job.id
+
+    db2 = SessionLocal()
+    try:
+        same_job = db2.query(DocumentParseJob).filter(DocumentParseJob.id == job_id).first()
+        same_job.status = "canceled"
+        same_job.error_code = "USER_ABORTED"
+        db2.add(same_job)
+        db2.commit()
+    finally:
+        db2.close()
+
+    document_parse_worker._mark_job_succeeded(db1, job)
+
+    db1.expire_all()
+    updated_job = db1.query(DocumentParseJob).filter(DocumentParseJob.id == job_id).first()
+    assert updated_job.status == "canceled"
+    assert updated_job.error_code == "USER_ABORTED"
+    db1.close()

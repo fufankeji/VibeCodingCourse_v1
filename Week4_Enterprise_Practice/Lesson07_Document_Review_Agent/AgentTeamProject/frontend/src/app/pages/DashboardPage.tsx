@@ -5,10 +5,12 @@ import { GlobalNav } from '../components/GlobalNav';
 import { StateBadge } from '../components/StateBadge';
 import { listContracts, type ContractItem } from '../api/contracts';
 import { useAuth } from '../contexts/AuthContext';
+import { contractRoute, contractState, isContractNavigable } from '../utils/contracts';
+import { formatApiDate, isSameLocalDay, isSameLocalMonth, parseApiDate } from '../utils/datetime';
 
 /**
  * DashboardPage — P02 工作台首页
- * 注意：统计数据接口（api_spec 未覆盖范围）— 使用固定示例数据
+ * 统计数据来自当前后端方案任务列表。
  */
 export function DashboardPage() {
   const navigate = useNavigate();
@@ -16,10 +18,14 @@ export function DashboardPage() {
 
   const [contracts, setContracts] = useState<ContractItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [total, setTotal] = useState(0);
 
   useEffect(() => {
-    listContracts({ limit: 20 })
-      .then((res) => setContracts(res.items))
+    listContracts({ limit: 100 })
+      .then((res) => {
+        setContracts(res.items);
+        setTotal(res.total);
+      })
       .catch(() => {})
       .finally(() => setIsLoading(false));
   }, []);
@@ -28,14 +34,20 @@ export function DashboardPage() {
     c.session_state === 'hitl_pending' || c.session_state === 'hitl_high_risk' || c.session_state === 'hitl_medium_confirm'
   );
   const recentContracts = [...contracts]
-    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    .sort((a, b) => parseApiDate(b.updated_at || b.uploaded_at || b.created_at).getTime() - parseApiDate(a.updated_at || a.uploaded_at || a.created_at).getTime())
     .slice(0, 6);
+  const completedContracts = contracts.filter((c) => {
+    const state = contractState(c);
+    return state === 'report_ready' && isSameLocalMonth(c.updated_at || c.uploaded_at || c.created_at);
+  });
+  const todayContracts = contracts.filter((c) => isSameLocalDay(c.uploaded_at || c.created_at));
 
-  const formatDate = (iso: string) => {
-    return new Date(iso).toLocaleDateString('zh-CN', {
-      month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
-    });
+  const routeToContract = (contract: ContractItem) => {
+    const route = contractRoute(contract);
+    if (route) navigate(route);
   };
+
+  const formatDate = (iso: string) => formatApiDate(iso, { year: undefined });
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -46,9 +58,9 @@ export function DashboardPage() {
           <div className="flex items-center justify-between mb-8">
             <div>
               <h1 className="text-gray-900" style={{ fontSize: 22, fontWeight: 700 }}>
-                你好，{user?.name} 👋
+                你好，{user?.name}
               </h1>
-              <p className="text-gray-500 text-sm mt-1">欢迎回到合同智审工作台</p>
+              <p className="text-gray-500 text-sm mt-1">欢迎回到水土保持方案智能评审工作台</p>
             </div>
             <button
               onClick={() => navigate('/contracts/upload')}
@@ -60,27 +72,27 @@ export function DashboardPage() {
             </button>
           </div>
 
-          {/* Stats Cards — 注意：统计数据接口 api_spec 未覆盖，以下为示例数据 */}
+          {/* Stats Cards */}
           <div className="grid grid-cols-3 gap-4 mb-8">
             <StatCard
               icon={<AlertTriangle className="w-5 h-5 text-orange-500" />}
-              label="待处理合同"
-              value="2"
-              note="（示例数据 — 统计接口未开发）"
+              label="待复核方案"
+              value={String(pendingContracts.length)}
+              note={`总任务 ${total} 个`}
               color="orange"
             />
             <StatCard
               icon={<CheckCircle className="w-5 h-5 text-green-500" />}
               label="本月已完成"
-              value="14"
-              note="（示例数据 — 统计接口未开发）"
+              value={String(completedContracts.length)}
+              note="来自当前任务列表"
               color="green"
             />
             <StatCard
               icon={<FileText className="w-5 h-5 text-blue-500" />}
               label="今日新增"
-              value="3"
-              note="（示例数据 — 统计接口未开发）"
+              value={String(todayContracts.length)}
+              note="按上传时间统计"
               color="blue"
             />
           </div>
@@ -92,7 +104,7 @@ export function DashboardPage() {
                 <h2 className="text-gray-800" style={{ fontWeight: 600, fontSize: 15 }}>
                   待我处理
                 </h2>
-                <span className="text-xs text-gray-400">仅 hitl_pending 状态</span>
+                <span className="text-xs text-gray-400">待人工复核任务</span>
               </div>
               <div className="divide-y divide-gray-50">
                 {isLoading ? (
@@ -100,7 +112,7 @@ export function DashboardPage() {
                     <Loader2 className="w-4 h-4 animate-spin" /> 加载中…
                   </div>
                 ) : pendingContracts.length === 0 ? (
-                  <div className="px-5 py-8 text-center text-sm text-gray-400">暂无待处理合同</div>
+                  <div className="px-5 py-8 text-center text-sm text-gray-400">暂无待复核方案</div>
                 ) : (
                   pendingContracts.map((contract) => (
                     <div key={contract.id} className="px-5 py-3.5 flex items-center justify-between hover:bg-gray-50">
@@ -112,15 +124,11 @@ export function DashboardPage() {
                         </div>
                       </div>
                       <button
-                        onClick={() => {
-                          if (contract.session_id) {
-                            navigate(`/contracts/${contract.session_id}/review`);
-                          }
-                        }}
+                        onClick={() => routeToContract(contract)}
                         className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 hover:bg-blue-50 px-2.5 py-1.5 rounded-md transition-colors"
                         style={{ fontWeight: 500 }}
                       >
-                        继续审批 <ArrowRight className="w-3 h-3" />
+                        继续评审 <ArrowRight className="w-3 h-3" />
                       </button>
                     </div>
                   ))
@@ -141,14 +149,23 @@ export function DashboardPage() {
               </div>
               <div className="divide-y divide-gray-50">
                 {recentContracts.map((contract) => (
-                  <div key={contract.id} className="px-5 py-3 flex items-center justify-between hover:bg-gray-50">
+                  <button
+                    key={contract.id}
+                    type="button"
+                    onClick={() => routeToContract(contract)}
+                    disabled={!isContractNavigable(contract)}
+                    className="w-full px-5 py-3 flex items-center justify-between text-left transition-colors enabled:hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-70"
+                  >
                     <div>
                       <p className="text-sm text-gray-800">{contract.title}</p>
-                      <span className="text-xs text-gray-400">{formatDate(contract.created_at)}</span>
+                      <span className="text-xs text-gray-400">{formatDate(contract.uploaded_at || contract.created_at)}</span>
                     </div>
-                    <StateBadge state={(contract.session_state || contract.contract_status) as any} />
-                  </div>
+                    <StateBadge state={contractState(contract)} />
+                  </button>
                 ))}
+                {!isLoading && recentContracts.length === 0 && (
+                  <div className="px-5 py-8 text-center text-sm text-gray-400">暂无方案评审任务</div>
+                )}
               </div>
             </div>
           </div>

@@ -1,4 +1,5 @@
 import { apiClient } from './client';
+import type { EvidenceSlotPackage, RetrievalMatch } from './reviewConfig';
 
 export interface ProgressSummary {
   total_high_risk: number;
@@ -20,6 +21,18 @@ export interface SessionResponse {
   completed_at: string | null;
   updated_at: string;
   progress_summary: ProgressSummary;
+  latest_parse_job_status?: string | null;
+  latest_parse_job_stage?: string | null;
+  latest_parse_job_error_code?: string | null;
+  latest_parse_job_error_message?: string | null;
+  retry_count?: number;
+  max_retries?: number;
+  can_retry_parse?: boolean;
+  retry_block_reason?: string | null;
+  can_view_result?: boolean;
+  entry_route_type?: 'parsing' | 'fields' | 'review' | 'batch' | 'report' | 'aborted' | null;
+  entry_action_label?: string;
+  read_only?: boolean;
 }
 
 export interface SessionRecoveryResponse {
@@ -31,6 +44,231 @@ export interface SessionRecoveryResponse {
   message: string;
 }
 
+export interface ReviewDocumentBlock {
+  block_id: string;
+  page: number;
+  type: string;
+  text: string;
+  html?: string;
+  image_path?: string;
+  bbox: number[];
+  section_hint: string;
+}
+
+export interface ReviewDocumentPage {
+  page_number: number;
+  blocks: ReviewDocumentBlock[];
+}
+
+export interface ReviewDocumentOutlineItem {
+  id: string;
+  title: string;
+  page_number: number;
+  level: number;
+}
+
+export interface ReviewDocumentContentResponse {
+  session_id: string;
+  contract_id: string;
+  title: string;
+  file_type: string;
+  source: string;
+  source_pdf_url?: string;
+  page_count: number;
+  outline: ReviewDocumentOutlineItem[];
+  pages: ReviewDocumentPage[];
+}
+
+export interface LangExtractFact {
+  fact_id?: string;
+  field_name?: string;
+  value?: string;
+  normalized_value?: string;
+  unit?: string;
+  section?: string;
+  chunk_id?: string;
+  page_range?: number[];
+  source_text?: string;
+  confidence?: number;
+  bbox_list?: Array<Record<string, unknown>>;
+  attributes?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface CrossChapterFinding {
+  finding_id?: string;
+  finding_type?: string;
+  field_name?: string;
+  description?: string;
+  risk_level?: string;
+  actual_value?: string;
+  expected_value?: string;
+  source_pages?: number[];
+  evidence_text?: string;
+  [key: string]: unknown;
+}
+
+export interface LangExtractFactsResponse {
+  session_id: string;
+  contract_id: string;
+  available: boolean;
+  source: string;
+  message: string;
+  fact_count: number;
+  finding_count: number;
+  field_counts: Record<string, number>;
+  fact_index: Record<string, unknown>;
+  facts: LangExtractFact[];
+  cross_chapter_findings: CrossChapterFinding[];
+}
+
+export interface ReviewPipelineStage {
+  id: string;
+  title: string;
+  artifact: string;
+  status: 'pending' | 'running' | 'completed' | 'cached' | 'degraded' | 'skipped' | 'failed' | string;
+  cache_reusable: boolean;
+  artifact_exists: boolean;
+  item_count: number | null;
+  duration_ms: number | null;
+  message: string;
+}
+
+export interface ReviewPipelineStatusResponse {
+  session_id: string;
+  available: boolean;
+  artifact_dir: string;
+  updated_at: string;
+  stages: ReviewPipelineStage[];
+  timings: Record<string, number>;
+  cache_hits: Record<string, boolean>;
+  last_failure?: {
+    error?: string;
+    error_code?: string;
+    user_message?: string;
+    message?: string;
+    technical_message?: string;
+    failure_category?: string;
+    node_name?: string;
+    occurred_at?: string;
+    [key: string]: unknown;
+  };
+}
+
+export interface ReviewLogicType {
+  type: string;
+  label: string;
+}
+
+export interface ReviewCheckItem {
+  id: string;
+  topic_id: string;
+  source_issue_id?: string;
+  rule_id?: string;
+  rule_name?: string;
+  executor_type_id?: string;
+  review_type: string;
+  review_sub_type: string;
+  review_logic: ReviewLogicType[];
+  review_logic_types: string[];
+  status: string;
+  conclusion: string;
+  evidence_texts: string[];
+  evidence_locations: Array<{
+    page_number?: number | null;
+    paragraph_index?: number | null;
+    highlight_anchor?: string;
+    char_offset_start?: number | null;
+    char_offset_end?: number | null;
+  }>;
+  regulation_clauses: string[];
+  reasoning_process: Record<string, unknown>;
+  ai_or_human_source: string;
+  human_review_status: string;
+  evidence_scope?: {
+    chapters?: string[];
+    tables?: string[];
+    attachments?: string[];
+    regulations?: string[];
+    [key: string]: unknown;
+  };
+  target_fields?: string[];
+  review_criteria?: string;
+  expected_result?: string;
+  failure_conditions?: string[];
+  evidence_slots?: Array<Record<string, unknown>>;
+  formula_checks?: Array<Record<string, unknown>>;
+  source_rule_snapshot?: Record<string, unknown>;
+  enabled?: boolean;
+  risk_level?: string;
+  confidence_score?: number | null;
+}
+
+export interface ReviewRuleSummary extends ReviewCheckItem {
+  rule_id: string;
+  rule_name: string;
+  review_item_name?: string;
+}
+
+export interface ReviewRuleItem {
+  item_id: string;
+  item_name: string;
+  logic_types: string[];
+  rules: ReviewRuleSummary[];
+}
+
+export interface ReviewRuleTopic {
+  id: string;
+  name: string;
+  sequence: number;
+  check_status: string;
+  check_item_count: number;
+  configured_check_item_count: number;
+  error_item_count: number;
+  detected_error_item_count: number;
+  reference_error_count: number;
+  main_review_types: string[];
+  check_items: ReviewCheckItem[];
+  rule_candidates?: ReviewRuleSummary[];
+  topic_id: string;
+  topic_name: string;
+  topic_category: string;
+  description: string;
+  items: ReviewRuleItem[];
+}
+
+export interface ReviewRuleTopicsResponse {
+  session_id: string;
+  source: 'artifact' | 'rule_set' | 'session_items';
+  topics: ReviewRuleTopic[];
+}
+
+export interface RetrievalDebugResponse {
+  status: 'ready' | 'degraded' | 'unavailable';
+  query: string;
+  reason?: string;
+  matches: RetrievalMatch[];
+  evidence_slot_package?: EvidenceSlotPackage;
+  trace: {
+    persisted?: boolean;
+    artifact_dir?: string;
+    chunk_count?: number;
+    vector_store?: string;
+    vector_available?: boolean;
+    bm25_available?: boolean;
+    rerank_available?: boolean;
+    retrieval_mode?: string;
+    top_k?: number;
+    requested_top_k?: number;
+    top_k_clamped?: boolean;
+    requested_use_vector?: boolean;
+    requested_use_bm25?: boolean;
+    requested_use_neighbors?: boolean;
+    requested_use_rerank?: boolean;
+    [key: string]: unknown;
+  };
+}
+
 export function getSession(sessionId: string): Promise<SessionResponse> {
   return apiClient.get<SessionResponse>(`/sessions/${sessionId}`);
 }
@@ -39,8 +277,54 @@ export function getSessionRecovery(sessionId: string): Promise<SessionRecoveryRe
   return apiClient.get<SessionRecoveryResponse>(`/sessions/${sessionId}/recovery`);
 }
 
+export function getReviewDocumentContent(sessionId: string): Promise<ReviewDocumentContentResponse> {
+  return apiClient.get<ReviewDocumentContentResponse>(`/sessions/${sessionId}/document-content`);
+}
+
+export function getLangExtractFacts(sessionId: string): Promise<LangExtractFactsResponse> {
+  return apiClient.get<LangExtractFactsResponse>(`/sessions/${sessionId}/langextract-facts`);
+}
+
+export function getReviewPipelineStatus(sessionId: string): Promise<ReviewPipelineStatusResponse> {
+  return apiClient.get<ReviewPipelineStatusResponse>(`/sessions/${sessionId}/review-pipeline-status`);
+}
+
+export function getReviewRuleTopics(sessionId: string): Promise<ReviewRuleTopicsResponse> {
+  return apiClient.get<ReviewRuleTopicsResponse>(`/sessions/${sessionId}/rule-topics`);
+}
+
+export function runRetrievalDebug(
+  sessionId: string,
+  body: {
+    query?: string;
+    evidence_slot?: Record<string, unknown>;
+    top_k?: number;
+    use_vector?: boolean;
+    use_bm25?: boolean;
+    use_neighbors?: boolean;
+    use_rerank?: boolean;
+  }
+): Promise<RetrievalDebugResponse> {
+  return apiClient.post<RetrievalDebugResponse>(`/sessions/${sessionId}/retrieval-debug`, body);
+}
+
 export function retryParse(sessionId: string) {
-  return apiClient.post<{ session_id: string; state: string; message: string }>(`/sessions/${sessionId}/retry-parse`);
+  return apiClient.post<{
+    session_id: string;
+    job_id: string;
+    state: string;
+    retry_count: number;
+    max_retries: number;
+    message: string;
+  }>(`/sessions/${sessionId}/retry-parse`);
+}
+
+export function startReview(sessionId: string) {
+  return apiClient.post<{
+    session_id: string;
+    state: string;
+    message: string;
+  }>(`/sessions/${sessionId}/start-review`);
 }
 
 export function abortSession(sessionId: string, reason?: string) {

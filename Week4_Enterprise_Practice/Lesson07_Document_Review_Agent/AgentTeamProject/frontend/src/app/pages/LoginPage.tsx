@@ -25,7 +25,7 @@ export function LoginPage() {
       return;
     }
     setError('');
-    // Demo: 用户名随意，以 reviewer 身份登录
+    // 本地开发：用户名密码校验暂未接入后端，以 reviewer 身份进入。
     login('reviewer');
     navigate('/dashboard');
   };
@@ -37,8 +37,8 @@ export function LoginPage() {
         <div className="w-14 h-14 bg-blue-600 rounded-2xl flex items-center justify-center shadow-lg mb-4">
           <FileText className="w-8 h-8 text-white" />
         </div>
-        <h1 className="text-gray-900" style={{ fontSize: 24, fontWeight: 700 }}>合同智审平台</h1>
-        <p className="text-gray-500 text-sm mt-1">Contract Intelligent Review System</p>
+        <h1 className="text-gray-900" style={{ fontSize: 24, fontWeight: 700 }}>水土保持方案智能评审</h1>
+        <p className="text-gray-500 text-sm mt-1">Soil and Water Conservation Review System</p>
       </div>
 
       {/* Login Card */}
@@ -89,9 +89,9 @@ export function LoginPage() {
           </button>
         </form>
 
-        {/* Quick Login for Demo */}
+        {/* Local Role Login */}
         <div className="mt-6 pt-5 border-t border-gray-100">
-          <p className="text-xs text-gray-400 mb-3 text-center">快速登录（原型演示）</p>
+          <p className="text-xs text-gray-400 mb-3 text-center">本地角色登录</p>
           <div className="grid grid-cols-3 gap-2">
             <button
               onClick={() => handleQuickLogin('reviewer')}
@@ -119,7 +119,7 @@ export function LoginPage() {
       </div>
 
       {/* Footer */}
-      <p className="text-xs text-gray-400 mt-6">© 2026 合同智审平台 · 原型演示版</p>
+      <p className="text-xs text-gray-400 mt-6">© 2026 水土保持方案智能评审</p>
     </div>
   );
 }

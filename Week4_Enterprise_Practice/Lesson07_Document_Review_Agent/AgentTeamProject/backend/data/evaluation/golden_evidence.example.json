@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "documents": [
+    {
+      "document_id": "doc-baiziwan-example",
+      "title": "朝阳区百子湾职工住宅项目",
+      "check_items": [
+        {
+          "check_item_id": "project_composition_consistency",
+          "evidence": [
+            {
+              "evidence_slot_id": "project_overview_content",
+              "page": 18,
+              "chunk_id": "chunk-project-overview-content",
+              "block_id": "p18-b01",
+              "expected_text": "项目概况章节中的项目组成及建设内容。"
+            },
+            {
+              "evidence_slot_id": "approval_or_design_content",
+              "page": 238,
+              "chunk_id": "chunk-approval-design-content",
+              "block_id": "p238-b03",
+              "expected_text": "附件或主体设计材料中的立项、批复或设计阶段建设内容。"
+            }
+          ]
+        },
+        {
+          "check_item_id": "earthwork_balance",
+          "evidence": [
+            {
+              "evidence_slot_id": "earthwork_text",
+              "page": 76,
+              "chunk_id": "chunk-earthwork-summary",
+              "block_id": "p76-b02",
+              "expected_text": "土石方平衡文字说明应包含挖方、填方、借方、弃方和调配情况。"
+            },
+            {
+              "evidence_slot_id": "earthwork_table",
+              "page": 77,
+              "chunk_id": "chunk-earthwork-table",
+              "block_id": "p77-table-01",
+              "expected_text": "土石方平衡表应列出挖方、填方、借方、弃方等工程量。"
+            },
+            {
+              "evidence_slot_id": "topsoil_balance",
+              "page": 78,
+              "chunk_id": "chunk-topsoil-balance",
+              "block_id": "p78-b01",
+              "expected_text": "表土剥离、临时堆存、防护和回覆利用应单独说明。"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

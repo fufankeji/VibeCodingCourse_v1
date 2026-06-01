@@ -4,13 +4,13 @@ import operator
 
 
 class ContractReviewState(TypedDict):
-    """合同审核 LangGraph 状态"""
+    """水土保持方案评审 LangGraph 状态"""
     session_id: str
     contract_id: str
     langgraph_thread_id: str
 
     # OCR 解析输出
-    full_text: str                    # 合同全文
+    full_text: str                    # 方案全文
     pages: List[dict]                 # 分页文本列表 [{page_num, text, paragraphs}]
 
     # 风险扫描结果

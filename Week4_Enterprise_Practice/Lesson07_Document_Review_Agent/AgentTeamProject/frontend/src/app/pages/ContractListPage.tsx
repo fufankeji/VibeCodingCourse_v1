@@ -5,18 +5,23 @@ import { GlobalNav } from '../components/GlobalNav';
 import { StateBadge } from '../components/StateBadge';
 import { listContracts, type ContractItem } from '../api/contracts';
 import type { SessionState } from '../types';
+import { contractRoute, contractState, isContractNavigable } from '../utils/contracts';
+import { formatApiDate } from '../utils/datetime';
 
 const STATE_OPTIONS: { value: '' | SessionState; label: string }[] = [
   { value: '', label: '全部状态' },
   { value: 'parsing', label: '解析中' },
-  { value: 'scanning', label: '扫描中' },
+  { value: 'parsed', label: '已解析' },
+  { value: 'scanning', label: '规则审查中' },
+  { value: 'hitl_field_verify', label: '关键信息确认' },
   { value: 'hitl_pending', label: '待人工审核' },
+  { value: 'hitl_medium_confirm', label: '中风险复核' },
   { value: 'report_ready', label: '已完成' },
   { value: 'aborted', label: '已中止' },
 ];
 
 /**
- * ContractListPage — P03 合同列表页
+ * ContractListPage — P03 方案列表页
  * GET /contracts — 已开发（游标分页，state 筛选）
  * GET /contracts?keyword=xxx — 「未开发」：api_spec 未定义 keyword 参数
  */
@@ -49,7 +54,7 @@ export function ContractListPage() {
       setTotal(res.total);
       setLoadError('');
     } catch (err: any) {
-      setLoadError(err.message || '加载合同列表失败');
+      setLoadError(err.message || '加载方案列表失败');
     } finally {
       setIsLoading(false);
       setIsLoadingMore(false);
@@ -66,29 +71,11 @@ export function ContractListPage() {
     : contracts;
 
   const handleRowClick = (contract: ContractItem) => {
-    const state = contract.session_state || contract.contract_status;
-    const sid = contract.session_id;
-    if (!sid) return;
-    switch (state) {
-      case 'parsing': navigate(`/contracts/${sid}/parsing`); break;
-      case 'scanning': navigate(`/contracts/${sid}/fields`); break;
-      case 'hitl_pending':
-      case 'hitl_high_risk':
-        navigate(`/contracts/${sid}/review`); break;
-      case 'hitl_medium_confirm':
-        navigate(`/contracts/${sid}/batch`); break;
-      case 'hitl_field_verify':
-        navigate(`/contracts/${sid}/fields`); break;
-      case 'completed':
-      case 'report_ready': navigate(`/contracts/${sid}/report`); break;
-      case 'aborted':
-        alert('流程已中止，无法继续操作'); break;
-      default: break;
-    }
+    const route = contractRoute(contract);
+    if (route) navigate(route);
   };
 
-  const formatDate = (iso: string) =>
-    new Date(iso).toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  const formatDate = (iso: string) => formatApiDate(iso);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -98,8 +85,8 @@ export function ContractListPage() {
           {/* Page Header */}
           <div className="flex items-center justify-between mb-6">
             <div>
-              <h1 className="text-gray-900" style={{ fontSize: 20, fontWeight: 700 }}>合同列表</h1>
-              <p className="text-sm text-gray-500 mt-0.5">管理和查看所有合同审核任务</p>
+              <h1 className="text-gray-900" style={{ fontSize: 20, fontWeight: 700 }}>方案列表</h1>
+              <p className="text-sm text-gray-500 mt-0.5">管理和查看所有水土保持方案评审任务</p>
             </div>
             <button
               onClick={() => navigate('/contracts/upload')}
@@ -115,14 +102,14 @@ export function ContractListPage() {
           <div className="bg-white rounded-xl border border-gray-200 px-4 py-3 mb-4 flex items-center gap-3 flex-wrap">
             <Filter className="w-4 h-4 text-gray-400 shrink-0" />
 
-            {/* Keyword Search — 未开发 */}
+            {/* Keyword Search */}
             <div className="relative flex-1 min-w-48">
               <Search className="w-4 h-4 text-gray-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
                 value={keyword}
                 onChange={(e) => setKeyword(e.target.value)}
-                placeholder="搜索合同名称…"
+                placeholder="搜索方案名称…"
                 className="pl-8 pr-3 py-1.5 border border-gray-200 rounded-md text-sm w-full focus:outline-none focus:ring-1 focus:ring-blue-400"
               />
               <span
@@ -163,7 +150,7 @@ export function ContractListPage() {
           {!isLoading && (
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
               <div className="grid grid-cols-12 px-5 py-2.5 bg-gray-50 border-b border-gray-100 text-xs text-gray-500">
-                <div className="col-span-5">合同名称</div>
+                <div className="col-span-5">方案名称</div>
                 <div className="col-span-2">上传人</div>
                 <div className="col-span-2">上传时间</div>
                 <div className="col-span-2">状态</div>
@@ -171,13 +158,17 @@ export function ContractListPage() {
               </div>
 
               {filtered.length === 0 ? (
-                <div className="py-16 text-center text-sm text-gray-400">暂无符合条件的合同</div>
+                <div className="py-16 text-center text-sm text-gray-400">暂无符合条件的方案任务</div>
               ) : (
                 <div className="divide-y divide-gray-50">
                   {filtered.map((contract) => (
                     <div
                       key={contract.id}
-                      className="grid grid-cols-12 px-5 py-3.5 items-center hover:bg-blue-50/30 cursor-pointer transition-colors"
+                      className={`grid grid-cols-12 px-5 py-3.5 items-center transition-colors ${
+                        isContractNavigable(contract)
+                          ? 'cursor-pointer hover:bg-blue-50/30'
+                          : 'cursor-not-allowed bg-slate-50/60 opacity-75'
+                      }`}
                       onClick={() => handleRowClick(contract)}
                     >
                       <div className="col-span-5 flex items-start gap-2">
@@ -189,10 +180,17 @@ export function ContractListPage() {
                       <div className="col-span-2 text-sm text-gray-600">{contract.uploaded_by}</div>
                       <div className="col-span-2 text-xs text-gray-500">{formatDate(contract.uploaded_at || contract.created_at)}</div>
                       <div className="col-span-2 flex flex-col gap-1">
-                        <StateBadge state={(contract.session_state || contract.contract_status) as any} />
+                        <StateBadge state={contractState(contract)} />
                       </div>
                       <div className="col-span-1 flex justify-end">
-                        <ChevronRight className="w-4 h-4 text-gray-400" />
+                        {isContractNavigable(contract) ? (
+                          <span className="inline-flex items-center gap-1 text-xs text-blue-600">
+                            {contract.entry_action_label || '查看'}
+                            <ChevronRight className="w-4 h-4" />
+                          </span>
+                        ) : (
+                          <span className="text-xs text-gray-400">{contract.entry_action_label || '不可进入'}</span>
+                        )}
                       </div>
                     </div>
                   ))}

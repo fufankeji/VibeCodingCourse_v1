@@ -1,7 +1,12 @@
 import React, { createContext, useContext, useState } from 'react';
 import type { User, UserRole } from '../types';
-import { MOCK_USERS } from '../mock/data';
 import { apiClient } from '../api/client';
+
+const LOCAL_USERS: User[] = [
+  { id: 'user-001', name: '张三', role: 'reviewer', email: 'reviewer@local' },
+  { id: 'user-002', name: '李四', role: 'submitter', email: 'submitter@local' },
+  { id: 'user-003', name: '王管理', role: 'admin', email: 'admin@local' },
+];
 
 interface AuthContextValue {
   user: User | null;
@@ -21,7 +26,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
 
   const login = (role: UserRole) => {
-    const found = MOCK_USERS.find((u) => u.role === role) ?? MOCK_USERS[0];
+    const found = LOCAL_USERS.find((u) => u.role === role) ?? LOCAL_USERS[0];
     setUser(found);
     apiClient.setUser(found.id, found.role);
   };

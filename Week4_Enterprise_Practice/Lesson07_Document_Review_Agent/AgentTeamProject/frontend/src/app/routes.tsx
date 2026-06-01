@@ -4,12 +4,10 @@ import { DashboardPage } from './pages/DashboardPage';
 import { ContractListPage } from './pages/ContractListPage';
 import { ContractUploadPage } from './pages/ContractUploadPage';
 import { ParsingProgressPage } from './pages/ParsingProgressPage';
-import { FieldVerificationPage } from './pages/FieldVerificationPage';
-import { AIScanningPage } from './pages/AIScanningPage';
-import { HITLReviewPage } from './pages/HITLReviewPage';
 import { BatchReviewPage } from './pages/BatchReviewPage';
 import { ReportPage } from './pages/ReportPage';
 import { AdminPage } from './pages/AdminPage';
+import { ReviewWorkspacePage } from './pages/ReviewWorkspacePage';
 
 /**
  * 路由结构遵循 frontend_arch-spec-v1.0.md 第二章
@@ -23,6 +21,7 @@ import { AdminPage } from './pages/AdminPage';
  * P08: /contracts/:id/review
  * P09: /contracts/:id/batch
  * P10: /contracts/:id/report
+ * Parsed document: /contracts/:id/document
  * P11: /admin
  */
 export const router = createBrowserRouter([
@@ -31,9 +30,10 @@ export const router = createBrowserRouter([
   { path: '/contracts', Component: ContractListPage },
   { path: '/contracts/upload', Component: ContractUploadPage },
   { path: '/contracts/:id/parsing', Component: ParsingProgressPage },
-  { path: '/contracts/:id/fields', Component: FieldVerificationPage },
-  { path: '/contracts/:id/scanning', Component: AIScanningPage },
-  { path: '/contracts/:id/review', Component: HITLReviewPage },
+  { path: '/contracts/:id/fields', Component: ReviewWorkspacePage },
+  { path: '/contracts/:id/scanning', Component: ReviewWorkspacePage },
+  { path: '/contracts/:id/document', Component: ReviewWorkspacePage },
+  { path: '/contracts/:id/review', Component: ReviewWorkspacePage },
   { path: '/contracts/:id/batch', Component: BatchReviewPage },
   { path: '/contracts/:id/report', Component: ReportPage },
   { path: '/admin', Component: AdminPage },

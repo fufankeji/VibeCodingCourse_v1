@@ -1,5 +1,5 @@
 """
-合同审核 LangGraph 工作流图构建
+水土保持方案评审 LangGraph 工作流图构建
 
 图结构：
 START → scanning_node → routing_node → human_review_node → resume_check_node → report_generation_node → END
@@ -81,7 +81,13 @@ def get_checkpointer():
     return _checkpointer
 
 
-def run_workflow_sync(session_id: str, contract_id: str, full_text: str, thread_id: str) -> dict:
+def run_workflow_sync(
+    session_id: str,
+    contract_id: str,
+    full_text: str,
+    thread_id: str,
+    precomputed_review_items: list[dict] | None = None,
+) -> dict:
     """
     同步运行工作流（从 scanning_node 开始）
 
@@ -90,7 +96,7 @@ def run_workflow_sync(session_id: str, contract_id: str, full_text: str, thread_
     Args:
         session_id: ReviewSession.id
         contract_id: Contract.id
-        full_text: OCR 提取的合同全文
+        full_text: OCR 提取的方案全文
         thread_id: ReviewSession.langgraph_thread_id（作为 LangGraph thread_id）
 
     Returns:
@@ -105,7 +111,7 @@ def run_workflow_sync(session_id: str, contract_id: str, full_text: str, thread_
         "langgraph_thread_id": thread_id,
         "full_text": full_text,
         "pages": [],
-        "review_items": [],
+        "review_items": precomputed_review_items or [],
         "high_risk_count": 0,
         "medium_risk_count": 0,
         "low_risk_count": 0,

@@ -292,6 +292,7 @@ class HITLService:
         thread_id: str,
         full_text: str,
         db: Session,
+        precomputed_review_items: Optional[list[dict]] = None,
     ):
         """
         OCR 完成后，在后台线程启动 LangGraph 工作流。
@@ -316,7 +317,7 @@ class HITLService:
         # 在后台线程运行工作流（传 contract_id = session_id，与 graph.py 约定一致）
         t = threading.Thread(
             target=self._run_workflow_thread,
-            args=(session_id, session_id, thread_id, full_text),
+            args=(session_id, session_id, thread_id, full_text, precomputed_review_items or []),
             daemon=True,
         )
         t.start()
@@ -327,6 +328,7 @@ class HITLService:
         contract_id: str,
         thread_id: str,
         full_text: str,
+        precomputed_review_items: list[dict],
     ):
         """后台线程执行工作流（使用独立的 DB session，不与 FastAPI 共享）"""
         db = SessionLocal()
@@ -339,6 +341,7 @@ class HITLService:
                 contract_id=contract_id,
                 full_text=full_text,
                 thread_id=thread_id,
+                precomputed_review_items=precomputed_review_items,
             )
 
             # 将 review_items 从 workflow state 写入数据库
@@ -405,6 +408,11 @@ class HITLService:
                     ReviewSession.id == session_id
                 ).first()
                 if session and session.state not in ("report_ready", "aborted"):
+                    failure_state = "parsed" if session.state == "scanning" else session.state
+                    if session.state == "scanning":
+                        session.state = failure_state
+                        session.hitl_subtype = None
+                        session.updated_at = datetime.utcnow()
                     log = AuditLog(
                         session_id=session_id,
                         event_type="system_failure",
@@ -412,7 +420,10 @@ class HITLService:
                         actor_type="system",
                         metadata_json=json.dumps({
                             "error": str(e),
+                            "error_code": "WORKFLOW_ERROR",
                             "node_name": "_run_workflow_thread",
+                            "user_message": "规则审查工作流执行失败，请返回清洗与向量审查后重新启动。",
+                            "failure_state": failure_state,
                         }),
                     )
                     db.add(log)
@@ -421,7 +432,15 @@ class HITLService:
                     self._push_sse_event(session_id, "system_failure", {
                         "error_code": "WORKFLOW_ERROR",
                         "node_name": "scanning",
+                        "state": failure_state,
+                        "message": "规则审查工作流执行失败，请返回清洗与向量审查后重新启动。",
+                        "technical_message": str(e),
                     })
+                    if failure_state == "parsed":
+                        self._push_sse_event(session_id, "state_changed", {
+                            "state": "parsed",
+                            "session_id": session_id,
+                        })
             except Exception:
                 pass  # 错误处理本身不应再抛出异常
         finally:
@@ -474,12 +493,21 @@ class HITLService:
 
         db.commit()
 
-        # 推送扫描进度事件
+        high_count = sum(1 for i in items_data if i.get("risk_level") == "HIGH")
+        medium_count = sum(1 for i in items_data if i.get("risk_level") == "MEDIUM")
+        low_count = sum(1 for i in items_data if i.get("risk_level") == "LOW")
+        category_counts: dict[str, int] = {}
+        for item in items_data:
+            category = str(item.get("risk_category") or "未分类").strip() or "未分类"
+            category_counts[category] = category_counts.get(category, 0) + 1
+
+        # 推送真实扫描结果汇总；前端不得自行模拟维度完成状态。
         self._push_sse_event(session_id, "scan_progress", {
             "found_count": len(items_data),
-            "high_count": sum(
-                1 for i in items_data if i.get("risk_level") == "HIGH"
-            ),
+            "high_count": high_count,
+            "medium_count": medium_count,
+            "low_count": low_count,
+            "category_counts": category_counts,
         })
 
     def _push_sse_event(self, session_id: str, event_type: str, data: dict):

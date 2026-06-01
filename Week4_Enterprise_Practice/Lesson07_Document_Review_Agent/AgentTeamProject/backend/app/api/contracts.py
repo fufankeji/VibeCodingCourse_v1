@@ -1,6 +1,7 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, UploadFile, File, Query
+from fastapi import APIRouter, Depends, Header, UploadFile, File, Form, Query
+from sqlalchemy import and_, func
 from sqlalchemy.orm import Session
 
 from app.core.errors import APIError
@@ -9,6 +10,7 @@ from app.models.contract import Contract
 from app.models.session import ReviewSession
 from app.schemas.contract import ContractListResponse, ContractResponse, UploadResponse
 from app.services import upload_service
+from app.services.contract_entry_service import build_contract_entry
 
 router = APIRouter()
 
@@ -16,10 +18,11 @@ router = APIRouter()
 @router.post("/upload", response_model=UploadResponse, status_code=201)
 async def upload_contract(
     file: UploadFile = File(...),
+    contract_title: str | None = Form(default=None),
     x_user_id: str = Header(default="anonymous", alias="X-User-ID"),
     db: Session = Depends(get_db),
 ):
-    return await upload_service.handle_upload(file, db, user_id=x_user_id)
+    return await upload_service.handle_upload(file, db, user_id=x_user_id, contract_title=contract_title)
 
 
 @router.get("", response_model=ContractListResponse)
@@ -29,12 +32,24 @@ def list_contracts(
     state: Optional[str] = Query(default=None, description="按 session state 筛选"),
     db: Session = Depends(get_db),
 ):
-    # If state filter is given, we need to join with sessions
+    latest_session_subq = (
+        db.query(
+            ReviewSession.contract_id.label("contract_id"),
+            func.max(ReviewSession.created_at).label("latest_created_at"),
+        )
+        .group_by(ReviewSession.contract_id)
+        .subquery()
+    )
+    latest_session_join = and_(
+        ReviewSession.contract_id == Contract.id,
+        ReviewSession.created_at == latest_session_subq.c.latest_created_at,
+    )
+
     if state:
-        from sqlalchemy import and_
         query = (
             db.query(Contract)
-            .join(ReviewSession, ReviewSession.contract_id == Contract.id)
+            .join(latest_session_subq, latest_session_subq.c.contract_id == Contract.id)
+            .join(ReviewSession, latest_session_join)
             .filter(ReviewSession.state == state)
             .order_by(Contract.created_at.desc())
         )
@@ -64,6 +79,7 @@ def list_contracts(
         if session:
             resp.session_id = session.id
             resp.session_state = session.state
+        _apply_contract_entry(resp, build_contract_entry(db, c, session))
         result_items.append(resp)
 
     return ContractListResponse(
@@ -83,4 +99,10 @@ def get_contract(contract_id: str, db: Session = Depends(get_db)):
     if session:
         resp.session_id = session.id
         resp.session_state = session.state
+    _apply_contract_entry(resp, build_contract_entry(db, contract, session))
     return resp
+
+
+def _apply_contract_entry(resp: ContractResponse, entry: dict) -> None:
+    for key, value in entry.items():
+        setattr(resp, key, value)

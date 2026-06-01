@@ -26,38 +26,44 @@ export function GlobalNav() {
 
   const navItems = [
     { path: '/dashboard', label: '工作台', icon: LayoutDashboard },
-    { path: '/contracts', label: '合同列表', icon: FileText },
+    { path: '/contracts', label: '方案列表', icon: FileText },
     ...(user?.role === 'admin' ? [{ path: '/admin', label: '系统管理', icon: Settings }] : []),
   ];
 
   return (
-    <nav className="fixed top-0 left-0 right-0 z-50 h-14 bg-white border-b border-gray-200 flex items-center px-6 shadow-sm">
+    <nav className="fixed top-0 left-0 right-0 z-50 h-14 bg-white border-b border-gray-200 flex items-center px-3 sm:px-6 shadow-sm">
       {/* Logo + Product Name */}
-      <div className="flex items-center gap-2 mr-8 cursor-pointer" onClick={() => navigate('/dashboard')}>
+      <button
+        type="button"
+        className="mr-2 flex h-11 w-11 shrink-0 items-center justify-center gap-2 rounded-md text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 sm:mr-8 sm:w-auto sm:justify-start sm:pr-2"
+        onClick={() => navigate('/dashboard')}
+        aria-label="返回工作台"
+      >
         <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
           <FileText className="w-4 h-4 text-white" />
         </div>
-        <span className="text-gray-900 select-none" style={{ fontWeight: 600, letterSpacing: '-0.01em' }}>
-          合同智审
+        <span className="hidden whitespace-nowrap text-gray-900 select-none sm:inline" style={{ fontWeight: 600 }}>
+          水土保持方案智能评审
         </span>
-      </div>
+      </button>
 
       {/* Nav Links */}
-      <div className="flex items-center gap-1 flex-1">
+      <div className="flex min-w-0 flex-1 items-center gap-1">
         {navItems.map(({ path, label, icon: Icon }) => {
           const isActive = location.pathname === path || location.pathname.startsWith(path + '/');
           return (
             <button
               key={path}
               onClick={() => navigate(path)}
-              className={`flex items-center gap-1.5 px-3 py-2 rounded-md text-sm transition-colors ${
+              aria-label={label}
+              className={`flex h-11 w-11 shrink-0 items-center justify-center gap-1.5 rounded-md text-sm transition-colors sm:w-auto sm:px-3 ${
                 isActive
                   ? 'bg-blue-50 text-blue-700'
                   : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
               }`}
             >
               <Icon className="w-4 h-4" />
-              {label}
+              <span className="hidden whitespace-nowrap sm:inline">{label}</span>
             </button>
           );
         })}
@@ -65,8 +71,8 @@ export function GlobalNav() {
 
       {/* User Info */}
       {user && (
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2 sm:gap-3">
+          <div className="hidden items-center gap-2 md:flex">
             <div className="w-8 h-8 bg-gray-200 rounded-full flex items-center justify-center">
               <UserIcon className="w-4 h-4 text-gray-600" />
             </div>
@@ -79,10 +85,11 @@ export function GlobalNav() {
           </div>
           <button
             onClick={handleLogout}
-            className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 hover:bg-gray-100 px-2 py-1.5 rounded-md transition-colors"
+            aria-label="退出登录"
+            className="flex h-11 w-11 items-center justify-center gap-1 rounded-md text-sm text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 sm:w-auto sm:px-2"
           >
             <LogOut className="w-4 h-4" />
-            退出
+            <span className="hidden sm:inline">退出</span>
           </button>
         </div>
       )}

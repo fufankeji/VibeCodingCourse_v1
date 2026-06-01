@@ -1,19 +1,49 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router';
-import { CheckCircle, Edit2, SkipForward, ChevronDown, ChevronUp, Zap, ArrowLeft, Loader2 } from 'lucide-react';
+import { CheckCircle, Edit2, SkipForward, ChevronDown, ChevronUp, Zap, ArrowLeft, Loader2, FileText } from 'lucide-react';
 import { GlobalNav } from '../components/GlobalNav';
 import { WorkflowStatusBar } from '../components/WorkflowStatusBar';
 import { ConfidenceBadge } from '../components/ConfidenceBadge';
 import { listFields, verifyField } from '../api/fields';
+import { getSession } from '../api/sessions';
 import type { ExtractedField, VerificationStatus } from '../types';
 
 const FIELD_LABEL: Record<string, string> = {
-  party_a: '甲方', party_b: '乙方', contract_amount: '合同金额',
-  effective_date: '生效日期', termination_conditions: '终止条件', signing_party: '签署方',
+  project_name: '项目名称',
+  construction_unit: '建设单位',
+  project_location: '建设地点',
+  construction_location: '建设地点',
+  construction_nature: '建设性质',
+  project_nature: '建设性质',
+  key_prevention_or_control_area: '重点防治区属性',
+  disturbed_area: '扰动地表面积',
+  occupied_area: '占地面积',
+  land_area: '占地面积',
+  prevention_responsibility_area: '防治责任范围面积',
+  zone_area: '分区面积',
+  excavation_volume: '挖方',
+  fill_volume: '填方',
+  borrow_volume: '借方',
+  spoil_volume: '弃方',
+  comprehensive_utilization: '综合利用',
+  spoil_destination: '弃方去向',
+  topsoil_stripping: '表土剥离',
+  topsoil_preservation: '表土保存',
+  topsoil_backfill: '表土回覆',
+  temp_soil_stockpile: '临时堆土区',
+  spoil_ground: '弃渣场',
+  spoil_area: '弃渣场',
+  borrow_ground: '取土场',
+  borrow_area: '取土场',
+  construction_road: '施工道路',
+  prevention_measures: '防治措施',
+  monitoring: '监测',
+  schedule_arrangement: '时序安排',
+  investment_estimate: '投资估算',
 };
 
 /**
- * FieldVerificationPage — P06 字段核对页
+ * FieldVerificationPage — P06 关键信息确认页
  * GET /sessions/{session_id}/fields — 已开发
  * PATCH /sessions/{session_id}/fields/{field_id} — 已开发（action: confirm/modify/skip）
  * R08: 置信度颜色严格来自 confidence_score 字段
@@ -26,11 +56,15 @@ export function FieldVerificationPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [isStartingScanning, setIsStartingScanning] = useState(false);
+  const [readOnly, setReadOnly] = useState(false);
 
   // Load fields from backend
   useEffect(() => {
     if (!sessionId) return;
     setIsLoading(true);
+    getSession(sessionId)
+      .then((session) => setReadOnly(Boolean(session.read_only || session.state === 'aborted')))
+      .catch(() => {});
     listFields(sessionId)
       .then((res) => {
         setFields(res.items.map((f) => ({ ...f, editValue: f.field_value, expanded: false })));
@@ -42,7 +76,7 @@ export function FieldVerificationPage() {
   const lowConfidenceFields = fields.filter((f) => f.needs_human_verification && f.verification_status === 'unverified');
 
   const handleAction = async (fieldId: string, action: VerificationStatus, newValue?: string) => {
-    if (!sessionId) return;
+    if (!sessionId || readOnly) return;
     // Optimistic update
     setFields((prev) =>
       prev.map((f) =>
@@ -69,6 +103,7 @@ export function FieldVerificationPage() {
   };
 
   const handleStartScan = async () => {
+    if (readOnly) return;
     setIsStartingScanning(true);
     await new Promise((r) => setTimeout(r, 800));
     navigate(`/contracts/${sessionId}/scanning`);
@@ -85,12 +120,22 @@ export function FieldVerificationPage() {
       <div style={{ paddingTop: 78 }}>
         <div className="max-w-3xl mx-auto px-6 py-6">
           {/* Header */}
-          <div className="mb-5">
-            <p className="text-xs text-gray-400 mb-1">session_id: {sessionId}</p>
-            <h1 className="text-gray-900" style={{ fontSize: 20, fontWeight: 700 }}>字段核对</h1>
-            <p className="text-sm text-gray-500 mt-1">
-              请核对 AI 提取的结构化字段，确认无误后可启动风险扫描
-            </p>
+          <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-xs text-gray-400 mb-1">session_id: {sessionId}</p>
+              <h1 className="text-gray-900" style={{ fontSize: 20, fontWeight: 700 }}>关键信息确认</h1>
+              <p className="text-sm text-gray-500 mt-1">
+                请确认系统从文档中抽取的项目名称、面积、土石方、投资等关键信息，确认后可启动规则审查
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => sessionId && navigate(`/contracts/${sessionId}/document?stage=fields`)}
+              className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            >
+              <FileText className="h-4 w-4" />
+              查看解析文档
+            </button>
           </div>
 
           {/* Loading State */}
@@ -118,6 +163,12 @@ export function FieldVerificationPage() {
             </div>
           )}
 
+          {readOnly && (
+            <div className="mb-5 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+              当前会话已中止，本页仅用于查看已抽取字段，不能修改字段或启动 AI 审查。
+            </div>
+          )}
+
           {/* Field Cards */}
           <div className="space-y-3 mb-6">
             {fields.map((field) => {
@@ -142,7 +193,7 @@ export function FieldVerificationPage() {
                         )}
                       </div>
                       <div className="flex-1 min-w-0">
-                        {field.expanded && !isVerified ? (
+                        {field.expanded && !isVerified && !readOnly ? (
                           <input
                             type="text"
                             value={field.editValue ?? field.field_value}
@@ -159,7 +210,9 @@ export function FieldVerificationPage() {
                     </div>
 
                     <div className="flex items-center gap-1.5 ml-3 shrink-0">
-                      {isVerified ? (
+                      {readOnly ? (
+                        <span className="text-xs text-slate-400">只读</span>
+                      ) : isVerified ? (
                         <StatusTag status={field.verification_status} />
                       ) : (
                         <>
@@ -212,12 +265,12 @@ export function FieldVerificationPage() {
           <div className="flex gap-3">
             <button
               onClick={handleStartScan}
-              disabled={isStartingScanning}
+              disabled={isStartingScanning || readOnly}
               className="flex-1 flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white py-3 rounded-xl text-sm transition-colors"
               style={{ fontWeight: 500 }}
             >
               <Zap className="w-4 h-4" />
-              {isStartingScanning ? 'AI 扫描启动中…' : '开始 AI 风险扫描'}
+              {readOnly ? '只读模式' : isStartingScanning ? 'AI 审查启动中…' : '开始 AI 规则审查'}
             </button>
             <button
               onClick={() => navigate('/contracts')}

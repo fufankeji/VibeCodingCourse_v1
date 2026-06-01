@@ -75,6 +75,17 @@ class APIError:
         )
 
     @staticmethod
+    def service_unavailable(message: str, request_id: str = "") -> HTTPException:
+        return HTTPException(
+            status_code=503,
+            detail={
+                "error_code": "SERVICE_UNAVAILABLE",
+                "message": message,
+                "request_id": _request_id(request_id),
+            },
+        )
+
+    @staticmethod
     def session_state_invalid(current_state: str, required_state: str, request_id: str = "") -> HTTPException:
         return HTTPException(
             status_code=409,
@@ -102,7 +113,7 @@ class APIError:
             status_code=415,
             detail={
                 "error_code": "UNSUPPORTED_FILE_TYPE",
-                "message": "不支持的文件类型，仅支持 PDF 和 DOCX",
+                "message": "不支持的文件类型，仅支持 PDF、DOCX 和 MinerU JSON",
                 "request_id": _request_id(request_id),
             },
         )

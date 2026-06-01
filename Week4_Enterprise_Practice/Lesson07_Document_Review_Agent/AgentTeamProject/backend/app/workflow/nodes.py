@@ -15,40 +15,35 @@ import json
 import uuid
 from datetime import datetime
 from typing import Any
-from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.types import interrupt, Command
 
 from app.workflow.state import ContractReviewState
+from app.config import get_llm as get_configured_llm
 
 # ============================================================
 # LLM 初始化
 # ============================================================
 def get_llm():
-    return ChatOpenAI(
-        model="deepseek-chat",
-        api_key="sk-d10fbb1662294178bad56faf66dd60d7",
-        base_url="https://api.deepseek.com/v1",
-        temperature=0.1,
-    )
+    return get_configured_llm()
 
-RISK_SCAN_SYSTEM_PROMPT = """你是一个专业的合同法律风险审查 AI。
-你需要分析合同段落，识别潜在的法律风险。
+RISK_SCAN_SYSTEM_PROMPT = """你是水土保持方案技术审查助手。
+你需要分析方案段落，识别形式完整性、技术合规性和跨章节一致性问题。
 
 对于每个高风险或中风险的段落，返回 JSON 格式：
 {
   "risk_level": "HIGH" | "MEDIUM" | "LOW",
   "confidence_score": 0-100,
   "source_type": "rule_engine" | "ai_inference",
-  "risk_category": "风险类别（如：单边条款、违约金条款等）",
-  "ai_finding": "可能存在...风险（必须使用模态表述，不可绝对化）",
-  "ai_reasoning": "风险分析理由",
+  "risk_category": "问题类别（如：形式完整性、土石方平衡、表土保护等）",
+  "ai_finding": "可能存在...问题（必须使用模态表述，不可绝对化）",
+  "ai_reasoning": "问题分析理由",
   "suggested_revision": "修改建议（可选）"
 }
 
 重要约束：
-1. ai_finding 必须使用模态表述：以"可能存在...风险"开头
-2. 不可使用绝对化结论（如"该条款违法"）
+1. ai_finding 必须使用模态表述：以"可能存在...问题"开头
+2. 不可使用绝对化结论（如"该方案不合格"）
 3. LOW 风险可以简化输出
 
 只返回 JSON，不要其他内容。"""
@@ -60,11 +55,20 @@ RISK_SCAN_SYSTEM_PROMPT = """你是一个专业的合同法律风险审查 AI。
 
 def scanning_node(state: ContractReviewState) -> dict:
     """
-    AI 风险扫描节点：对合同全文逐段落扫描，生成 ReviewItem 列表
+    AI 风险扫描节点：对方案全文逐段落扫描，生成 ReviewItem 列表
 
     输入：state.full_text, state.pages
     输出：state.review_items, state.high_risk_count, state.medium_risk_count, state.low_risk_count
     """
+    precomputed_items = state.get("review_items", [])
+    if precomputed_items:
+        return {
+            "review_items": precomputed_items,
+            "high_risk_count": sum(1 for item in precomputed_items if item.get("risk_level") == "HIGH"),
+            "medium_risk_count": sum(1 for item in precomputed_items if item.get("risk_level") == "MEDIUM"),
+            "low_risk_count": sum(1 for item in precomputed_items if item.get("risk_level") == "LOW"),
+        }
+
     llm = get_llm()
     full_text = state.get("full_text", "")
     session_id = state["session_id"]
@@ -85,7 +89,7 @@ def scanning_node(state: ContractReviewState) -> dict:
             # 调用 DeepSeek 分析风险
             messages = [
                 SystemMessage(content=RISK_SCAN_SYSTEM_PROMPT),
-                HumanMessage(content=f"请分析以下合同段落的风险：\n\n{para_text[:800]}")
+                HumanMessage(content=f"请分析以下水土保持方案段落的审查问题：\n\n{para_text[:800]}")
             ]
             response = llm.invoke(messages)
             result_text = response.content.strip()
@@ -133,11 +137,6 @@ def scanning_node(state: ContractReviewState) -> dict:
             # LLM 失败时降级：标记为低风险
             low_count += 1
             continue
-
-    # 如果没有发现风险，添加一个 mock 中风险条款（用于 MVP 测试）
-    if not review_items and full_text:
-        review_items.append(_create_mock_high_risk_item(session_id, full_text))
-        high_count = 1
 
     return {
         "review_items": review_items,
@@ -343,42 +342,15 @@ def _split_into_paragraphs(text: str) -> list:
 def _ensure_modal_expression(finding: str) -> str:
     """确保 ai_finding 使用模态表述，不包含绝对化结论"""
     if not finding:
-        return "可能存在潜在法律风险"
+        return "可能存在需复核的水土保持方案问题"
 
     # 移除绝对化表述
-    absolute_phrases = ["该条款违法", "明显违法", "肯定存在", "必然导致", "一定会"]
+    absolute_phrases = ["该方案不合格", "明显违法", "肯定存在", "必然导致", "一定会"]
     for phrase in absolute_phrases:
-        finding = finding.replace(phrase, "可能存在相关风险")
+        finding = finding.replace(phrase, "可能存在相关问题")
 
     # 确保以模态表述开头
     if not any(finding.startswith(prefix) for prefix in ["可能", "疑似", "存在", "潜在"]):
         finding = "可能存在" + finding
 
     return finding
-
-
-def _create_mock_high_risk_item(session_id: str, full_text: str) -> dict:
-    """
-    当 LLM 未检测到风险时，创建 mock 高风险条款（用于 MVP 演示和测试）
-    """
-    # 取合同前 200 字作为示例条款
-    sample_text = full_text[:200] if len(full_text) > 200 else full_text
-
-    return {
-        "id": str(uuid.uuid4()),
-        "session_id": session_id,
-        "clause_text": sample_text or "甲方有权随时修改本协议条款，修改后即时生效",
-        "page_number": 1,
-        "paragraph_index": 0,
-        "highlight_anchor": "page1-para0",
-        "char_offset_start": 0,
-        "char_offset_end": len(sample_text),
-        "risk_level": "HIGH",
-        "confidence_score": 85,
-        "source_type": "rule_engine",
-        "risk_category": "单边条款",
-        "ai_finding": "可能存在单边修改权风险：甲方可单方面变更服务内容而无需乙方同意",
-        "ai_reasoning": "该条款赋予甲方单方面变更权，缺乏对等制衡机制，可能存在权利滥用风险",
-        "suggested_revision": "建议增加“重大变更需提前30日书面通知乙方并取得书面同意”的约束",
-        "human_decision": "pending",
-    }

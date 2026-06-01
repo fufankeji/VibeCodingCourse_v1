@@ -1,6 +1,4 @@
-import asyncio
 import json
-import os
 import shutil
 import uuid
 from datetime import datetime
@@ -15,17 +13,25 @@ from app.models.audit_log import AuditLog
 from app.models.contract import Contract
 from app.models.session import ReviewSession
 from app.schemas.contract import UploadResponse
+from app.services.document_parse_worker import create_parse_job
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 PDF_MAGIC = b"%PDF-"
 ZIP_MAGIC = b"PK\x03\x04"
 
 
-def _detect_file_type(header: bytes) -> str | None:
+def _detect_file_type(header: bytes, filename: str | None = None) -> str | None:
+    suffix = Path(filename or "").suffix.lower()
+    if suffix == ".doc":
+        return None
     if header[:5] == PDF_MAGIC:
         return "pdf"
     if header[:4] == ZIP_MAGIC:
         return "docx"
+    if header.lstrip().startswith((b"{", b"[")):
+        return "json"
+    if suffix == ".json":
+        return "json"
     return None
 
 
@@ -49,10 +55,25 @@ def _check_docx_integrity(file_path: str) -> bool:
 
     try:
         with zipfile.ZipFile(file_path, "r") as zf:
+            if "word/document.xml" not in zf.namelist():
+                return False
             zf.testzip()
         return True
     except Exception:
         return False
+
+
+def _check_mineru_json_integrity(file_path: str) -> bool:
+    try:
+        data = json.loads(Path(file_path).read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+    pages = data.get("pdf_info")
+    if not isinstance(pages, list) or not pages:
+        return False
+    return any(isinstance(page, dict) and page.get("para_blocks") for page in pages)
 
 
 def _is_scanned_pdf(file_path: str) -> bool:
@@ -70,10 +91,46 @@ def _is_scanned_pdf(file_path: str) -> bool:
         return False
 
 
-async def handle_upload(file: UploadFile, db: Session, user_id: str = "anonymous") -> UploadResponse:
+def _find_reusable_contract(db: Session, *, file_type: str, content: bytes, user_id: str) -> tuple[Contract, ReviewSession] | None:
+    candidates = (
+        db.query(Contract)
+        .filter(
+            Contract.file_type == file_type,
+            Contract.uploaded_by == user_id,
+            Contract.contract_status != "aborted",
+        )
+        .order_by(Contract.created_at.desc())
+        .all()
+    )
+    for contract in candidates:
+        path = Path(contract.file_path)
+        if not path.exists():
+            continue
+        try:
+            if path.read_bytes() != content:
+                continue
+        except OSError:
+            continue
+        session = (
+            db.query(ReviewSession)
+            .filter(ReviewSession.contract_id == contract.id, ReviewSession.state != "aborted")
+            .order_by(ReviewSession.created_at.desc())
+            .first()
+        )
+        if session:
+            return contract, session
+    return None
+
+
+async def handle_upload(
+    file: UploadFile,
+    db: Session,
+    user_id: str = "anonymous",
+    contract_title: str | None = None,
+) -> UploadResponse:
     # Read header for magic bytes check
     header = await file.read(8)
-    file_type = _detect_file_type(header)
+    file_type = _detect_file_type(header, file.filename)
     if file_type is None:
         raise APIError.unsupported_file_type()
 
@@ -84,6 +141,19 @@ async def handle_upload(file: UploadFile, db: Session, user_id: str = "anonymous
     # File size check
     if len(content) > MAX_FILE_SIZE:
         raise APIError.file_too_large(50)
+
+    reusable = _find_reusable_contract(db, file_type=file_type, content=content, user_id=user_id)
+    if reusable:
+        contract, session = reusable
+        return UploadResponse(
+            contract_id=contract.id,
+            session_id=session.id,
+            title=contract.title,
+            file_type=contract.file_type,
+            is_scanned_document=contract.is_scanned_document,
+            state=session.state,
+            message="文件已存在，已复用已有解析任务",
+        )
 
     # Persist to temp location first
     contract_id = str(uuid.uuid4())
@@ -113,9 +183,13 @@ async def handle_upload(file: UploadFile, db: Session, user_id: str = "anonymous
         if not _check_docx_integrity(file_path):
             shutil.rmtree(storage_dir, ignore_errors=True)
             raise APIError.corrupt_file()
+    elif file_type == "json":
+        if not _check_mineru_json_integrity(file_path):
+            shutil.rmtree(storage_dir, ignore_errors=True)
+            raise APIError.corrupt_file()
 
     # Derive title from filename
-    title = Path(original_filename).stem
+    title = (contract_title or "").strip() or Path(original_filename).stem
 
     # Create DB records in a transaction
     contract = Contract(
@@ -139,6 +213,14 @@ async def handle_upload(file: UploadFile, db: Session, user_id: str = "anonymous
     )
     db.add(session)
     db.flush()  # populate session.id
+    job = create_parse_job(
+        db,
+        session_id=session.id,
+        contract_id=contract_id,
+        source_file_path=file_path,
+        source_file_type=file_type,
+    )
+    db.flush()
 
     audit = AuditLog(
         session_id=session.id,
@@ -151,6 +233,7 @@ async def handle_upload(file: UploadFile, db: Session, user_id: str = "anonymous
                 "original_filename": original_filename,
                 "file_type": file_type,
                 "file_size_bytes": len(content),
+                "parse_job_id": job.id,
             }
         ),
     )
@@ -158,33 +241,12 @@ async def handle_upload(file: UploadFile, db: Session, user_id: str = "anonymous
     db.commit()
     db.refresh(session)
 
-    # Kick off async OCR in background
-    session_id = session.id
-    asyncio.create_task(_background_ocr(session_id, file_path, file_type))
-
     return UploadResponse(
         contract_id=contract_id,
-        session_id=session_id,
+        session_id=session.id,
         title=title,
         file_type=file_type,
         is_scanned_document=is_scanned,
         state="parsing",
         message="文件上传成功，正在解析中",
     )
-
-
-async def _background_ocr(session_id: str, file_path: str, file_type: str) -> None:
-    """Run OCR extraction in a background task."""
-    from app.database import SessionLocal
-    from app.services import ocr_service
-
-    db = SessionLocal()
-    try:
-        text = await asyncio.get_event_loop().run_in_executor(
-            None, ocr_service.extract_text, file_path
-        )
-        await ocr_service.extract_fields(session_id, text, db)
-    except Exception:
-        pass  # Errors are logged inside ocr_service
-    finally:
-        db.close()
