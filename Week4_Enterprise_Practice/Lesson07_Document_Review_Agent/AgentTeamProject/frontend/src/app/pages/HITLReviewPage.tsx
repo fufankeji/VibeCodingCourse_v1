@@ -4,6 +4,7 @@ import { AlertTriangle, CheckCircle, XCircle, Edit, RotateCcw, History, Info, Lo
 import { RiskLevelBadge } from '../components/RiskLevelBadge';
 import { SourceBadge } from '../components/SourceBadge';
 import { ConfidenceBadge } from '../components/ConfidenceBadge';
+import { API_BASE_URL } from '../api/client';
 import { listItems, submitDecision, revokeDecision } from '../api/items';
 import {
   getReviewDocumentContent,
@@ -826,6 +827,7 @@ function DocumentPageView({
 function DocumentBlockView({ block, highlighted }: { block: ReviewDocumentBlock; highlighted: boolean }) {
   const hasRenderableMedia = Boolean(block.html || block.image_path);
   if (!block.text && !hasRenderableMedia) return null;
+  const imageUrl = resolveDocumentAssetUrl(block.image_path);
   const baseClass = highlighted
     ? 'rounded-sm bg-red-100 px-1 text-red-900 ring-1 ring-red-200'
     : 'text-slate-800';
@@ -853,7 +855,7 @@ function DocumentBlockView({ block, highlighted }: { block: ReviewDocumentBlock;
         )}
         {block.image_path && !hasVisibleHtml ? (
           <img
-            src={block.image_path}
+            src={imageUrl}
             alt={block.text || 'MinerU table'}
             loading="lazy"
             className="max-h-[420px] w-full rounded border border-slate-200 bg-white object-contain"
@@ -868,7 +870,7 @@ function DocumentBlockView({ block, highlighted }: { block: ReviewDocumentBlock;
       return (
         <div className={`rounded border border-slate-200 bg-slate-50 p-2 ${highlighted ? 'ring-1 ring-red-200' : ''}`}>
           <img
-            src={block.image_path}
+            src={imageUrl}
             alt={block.text || 'MinerU image'}
             loading="lazy"
             className="max-h-[520px] w-full rounded bg-white object-contain"
@@ -884,6 +886,18 @@ function DocumentBlockView({ block, highlighted }: { block: ReviewDocumentBlock;
   }
 
   return <p className={`whitespace-pre-wrap break-words ${baseClass}`}>{block.text}</p>;
+}
+
+function resolveDocumentAssetUrl(imagePath?: string) {
+  const path = imagePath?.trim();
+  if (!path) return '';
+  if (/^https?:\/\//i.test(path)) return path;
+  if (!path.startsWith('/api/v1/')) return path;
+  try {
+    return new URL(path, API_BASE_URL).toString();
+  } catch {
+    return path;
+  }
 }
 
 function isActiveAnchorBlock(block: ReviewDocumentBlock, anchors: EvidenceAnchor[]): boolean {

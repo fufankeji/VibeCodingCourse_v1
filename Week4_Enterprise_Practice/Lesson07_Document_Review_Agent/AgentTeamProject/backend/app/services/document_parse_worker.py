@@ -265,6 +265,10 @@ def _prepare_parse_artifact(db: Session, job: DocumentParseJob) -> str:
     job.result_markdown_path = str(artifacts.markdown_path) if artifacts.markdown_path else None
     _record_stage_transition(job, "extracted")
     _record_timing_metric(job, "mineru_total_duration_ms", int((time.monotonic() - mineru_started) * 1000))
+    if artifacts.segment_manifest_path:
+        _record_timing_metric(job, "mineru_segment_manifest_path", str(artifacts.segment_manifest_path))
+    if artifacts.segment_summary:
+        _record_timing_metric(job, "mineru_segments", artifacts.segment_summary)
     db.add(job)
     db.commit()
     _publish_progress_nowait(job)
@@ -278,8 +282,9 @@ def _update_mineru_progress(db: Session, job_id: str, stage: str, values: dict[s
     job = db.query(DocumentParseJob).filter(DocumentParseJob.id == job_id).first()
     if not job:
         return
+    now = datetime.utcnow()
     job.stage = stage
-    _record_stage_transition(job, stage)
+    _record_stage_transition(job, stage, now=now)
     if values.get("batch_id"):
         job.mineru_batch_id = values["batch_id"]
     if values.get("task_id"):
@@ -289,7 +294,9 @@ def _update_mineru_progress(db: Session, job_id: str, stage: str, values: dict[s
             _record_timing_metric(job, key, int(value))
         elif key in PROGRESS_PAYLOAD_KEYS:
             _record_timing_metric(job, f"latest_{key}", value)
-    job.updated_at = datetime.utcnow()
+    if job.status == "running":
+        job.locked_at = now
+    job.updated_at = now
     db.add(job)
     db.commit()
     _publish_progress_nowait(job)
@@ -429,8 +436,10 @@ def _publish_progress_nowait(job: DocumentParseJob) -> None:
             progress_payload[key] = value
     if job.mineru_batch_id:
         progress_payload["batch_id"] = job.mineru_batch_id
+        progress_payload["current_batch_id"] = job.mineru_batch_id
     if job.mineru_task_id:
         progress_payload["task_id"] = job.mineru_task_id
+        progress_payload["current_task_id"] = job.mineru_task_id
     sse_manager.publish_nowait(
         job.session_id,
         "parse_progress",

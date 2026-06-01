@@ -95,6 +95,23 @@ def test_extract_zip_artifacts_extracts_asset_files(tmp_path):
     assert (tmp_path / "images" / "page-1.jpg").read_bytes() == b"image-bytes"
 
 
+def test_extract_zip_artifacts_rejects_total_uncompressed_size(tmp_path, monkeypatch):
+    from app.services import mineru_service
+
+    monkeypatch.setattr(mineru_service, "MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES", 10)
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w") as zf:
+        zf.writestr("a.txt", b"123456")
+        zf.writestr("b.txt", b"123456")
+
+    try:
+        mineru_service.extract_zip_artifacts(payload.getvalue(), tmp_path)
+    except mineru_service.MinerUAPIError as exc:
+        assert exc.error_code == "MINERU_ZIP_TOO_LARGE"
+    else:
+        raise AssertionError("zip with excessive uncompressed size should fail")
+
+
 def test_extract_zip_artifacts_rejects_invalid_zip(tmp_path):
     from app.services.mineru_service import MinerUAPIError, extract_zip_artifacts
 
@@ -143,6 +160,18 @@ def test_segment_error_preserves_non_retryable_mineru_codes():
         assert mapped.error_code == code
 
 
+def test_segment_error_message_includes_segment_identity():
+    from app.services.mineru_service import MinerUAPIError, MinerUSegment, _segment_error
+
+    segment = MinerUSegment(2, 3, 201, 400, 200, "201-400")
+
+    mapped = _segment_error(MinerUAPIError("remote failed", "MINERU_REMOTE_FAILED"), segment)
+
+    assert mapped.error_code == "MINERU_SEGMENT_FAILED"
+    assert "part-002" in str(mapped)
+    assert "201-400" in str(mapped)
+
+
 def test_plan_pdf_segments_keeps_small_pdf_single_segment():
     from app.services.mineru_service import _plan_pdf_segments
 
@@ -162,10 +191,10 @@ def test_plan_pdf_segments_splits_pages_over_mineru_limit():
 
     segments = _plan_pdf_segments(278)
 
-    assert [segment.page_ranges for segment in segments] == ["1-200", "201-400"]
+    assert [segment.page_ranges for segment in segments] == ["1-200", "201-278"]
     assert [segment.page_offset for segment in segments] == [0, 200]
     assert [segment.page_start for segment in segments] == [1, 201]
-    assert [segment.page_end_requested for segment in segments] == [200, 400]
+    assert [segment.page_end_requested for segment in segments] == [200, 278]
     assert [segment.segment_count for segment in segments] == [2, 2]
 
 
@@ -174,7 +203,7 @@ def test_plan_pdf_segments_splits_401_pages_into_three_ranges():
 
     segments = _plan_pdf_segments(401)
 
-    assert [segment.page_ranges for segment in segments] == ["1-200", "201-400", "401-600"]
+    assert [segment.page_ranges for segment in segments] == ["1-200", "201-400", "401-401"]
     assert [segment.page_offset for segment in segments] == [0, 200, 400]
 
 
@@ -236,6 +265,7 @@ def test_submit_local_file_includes_page_ranges_when_present(tmp_path):
     assert batch_id == "batch-201-400"
     assert uploaded["called"] is True
     assert captured_payload["files"][0]["page_ranges"] == "201-400"
+    assert captured_payload["files"][0]["data_id"].endswith("-part-002")
 
 
 def test_merge_segment_json_rewrites_page_indexes_and_asset_paths(tmp_path):
@@ -243,7 +273,7 @@ def test_merge_segment_json_rewrites_page_indexes_and_asset_paths(tmp_path):
 
     segments = [
         MinerUSegment(1, 2, 1, 200, 0, "1-200"),
-        MinerUSegment(2, 2, 201, 400, 200, "201-400"),
+        MinerUSegment(2, 2, 201, 278, 200, "201-278"),
     ]
     part1 = tmp_path / "segments" / "part-001"
     part2 = tmp_path / "segments" / "part-002"
@@ -299,7 +329,7 @@ def test_merge_segment_json_rewrites_page_indexes_and_asset_paths(tmp_path):
     assert segment_two_block["original_image_path"] == "images/a.jpg"
     markdown = artifacts.markdown_path.read_text(encoding="utf-8")
     assert "MinerU segment 1/2 pages 1-200" in markdown
-    assert "MinerU segment 2/2 pages 201-400" in markdown
+    assert "MinerU segment 2/2 pages 201-278" in markdown
     manifest = json.loads((tmp_path / "segment_manifest.json").read_text(encoding="utf-8"))
     assert manifest["source_page_count"] == 202
     assert [item["batch_id"] for item in manifest["segments"]] == ["b1", "b2"]
@@ -394,7 +424,7 @@ def test_parse_file_to_artifacts_segments_pdf_over_200_pages(tmp_path, monkeypat
 
     artifacts = mineru_service.parse_file_to_artifacts(str(source), tmp_path / "mineru")
 
-    assert seen_ranges == ["1-200", "201-400"]
+    assert seen_ranges == ["1-200", "201-278"]
     merged = json.loads(artifacts.json_path.read_text(encoding="utf-8"))
     assert len(merged["pdf_info"]) == 278
     assert merged["pdf_info"][200]["page_idx"] == 200
