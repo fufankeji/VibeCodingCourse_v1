@@ -7,6 +7,7 @@ precomputed issues to the existing LangGraph/HITL flow.
 """
 
 import json
+import logging
 import random
 from datetime import datetime
 from pathlib import Path
@@ -46,6 +47,55 @@ STRUCTURED_FIELDS = [
     "schedule_arrangement",
     "investment_estimate",
 ]
+
+logger = logging.getLogger(__name__)
+
+
+def classify_pipeline_failure(error_message: str) -> dict[str, str]:
+    raw = (error_message or "").strip()
+    normalized = raw.lower()
+    if "no grounded facts" in normalized:
+        return {
+            "failure_category": "evidence_insufficient",
+            "user_message": (
+                "证据不足：当前解析结果未抽取到可用于字段核验和规则审查的原文证据。"
+                "常见原因是文档不是水土保持方案、内容过少、扫描识别质量差，或关键章节/指标缺失。"
+            ),
+        }
+    if "review_llm_api_key" in normalized or "deepseek_api_key" in normalized:
+        return {
+            "failure_category": "llm_config_missing",
+            "user_message": "缺少大模型配置：后端未配置 REVIEW_LLM_API_KEY 或 DEEPSEEK_API_KEY，无法执行证据抽取。",
+        }
+    if "siliconflow_api_key" in normalized:
+        return {
+            "failure_category": "vector_config_missing",
+            "user_message": "缺少向量服务配置：后端未配置 SILICONFLOW_API_KEY，无法创建向量索引或召回证据。",
+        }
+    if "extraction failed for all documents" in normalized:
+        return {
+            "failure_category": "evidence_extraction_failed",
+            "user_message": "证据抽取服务失败：所有候选文档片段都未完成抽取，请查看后端日志中的 LangExtract 错误。",
+        }
+    if "langextract package is not available" in normalized or "langextract openai provider is not available" in normalized:
+        return {
+            "failure_category": "langextract_dependency_missing",
+            "user_message": "证据抽取依赖缺失：后端运行环境缺少 LangExtract 或其 OpenAI provider。",
+        }
+    if "siliconflow" in normalized or "embedding" in normalized or "reranker" in normalized or "vector retrieval failed" in normalized:
+        return {
+            "failure_category": "vector_service_failed",
+            "user_message": "向量服务异常：向量生成、召回或重排失败，请检查 SiliconFlow 返回、网络和向量库状态。",
+        }
+    if "deepseek" in normalized or "adjudication" in normalized or "json object" in normalized:
+        return {
+            "failure_category": "review_llm_failed",
+            "user_message": "规则审查模型调用失败：LLM 判定阶段返回异常或格式不符合要求。",
+        }
+    return {
+        "failure_category": "pipeline_runtime_error",
+        "user_message": "数据清洗与向量审查运行异常，请查看后端日志定位具体堆栈。",
+    }
 
 # Prompts
 _EXTRACTION_SYSTEM = """你是一名水土保持方案技术审查助手。请从以下方案文本中提取结构化字段信息。
@@ -122,17 +172,39 @@ async def extract_fields(session_id: str, text: str, db: Session, file_path: str
     )
 
     pipeline: dict | None = None
+    contract_id = session.contract_id
+    artifact_dir = str(Path(file_path).parent / "water_review") if file_path else f"./storage/contracts/{contract_id}/water_review"
+    logger.info(
+        "water_review_pipeline_start session_id=%s contract_id=%s previous_state=%s file_path=%s artifact_dir=%s",
+        session_id,
+        contract_id,
+        previous_state,
+        file_path or "",
+        artifact_dir,
+    )
     try:
         from app.services import water_review_service
 
-        contract_id = session.contract_id
-        artifact_dir = str(Path(file_path).parent / "water_review") if file_path else f"./storage/contracts/{contract_id}/water_review"
         pipeline = water_review_service.run_pipeline(file_path or "", artifact_dir, session_id)
         text = pipeline.get("full_text") or text
         extracted_fields = pipeline.get("fields", [])
     except Exception as exc:
         error_message = str(exc)
         failure_state = "parsed" if previous_state == "parsed" else "aborted"
+        failure = classify_pipeline_failure(error_message)
+        logger.exception(
+            "water_review_pipeline_failed session_id=%s contract_id=%s previous_state=%s failure_state=%s "
+            "file_path=%s artifact_dir=%s error_code=RAG_REVIEW_FAILED failure_category=%s user_message=%s error=%s",
+            session_id,
+            contract_id,
+            previous_state,
+            failure_state,
+            file_path or "",
+            artifact_dir,
+            failure["failure_category"],
+            failure["user_message"],
+            error_message,
+        )
         session.state = failure_state
         session.updated_at = datetime.utcnow()
         db.add(session)
@@ -147,6 +219,13 @@ async def extract_fields(session_id: str, text: str, db: Session, file_path: str
                         "error": error_message,
                         "error_code": "RAG_REVIEW_FAILED",
                         "node_name": "water_review_rag_pipeline",
+                        "exception_type": exc.__class__.__name__,
+                        "failure_category": failure["failure_category"],
+                        "user_message": failure["user_message"],
+                        "file_path": file_path or "",
+                        "artifact_dir": artifact_dir,
+                        "previous_state": previous_state,
+                        "failure_state": failure_state,
                     },
                     ensure_ascii=False,
                 ),
@@ -160,7 +239,9 @@ async def extract_fields(session_id: str, text: str, db: Session, file_path: str
                 "session_id": session_id,
                 "state": failure_state,
                 "error_code": "RAG_REVIEW_FAILED",
-                "message": error_message,
+                "message": failure["user_message"],
+                "technical_message": error_message,
+                "failure_category": failure["failure_category"],
                 "node_name": "water_review_rag_pipeline",
             },
         )

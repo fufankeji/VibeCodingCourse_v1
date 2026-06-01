@@ -40,7 +40,15 @@ class ApiClient {
     if (!res.ok) {
       let apiError: ApiError;
       try {
-        apiError = await res.json();
+        const payload = await res.json();
+        const detail = payload?.detail;
+        if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+          apiError = detail;
+        } else if (typeof detail === 'string') {
+          apiError = { error_code: 'HTTP_ERROR', message: detail };
+        } else {
+          apiError = payload;
+        }
       } catch {
         apiError = { error_code: 'UNKNOWN', message: `HTTP ${res.status}: ${res.statusText}` };
       }

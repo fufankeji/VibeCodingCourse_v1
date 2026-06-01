@@ -8,11 +8,14 @@ to the chunk/page/bbox metadata produced by MinerU or parser fallbacks.
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class LangExtractReviewError(RuntimeError):
@@ -245,7 +248,7 @@ def run_langextract(chunks: list[Any]) -> list[dict[str, Any]]:
             annotated_docs.extend(result if isinstance(result, list) else [result])
         except Exception as exc:
             failed_documents.append({"document_id": _document_id(document), "error": str(exc)[:500]})
-            print(f"[langextract] skipped document={_document_id(document)} error={exc}", flush=True)
+            logger.warning("langextract_document_failed document_id=%s error=%s", _document_id(document), exc)
 
     if failed_documents and len(failed_documents) == len(documents):
         raise LangExtractReviewError(f"LangExtract extraction failed for all documents: {failed_documents[:3]}")
@@ -262,6 +265,15 @@ def run_langextract(chunks: list[Any]) -> list[dict[str, Any]]:
                 facts.append(fact)
     deduped = _dedupe_facts(facts)
     if not deduped:
+        logger.error(
+            "langextract_no_grounded_facts selected_chunk_count=%s document_count=%s annotated_doc_count=%s "
+            "raw_fact_count=%s failed_document_count=%s",
+            len(selected_chunks),
+            len(documents),
+            len(annotated_docs),
+            len(facts),
+            len(failed_documents),
+        )
         raise LangExtractReviewError("LangExtract completed but produced no grounded facts")
     return [asdict(fact) for fact in deduped]
 

@@ -14,6 +14,7 @@ handlers and tests.
 from __future__ import annotations
 
 import json
+import logging
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -50,18 +51,38 @@ from app.services.water_review_utils import _write_json
 
 DEFAULT_MINERU_JSON = _DEFAULT_MINERU_JSON
 DEFAULT_MINERU_MD = _DEFAULT_MINERU_MD
+logger = logging.getLogger(__name__)
 
 
 def run_pipeline(file_path: str, artifact_dir: str, session_id: str) -> dict[str, Any]:
     """Parse, chunk, extract fields, review rules, and persist JSON artifacts."""
     total_started = time.perf_counter()
     timings: dict[str, int] = {}
+    logger.info(
+        "water_review_run_pipeline_start session_id=%s file_path=%s artifact_dir=%s langextract_enabled=%s",
+        session_id,
+        file_path,
+        artifact_dir,
+        settings.langextract_enabled,
+    )
     started = time.perf_counter()
     blocks = parse_document(file_path)
     timings["pipeline_parse_document_duration_ms"] = int((time.perf_counter() - started) * 1000)
+    logger.info(
+        "water_review_parse_done session_id=%s block_count=%s duration_ms=%s",
+        session_id,
+        len(blocks),
+        timings["pipeline_parse_document_duration_ms"],
+    )
     started = time.perf_counter()
     chunks = build_chunks(blocks)
     timings["pipeline_chunk_duration_ms"] = int((time.perf_counter() - started) * 1000)
+    logger.info(
+        "water_review_chunk_done session_id=%s chunk_count=%s duration_ms=%s",
+        session_id,
+        len(chunks),
+        timings["pipeline_chunk_duration_ms"],
+    )
     started = time.perf_counter()
     fallback_fields = extract_fields(chunks)
     timings["pipeline_field_extract_duration_ms"] = int((time.perf_counter() - started) * 1000)
@@ -81,6 +102,13 @@ def run_pipeline(file_path: str, artifact_dir: str, session_id: str) -> dict[str
         started = time.perf_counter()
         langextract_facts = [*table_facts, *run_langextract(chunks)]
         timings["pipeline_langextract_duration_ms"] = int((time.perf_counter() - started) * 1000)
+        logger.info(
+            "water_review_langextract_done session_id=%s table_fact_count=%s total_fact_count=%s duration_ms=%s",
+            session_id,
+            len(table_facts),
+            len(langextract_facts),
+            timings["pipeline_langextract_duration_ms"],
+        )
         fields = facts_to_extracted_fields(langextract_facts, fallback_fields)
         fact_index = build_fact_index(langextract_facts)
         cross_chapter_findings = build_cross_chapter_findings(langextract_facts)
@@ -109,6 +137,12 @@ def run_pipeline(file_path: str, artifact_dir: str, session_id: str) -> dict[str
         findings=cross_chapter_findings,
     )
     timings["pipeline_rag_duration_ms"] = int((time.perf_counter() - started) * 1000)
+    logger.info(
+        "water_review_rag_done session_id=%s issue_count=%s duration_ms=%s",
+        session_id,
+        len(rag_result.get("issues") or []),
+        timings["pipeline_rag_duration_ms"],
+    )
     from app.services.review_config_service import list_check_item_specs
 
     started = time.perf_counter()
@@ -136,6 +170,17 @@ def run_pipeline(file_path: str, artifact_dir: str, session_id: str) -> dict[str
     _write_json(artifact_path / "issues.json", issues)
     timings["pipeline_artifact_write_duration_ms"] = int((time.perf_counter() - started) * 1000)
     timings["pipeline_total_duration_ms"] = int((time.perf_counter() - total_started) * 1000)
+    logger.info(
+        "water_review_run_pipeline_done session_id=%s block_count=%s chunk_count=%s field_count=%s issue_count=%s "
+        "artifact_dir=%s duration_ms=%s",
+        session_id,
+        len(blocks),
+        len(chunks),
+        len(fields),
+        len(issues),
+        artifact_path,
+        timings["pipeline_total_duration_ms"],
+    )
 
     return {
         "full_text": "\n".join(block.text for block in blocks),
