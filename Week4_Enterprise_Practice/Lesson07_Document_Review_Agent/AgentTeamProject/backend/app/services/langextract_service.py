@@ -87,6 +87,24 @@ FIELD_ORDER = [
 ]
 
 
+LANGEXTRACT_ALLOWED_FIELDS = (
+    "project_name",
+    "construction_unit",
+    "construction_location",
+    "project_nature",
+    "land_area",
+    "disturbed_area",
+    "prevention_responsibility_area",
+    "excavation_volume",
+    "fill_volume",
+    "borrow_volume",
+    "spoil_volume",
+    "spoil_destination",
+    "borrow_area",
+    "comprehensive_utilization",
+)
+
+
 FIELD_LABELS = {
     "project_name": "项目名称",
     "construction_unit": "建设单位",
@@ -114,6 +132,12 @@ FIELD_LABELS = {
     "monitoring": "监测",
     "schedule_arrangement": "时序安排",
     "investment_estimate": "投资估算",
+}
+
+
+LANGEXTRACT_PROMPT_FIELD_LABELS = {
+    field_name: FIELD_LABELS[field_name]
+    for field_name in LANGEXTRACT_ALLOWED_FIELDS
 }
 
 
@@ -189,12 +213,9 @@ PROMPT_DESCRIPTION = """
 
 允许的 extraction_class 只使用以下英文名：
 project_name, construction_unit, construction_location, project_nature,
-key_prevention_or_control_area, disturbed_area, land_area,
-prevention_responsibility_area, zone_area, excavation_volume, fill_volume,
-borrow_volume, spoil_volume, comprehensive_utilization, spoil_destination,
-topsoil_stripping, topsoil_preservation, topsoil_backfill,
-temp_soil_stockpile, borrow_area, spoil_area, construction_road,
-prevention_measures, monitoring, schedule_arrangement, investment_estimate。
+land_area, disturbed_area, prevention_responsibility_area,
+excavation_volume, fill_volume, borrow_volume, spoil_volume,
+spoil_destination, borrow_area, comprehensive_utilization。
 
 attributes 中尽量给出：
 - normalized_value：归一化后的数值或短语
@@ -425,14 +446,6 @@ def _examples(lx: Any) -> list[Any]:
                 lx.data.Extraction("spoil_destination", "运往指定消纳场综合利用", attributes={"confidence": "88"}),
             ],
         ),
-        lx.data.ExampleData(
-            text="施工前对可剥离表土进行剥离，集中堆存在临时堆土区，后期用于绿化覆土。",
-            extractions=[
-                lx.data.Extraction("topsoil_stripping", "表土进行剥离", attributes={"confidence": "86"}),
-                lx.data.Extraction("temp_soil_stockpile", "临时堆土区", attributes={"confidence": "84"}),
-                lx.data.Extraction("topsoil_backfill", "用于绿化覆土", attributes={"confidence": "82"}),
-            ],
-        ),
     ]
 
 
@@ -470,7 +483,7 @@ def _fact_from_extraction(extraction: Any, chunk: Any, index: int) -> EvidenceFa
     if not value:
         return None
     field_name = _normalize_field_name(str(getattr(extraction, "extraction_class", "") or ""))
-    if field_name not in FIELD_ORDER:
+    if field_name not in LANGEXTRACT_ALLOWED_FIELDS:
         return None
 
     attrs = dict(getattr(extraction, "attributes", None) or {})

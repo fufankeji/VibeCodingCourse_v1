@@ -1,7 +1,10 @@
 from app.services.langextract_service import (
+    FIELD_ORDER,
+    LANGEXTRACT_ALLOWED_FIELDS,
     build_cross_chapter_findings,
     build_fact_index,
     facts_to_extracted_fields,
+    _fact_from_extraction,
 )
 
 
@@ -30,6 +33,56 @@ def _fact(
         "confidence": 88,
         "attributes": {},
     }
+
+
+class _Extraction:
+    def __init__(self, extraction_class: str, extraction_text: str):
+        self.extraction_class = extraction_class
+        self.extraction_text = extraction_text
+        self.attributes = {"confidence": "90"}
+        self.char_interval = None
+
+
+class _Chunk:
+    text = "施工前对可剥离表土进行剥离，集中堆存在临时堆土区。"
+    section = "表土"
+    chunk_id = "chunk-topsoil"
+    page_range = [8, 8]
+    char_start = 0
+    bbox_list = []
+
+
+def test_langextract_allowed_fields_only_contains_core_extraction_fields():
+    assert LANGEXTRACT_ALLOWED_FIELDS == (
+        "project_name",
+        "construction_unit",
+        "construction_location",
+        "project_nature",
+        "land_area",
+        "disturbed_area",
+        "prevention_responsibility_area",
+        "excavation_volume",
+        "fill_volume",
+        "borrow_volume",
+        "spoil_volume",
+        "spoil_destination",
+        "borrow_area",
+        "comprehensive_utilization",
+    )
+    assert "topsoil_stripping" in FIELD_ORDER
+    assert "topsoil_stripping" not in LANGEXTRACT_ALLOWED_FIELDS
+
+
+def test_facts_to_extracted_fields_ignores_non_core_langextract_fact():
+    fact = _fact_from_extraction(_Extraction("topsoil_stripping", "表土进行剥离"), _Chunk(), 0)
+
+    fields = facts_to_extracted_fields([fact] if fact else [], [])
+    by_name = {field["field_name"]: field for field in fields}
+
+    assert fact is None
+    assert len(fields) == len(FIELD_ORDER)
+    assert by_name["topsoil_stripping"]["value"] == ""
+    assert by_name["monitoring"]["value"] == ""
 
 
 def test_facts_to_extracted_fields_prefers_langextract_fact():
