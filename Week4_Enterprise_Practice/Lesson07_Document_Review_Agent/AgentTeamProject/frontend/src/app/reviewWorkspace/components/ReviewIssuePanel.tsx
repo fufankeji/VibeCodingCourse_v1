@@ -17,6 +17,9 @@ export function ReviewIssuePanel({
   const [items, setItems] = useState<ReviewItem[]>([]);
   const [activeItemId, setActiveItemId] = useState<string | null>(null);
   const [humanNote, setHumanNote] = useState('');
+  const [editedFinding, setEditedFinding] = useState('');
+  const [editedRiskLevel, setEditedRiskLevel] = useState<RiskLevel>('MEDIUM');
+  const [decisionMode, setDecisionMode] = useState<HumanDecision>('approve');
   const [hasReadEvidence, setHasReadEvidence] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -60,6 +63,9 @@ export function ReviewIssuePanel({
     const page = activeItem?.clause_location?.page_number || activeItem?.risk_evidence?.[0]?.page_number;
     if (page) onEvidencePage(page);
     setHumanNote(activeItem?.human_note ?? '');
+    setEditedFinding(activeItem?.human_edited_finding || activeItem?.ai_finding || '');
+    setEditedRiskLevel((activeItem?.human_edited_risk_level || activeItem?.risk_level || 'MEDIUM') as RiskLevel);
+    setDecisionMode('approve');
     setHasReadEvidence(false);
     if (!activeItem) return;
     const timer = window.setTimeout(() => setHasReadEvidence(true), 2000);
@@ -67,15 +73,15 @@ export function ReviewIssuePanel({
   }, [activeItem?.id, activeItem?.clause_location?.page_number, activeItem?.human_note, onEvidencePage]);
 
   const decide = async (decision: HumanDecision) => {
-    if (!activeItem || readOnly || isSubmitting || !canSubmitDecision(humanNote, hasReadEvidence)) return;
+    if (!activeItem || readOnly || isSubmitting || !canSubmitDecision(decision, humanNote, hasReadEvidence, editedFinding)) return;
     setIsSubmitting(true);
     setError('');
     try {
       const result = await submitDecision(sessionId, activeItem.id, {
         decision,
         human_note: humanNote,
-        edited_risk_level: decision === 'edit' ? (activeItem.risk_level as RiskLevel) : null,
-        edited_finding: decision === 'edit' ? activeItem.ai_finding : null,
+        edited_risk_level: decision === 'edit' ? editedRiskLevel : null,
+        edited_finding: decision === 'edit' ? editedFinding : null,
         is_false_positive: decision === 'reject',
         client_submitted_at: new Date().toISOString(),
       });
@@ -87,8 +93,8 @@ export function ReviewIssuePanel({
                 ...item,
                 human_decision: decision,
                 human_note: humanNote,
-                human_edited_risk_level: decision === 'edit' ? activeItem.risk_level : null,
-                human_edited_finding: decision === 'edit' ? activeItem.ai_finding : null,
+                human_edited_risk_level: decision === 'edit' ? editedRiskLevel : null,
+                human_edited_finding: decision === 'edit' ? editedFinding : null,
                 is_false_positive: decision === 'reject',
                 decided_at: result.decided_at,
               }
@@ -156,15 +162,47 @@ export function ReviewIssuePanel({
             className="mt-3 min-h-20 w-full rounded-md border border-slate-200 p-2 text-sm text-slate-800 disabled:bg-slate-50 disabled:text-slate-500"
             placeholder="填写人工复核意见"
           />
+          {decisionMode === 'edit' ? (
+            <div className="mt-3 space-y-2 rounded-md border border-blue-100 bg-blue-50/50 p-3">
+              <label className="block text-xs font-medium text-slate-600" htmlFor="edited-risk-level">
+                修正后风险等级
+              </label>
+              <select
+                id="edited-risk-level"
+                disabled={readOnly || isSubmitting}
+                value={editedRiskLevel}
+                onChange={(event) => setEditedRiskLevel(event.target.value as RiskLevel)}
+                className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-800 disabled:bg-slate-50"
+              >
+                <option value="HIGH">高风险</option>
+                <option value="MEDIUM">中风险</option>
+                <option value="LOW">低风险</option>
+              </select>
+              <label className="block text-xs font-medium text-slate-600" htmlFor="edited-finding">
+                修正后问题描述
+              </label>
+              <textarea
+                id="edited-finding"
+                disabled={readOnly || isSubmitting}
+                value={editedFinding}
+                onChange={(event) => setEditedFinding(event.target.value)}
+                className="min-h-24 w-full rounded-md border border-slate-200 bg-white p-2 text-sm text-slate-800 disabled:bg-slate-50"
+              />
+            </div>
+          ) : null}
           <p className="mt-1 text-xs text-slate-500">
             {hasReadEvidence ? '已进入证据阅读状态' : '请先查看证据，2 秒后可提交'} ·
             {humanNote.trim().length >= 10 ? ` 已满足 10 字要求` : ` 还需 ${Math.max(0, 10 - humanNote.trim().length)} 字`}
+            {decisionMode === 'edit' && !editedFinding.trim() ? ' · 请填写修正后问题描述' : ''}
           </p>
           <div className="mt-3 grid grid-cols-3 gap-2">
             <button
               type="button"
-              disabled={readOnly || isSubmitting || !canSubmitDecision(humanNote, hasReadEvidence)}
-              onClick={() => decide('approve')}
+              disabled={readOnly || isSubmitting || !canSubmitDecision('approve', humanNote, hasReadEvidence, editedFinding)}
+              onClick={() => {
+                setDecisionMode('approve');
+                void decide('approve');
+              }}
               className="inline-flex items-center justify-center gap-1 rounded-md bg-green-600 px-2 py-2 text-xs text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <CheckCircle className="h-3 w-3" />
@@ -172,16 +210,25 @@ export function ReviewIssuePanel({
             </button>
             <button
               type="button"
-              disabled={readOnly || isSubmitting || !canSubmitDecision(humanNote, hasReadEvidence)}
-              onClick={() => decide('edit')}
+              disabled={readOnly || isSubmitting || !canSubmitDecision('edit', humanNote, hasReadEvidence, editedFinding)}
+              onClick={() => {
+                if (decisionMode !== 'edit') {
+                  setDecisionMode('edit');
+                  return;
+                }
+                void decide('edit');
+              }}
               className="inline-flex items-center justify-center gap-1 rounded-md bg-blue-600 px-2 py-2 text-xs text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              修正
+              {decisionMode === 'edit' ? '提交修正' : '修正'}
             </button>
             <button
               type="button"
-              disabled={readOnly || isSubmitting || !canSubmitDecision(humanNote, hasReadEvidence)}
-              onClick={() => decide('reject')}
+              disabled={readOnly || isSubmitting || !canSubmitDecision('reject', humanNote, hasReadEvidence, editedFinding)}
+              onClick={() => {
+                setDecisionMode('reject');
+                void decide('reject');
+              }}
               className="inline-flex items-center justify-center gap-1 rounded-md bg-red-600 px-2 py-2 text-xs text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <XCircle className="h-3 w-3" />
@@ -194,8 +241,15 @@ export function ReviewIssuePanel({
   );
 }
 
-function canSubmitDecision(humanNote: string, hasReadEvidence: boolean): boolean {
-  return hasReadEvidence && humanNote.trim().length >= 10;
+function canSubmitDecision(
+  decision: HumanDecision,
+  humanNote: string,
+  hasReadEvidence: boolean,
+  editedFinding: string
+): boolean {
+  if (!hasReadEvidence || humanNote.trim().length < 10) return false;
+  if (decision === 'edit' && !editedFinding.trim()) return false;
+  return true;
 }
 
 function getReasoningSummary(item: ReviewItem): string {

@@ -60,7 +60,7 @@ export function ScanningStagePanel({
   const hasFailedStage = Boolean(status?.stages.some((stage) => stage.status === 'failed'));
   const historicalFailureMessage = latestFailureMessage(status);
   const currentFailureMessage = hasFailedStage || session?.state === 'parsed' ? historicalFailureMessage : '';
-  const canRestart = canRestartReview(session, Boolean(currentFailureMessage)) && !readOnly;
+  const canRestart = canRestartReview(session, Boolean(currentFailureMessage) || hasFailedStage) && !readOnly;
 
   const restart = async () => {
     if (!canRestart || isRestarting) return;

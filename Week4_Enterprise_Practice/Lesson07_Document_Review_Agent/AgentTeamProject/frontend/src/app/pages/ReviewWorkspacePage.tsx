@@ -163,7 +163,7 @@ export function ReviewWorkspacePage() {
   return (
     <ReviewWorkspaceShell
       sessionState={sessionState}
-      scanningStarted={sessionState === 'scanning'}
+      scanningStarted={mode === 'scanning' || mode === 'review' ? sessionState === 'scanning' : undefined}
       header={header}
       navigator={navigator}
       viewer={viewer}

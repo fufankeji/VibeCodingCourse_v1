@@ -1,5 +1,6 @@
 import { FileText, Image as ImageIcon } from 'lucide-react';
 import type { ReviewDocumentBlock, ReviewDocumentPage } from '../../api/sessions';
+import { resolveAssetUrl } from '../document';
 
 function blockLabel(type: string) {
   if (type === 'title') return '标题';
@@ -45,7 +46,7 @@ function ParsedBlockCard({ block }: { block: ReviewDocumentBlock }) {
         <div className="mt-3">
           {block.image_path?.startsWith('/api/') || block.image_path?.startsWith('http') ? (
             <img
-              src={block.image_path}
+              src={resolveAssetUrl(block.image_path)}
               alt={block.text || block.block_id}
               className="max-h-[520px] max-w-full rounded-md border border-slate-200 bg-white object-contain"
             />

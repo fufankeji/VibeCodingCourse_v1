@@ -30,3 +30,7 @@ export function pdfFrameUrl(path: string | undefined, page: number): string {
   const [base] = url.split('#');
   return `${base}#page=${Math.max(1, page)}&zoom=page-width`;
 }
+
+export function resolveAssetUrl(path?: string): string {
+  return resolveSessionFileUrl(path);
+}
