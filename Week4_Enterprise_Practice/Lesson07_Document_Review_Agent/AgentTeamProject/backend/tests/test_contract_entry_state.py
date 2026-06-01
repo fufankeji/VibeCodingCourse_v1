@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import datetime, timedelta
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -155,3 +156,24 @@ def test_list_contracts_exposes_entry_decision_fields(tmp_path):
     assert item.can_retry_parse is True
     assert item.retry_count == 1
     assert item.max_retries == 3
+
+
+def test_list_contracts_state_filter_uses_latest_session_only(tmp_path):
+    SessionLocal = _session_factory()
+    db = SessionLocal()
+    contract, old_session, _ = _make_contract_session(db, tmp_path, state="aborted")
+    old_session.created_at = datetime.utcnow() - timedelta(days=1)
+    latest_session = ReviewSession(contract_id=contract.id, state="parsing", created_by="tester")
+    db.add(old_session)
+    db.add(latest_session)
+    db.commit()
+
+    aborted_response = list_contracts(cursor=None, limit=20, state="aborted", db=db)
+    parsing_response = list_contracts(cursor=None, limit=20, state="parsing", db=db)
+
+    db.close()
+    assert aborted_response.total == 0
+    assert aborted_response.items == []
+    assert parsing_response.total == 1
+    assert parsing_response.items[0].session_id == latest_session.id
+    assert parsing_response.items[0].session_state == "parsing"

@@ -1,6 +1,7 @@
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, UploadFile, File, Form, Query
+from sqlalchemy import and_, func
 from sqlalchemy.orm import Session
 
 from app.core.errors import APIError
@@ -31,12 +32,24 @@ def list_contracts(
     state: Optional[str] = Query(default=None, description="按 session state 筛选"),
     db: Session = Depends(get_db),
 ):
-    # If state filter is given, we need to join with sessions
+    latest_session_subq = (
+        db.query(
+            ReviewSession.contract_id.label("contract_id"),
+            func.max(ReviewSession.created_at).label("latest_created_at"),
+        )
+        .group_by(ReviewSession.contract_id)
+        .subquery()
+    )
+    latest_session_join = and_(
+        ReviewSession.contract_id == Contract.id,
+        ReviewSession.created_at == latest_session_subq.c.latest_created_at,
+    )
+
     if state:
-        from sqlalchemy import and_
         query = (
             db.query(Contract)
-            .join(ReviewSession, ReviewSession.contract_id == Contract.id)
+            .join(latest_session_subq, latest_session_subq.c.contract_id == Contract.id)
+            .join(ReviewSession, latest_session_join)
             .filter(ReviewSession.state == state)
             .order_by(Contract.created_at.desc())
         )
