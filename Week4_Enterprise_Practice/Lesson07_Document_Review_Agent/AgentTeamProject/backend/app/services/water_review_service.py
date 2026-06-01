@@ -165,15 +165,6 @@ def run_pipeline(file_path: str, artifact_dir: str, session_id: str) -> dict[str
         len(chunks),
         timings["pipeline_chunk_duration_ms"],
     )
-    core_selection = build_core_extraction_chunks(chunks, session_id, artifact_path)
-    core_chunks = core_selection.chunks
-    logger.info(
-        "water_review_core_extraction_chunks_selected session_id=%s mode=%s selected_count=%s input_count=%s",
-        session_id,
-        core_selection.mode,
-        core_selection.trace.get("selected_count"),
-        core_selection.trace.get("input_count"),
-    )
     cached_prerag = _load_cached_prerag_artifacts(artifact_path) if cache_source_matches else None
     if cached_prerag is not None:
         fields, langextract_facts, fact_index, cross_chapter_findings = cached_prerag
@@ -182,6 +173,15 @@ def run_pipeline(file_path: str, artifact_dir: str, session_id: str) -> dict[str
         _set_stage(stage_statuses, "langextract_facts", "cached", item_count=len(langextract_facts), duration_ms=0)
         _write_pipeline_status(artifact_path, session_id, stage_statuses, timings, cache_hits, source_signature)
     else:
+        core_selection = build_core_extraction_chunks(chunks, session_id, artifact_path)
+        core_chunks = core_selection.chunks
+        logger.info(
+            "water_review_core_extraction_chunks_selected session_id=%s mode=%s selected_count=%s input_count=%s",
+            session_id,
+            core_selection.mode,
+            core_selection.trace.get("selected_count"),
+            core_selection.trace.get("input_count"),
+        )
         _set_stage(stage_statuses, "extracted_fields", "running")
         _write_pipeline_status(artifact_path, session_id, stage_statuses, timings, cache_hits, source_signature)
         started = time.perf_counter()

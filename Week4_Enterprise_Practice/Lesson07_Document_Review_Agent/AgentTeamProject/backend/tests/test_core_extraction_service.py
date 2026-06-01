@@ -1,5 +1,6 @@
 import json
 
+from app.services import rag_service, review_config_service, water_review_service
 from app.services.core_extraction_service import build_core_extraction_chunks
 from app.services.water_review_models import ReviewChunk
 
@@ -63,3 +64,33 @@ def test_core_extraction_trace_records_mode_and_selected_chunks(tmp_path):
     assert trace["selected_count"] == 2
     assert [chunk["chunk_id"] for chunk in trace["chunks"]] == ["chunk-0001", "chunk-0003"]
     assert [chunk["section"] for chunk in trace["chunks"]] == ["项目概况", "土石方平衡"]
+
+
+def test_run_pipeline_skips_core_selection_when_prerag_cache_hits(tmp_path, monkeypatch):
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    (artifact_dir / "extracted_fields.json").write_text(json.dumps([{"field_name": "project_name", "value": "缓存项目"}]), encoding="utf-8")
+    (artifact_dir / "langextract_facts.json").write_text("[]", encoding="utf-8")
+    (artifact_dir / "langextract_fact_index.json").write_text(json.dumps({"fact_count": 0, "fields": [], "by_field": {}}), encoding="utf-8")
+    (artifact_dir / "cross_chapter_findings.json").write_text("[]", encoding="utf-8")
+
+    chunks = [_chunk("chunk-0001", "项目名称：缓存项目。", "项目概况")]
+    monkeypatch.setattr(water_review_service, "parse_document", lambda _file_path: [])
+    monkeypatch.setattr(water_review_service, "build_chunks", lambda _blocks: chunks)
+
+    def fail_core_selection(*_args, **_kwargs):
+        raise AssertionError("core selection should not run when prerag cache hits")
+
+    monkeypatch.setattr(water_review_service, "build_core_extraction_chunks", fail_core_selection)
+    monkeypatch.setattr(
+        rag_service,
+        "run_rag_review",
+        lambda *_args, **_kwargs: {"issues": [], "retrievals": [], "cache_hits": {}, "index_manifest": {}},
+    )
+    monkeypatch.setattr(review_config_service, "list_check_item_specs", lambda: [])
+    monkeypatch.setattr(water_review_service, "_issues_from_configured_rules", lambda *_args, **_kwargs: [])
+
+    result = water_review_service.run_pipeline("missing-source.pdf", str(artifact_dir), "session-cache")
+
+    assert result["cache_hits"]["prerag_artifacts"] is True
+    assert result["fields"] == [{"field_name": "project_name", "value": "缓存项目"}]
