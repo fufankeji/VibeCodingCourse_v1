@@ -91,7 +91,43 @@ def _is_scanned_pdf(file_path: str) -> bool:
         return False
 
 
-async def handle_upload(file: UploadFile, db: Session, user_id: str = "anonymous") -> UploadResponse:
+def _find_reusable_contract(db: Session, *, file_type: str, content: bytes, user_id: str) -> tuple[Contract, ReviewSession] | None:
+    candidates = (
+        db.query(Contract)
+        .filter(
+            Contract.file_type == file_type,
+            Contract.uploaded_by == user_id,
+            Contract.contract_status != "aborted",
+        )
+        .order_by(Contract.created_at.desc())
+        .all()
+    )
+    for contract in candidates:
+        path = Path(contract.file_path)
+        if not path.exists():
+            continue
+        try:
+            if path.read_bytes() != content:
+                continue
+        except OSError:
+            continue
+        session = (
+            db.query(ReviewSession)
+            .filter(ReviewSession.contract_id == contract.id, ReviewSession.state != "aborted")
+            .order_by(ReviewSession.created_at.desc())
+            .first()
+        )
+        if session:
+            return contract, session
+    return None
+
+
+async def handle_upload(
+    file: UploadFile,
+    db: Session,
+    user_id: str = "anonymous",
+    contract_title: str | None = None,
+) -> UploadResponse:
     # Read header for magic bytes check
     header = await file.read(8)
     file_type = _detect_file_type(header, file.filename)
@@ -105,6 +141,19 @@ async def handle_upload(file: UploadFile, db: Session, user_id: str = "anonymous
     # File size check
     if len(content) > MAX_FILE_SIZE:
         raise APIError.file_too_large(50)
+
+    reusable = _find_reusable_contract(db, file_type=file_type, content=content, user_id=user_id)
+    if reusable:
+        contract, session = reusable
+        return UploadResponse(
+            contract_id=contract.id,
+            session_id=session.id,
+            title=contract.title,
+            file_type=contract.file_type,
+            is_scanned_document=contract.is_scanned_document,
+            state=session.state,
+            message="文件已存在，已复用已有解析任务",
+        )
 
     # Persist to temp location first
     contract_id = str(uuid.uuid4())
@@ -140,7 +189,7 @@ async def handle_upload(file: UploadFile, db: Session, user_id: str = "anonymous
             raise APIError.corrupt_file()
 
     # Derive title from filename
-    title = Path(original_filename).stem
+    title = (contract_title or "").strip() or Path(original_filename).stem
 
     # Create DB records in a transaction
     contract = Contract(

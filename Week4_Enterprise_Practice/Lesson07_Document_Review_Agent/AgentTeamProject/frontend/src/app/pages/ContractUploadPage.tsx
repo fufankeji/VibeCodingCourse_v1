@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { AlertCircle, CheckCircle, FileJson, FileText, Loader2, Upload, X } from 'lucide-react';
 import { GlobalNav } from '../components/GlobalNav';
+import type { UploadResponse } from '../api/contracts';
 
 const MAX_SIZE_MB = 50;
 const ALLOWED_EXTS = ['.pdf', '.docx', '.json'];
@@ -22,6 +23,15 @@ function fileKind(filename: string) {
   if (ext === 'json') return 'MinerU JSON';
   if (ext === 'docx') return 'DOCX';
   return 'PDF';
+}
+
+function routeAfterUpload(result: UploadResponse) {
+  if (result.state === 'parsing') return `/contracts/${result.session_id}/parsing`;
+  if (result.state === 'scanning' || result.state === 'hitl_field_verify') return `/contracts/${result.session_id}/fields`;
+  if (result.state === 'hitl_medium_confirm') return `/contracts/${result.session_id}/batch`;
+  if (result.state === 'report_ready' || result.state === 'completed') return `/contracts/${result.session_id}/report`;
+  if (result.state === 'hitl_pending' || result.state === 'hitl_high_risk') return `/contracts/${result.session_id}/review`;
+  return `/contracts/${result.session_id}/parsing`;
 }
 
 /**
@@ -105,7 +115,7 @@ export function ContractUploadPage() {
       setUploadProgress(100);
       await new Promise((r) => setTimeout(r, 300));
       setIsUploading(false);
-      navigate(`/contracts/${result.session_id}/parsing`);
+      navigate(routeAfterUpload(result));
     } catch (err: any) {
       setIsUploading(false);
       setUploadProgress(0);

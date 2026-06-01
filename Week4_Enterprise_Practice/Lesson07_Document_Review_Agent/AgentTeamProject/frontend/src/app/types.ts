@@ -1,5 +1,14 @@
 export type UserRole = 'reviewer' | 'submitter' | 'admin';
-export type SessionState = 'parsing' | 'scanning' | 'hitl_pending' | 'completed' | 'report_ready' | 'aborted';
+export type SessionState =
+  | 'parsing'
+  | 'scanning'
+  | 'hitl_field_verify'
+  | 'hitl_pending'
+  | 'hitl_high_risk'
+  | 'hitl_medium_confirm'
+  | 'completed'
+  | 'report_ready'
+  | 'aborted';
 export type HitlSubtype = 'interrupt' | 'batch_review' | null;
 export type RiskLevel = 'HIGH' | 'MEDIUM' | 'LOW';
 export type SourceType = 'rule_engine' | 'ai_inference' | 'hybrid';

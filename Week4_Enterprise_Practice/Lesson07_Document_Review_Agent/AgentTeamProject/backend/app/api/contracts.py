@@ -1,6 +1,6 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, UploadFile, File, Query
+from fastapi import APIRouter, Depends, Header, UploadFile, File, Form, Query
 from sqlalchemy.orm import Session
 
 from app.core.errors import APIError
@@ -16,10 +16,11 @@ router = APIRouter()
 @router.post("/upload", response_model=UploadResponse, status_code=201)
 async def upload_contract(
     file: UploadFile = File(...),
+    contract_title: str | None = Form(default=None),
     x_user_id: str = Header(default="anonymous", alias="X-User-ID"),
     db: Session = Depends(get_db),
 ):
-    return await upload_service.handle_upload(file, db, user_id=x_user_id)
+    return await upload_service.handle_upload(file, db, user_id=x_user_id, contract_title=contract_title)
 
 
 @router.get("", response_model=ContractListResponse)

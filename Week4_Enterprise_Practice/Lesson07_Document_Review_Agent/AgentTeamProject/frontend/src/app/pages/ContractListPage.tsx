@@ -5,12 +5,16 @@ import { GlobalNav } from '../components/GlobalNav';
 import { StateBadge } from '../components/StateBadge';
 import { listContracts, type ContractItem } from '../api/contracts';
 import type { SessionState } from '../types';
+import { contractRoute, contractState, isContractNavigable } from '../utils/contracts';
+import { formatApiDate } from '../utils/datetime';
 
 const STATE_OPTIONS: { value: '' | SessionState; label: string }[] = [
   { value: '', label: '全部状态' },
   { value: 'parsing', label: '解析中' },
-  { value: 'scanning', label: '扫描中' },
+  { value: 'scanning', label: '规则审查中' },
+  { value: 'hitl_field_verify', label: '字段核对' },
   { value: 'hitl_pending', label: '待人工审核' },
+  { value: 'hitl_medium_confirm', label: '中风险复核' },
   { value: 'report_ready', label: '已完成' },
   { value: 'aborted', label: '已中止' },
 ];
@@ -66,29 +70,11 @@ export function ContractListPage() {
     : contracts;
 
   const handleRowClick = (contract: ContractItem) => {
-    const state = contract.session_state || contract.contract_status;
-    const sid = contract.session_id;
-    if (!sid) return;
-    switch (state) {
-      case 'parsing': navigate(`/contracts/${sid}/parsing`); break;
-      case 'scanning': navigate(`/contracts/${sid}/fields`); break;
-      case 'hitl_pending':
-      case 'hitl_high_risk':
-        navigate(`/contracts/${sid}/review`); break;
-      case 'hitl_medium_confirm':
-        navigate(`/contracts/${sid}/batch`); break;
-      case 'hitl_field_verify':
-        navigate(`/contracts/${sid}/fields`); break;
-      case 'completed':
-      case 'report_ready': navigate(`/contracts/${sid}/report`); break;
-      case 'aborted':
-        alert('流程已中止，无法继续操作'); break;
-      default: break;
-    }
+    const route = contractRoute(contract);
+    if (route) navigate(route);
   };
 
-  const formatDate = (iso: string) =>
-    new Date(iso).toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  const formatDate = (iso: string) => formatApiDate(iso);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -177,7 +163,11 @@ export function ContractListPage() {
                   {filtered.map((contract) => (
                     <div
                       key={contract.id}
-                      className="grid grid-cols-12 px-5 py-3.5 items-center hover:bg-blue-50/30 cursor-pointer transition-colors"
+                      className={`grid grid-cols-12 px-5 py-3.5 items-center transition-colors ${
+                        isContractNavigable(contract)
+                          ? 'cursor-pointer hover:bg-blue-50/30'
+                          : 'cursor-not-allowed bg-slate-50/60 opacity-75'
+                      }`}
                       onClick={() => handleRowClick(contract)}
                     >
                       <div className="col-span-5 flex items-start gap-2">
@@ -189,10 +179,14 @@ export function ContractListPage() {
                       <div className="col-span-2 text-sm text-gray-600">{contract.uploaded_by}</div>
                       <div className="col-span-2 text-xs text-gray-500">{formatDate(contract.uploaded_at || contract.created_at)}</div>
                       <div className="col-span-2 flex flex-col gap-1">
-                        <StateBadge state={(contract.session_state || contract.contract_status) as any} />
+                        <StateBadge state={contractState(contract)} />
                       </div>
                       <div className="col-span-1 flex justify-end">
-                        <ChevronRight className="w-4 h-4 text-gray-400" />
+                        {isContractNavigable(contract) ? (
+                          <ChevronRight className="w-4 h-4 text-gray-400" />
+                        ) : (
+                          <span className="text-xs text-gray-400">不可进入</span>
+                        )}
                       </div>
                     </div>
                   ))}

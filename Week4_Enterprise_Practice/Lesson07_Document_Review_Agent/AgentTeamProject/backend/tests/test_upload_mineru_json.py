@@ -50,7 +50,7 @@ async def test_handle_upload_accepts_mineru_json(tmp_path, monkeypatch):
     upload = UploadFile(filename="朝阳区百子湾职工住宅项目.json", file=io.BytesIO(_mineru_bytes()))
     db = TestingSessionLocal()
     try:
-        response = await upload_service.handle_upload(upload, db, user_id="tester")
+        response = await upload_service.handle_upload(upload, db, user_id="tester", contract_title="用户输入标题")
         contract = db.query(Contract).filter(Contract.id == response.contract_id).first()
         session = db.query(ReviewSession).filter(ReviewSession.id == response.session_id).first()
         job = db.query(DocumentParseJob).filter(DocumentParseJob.session_id == response.session_id).first()
@@ -58,7 +58,7 @@ async def test_handle_upload_accepts_mineru_json(tmp_path, monkeypatch):
         db.close()
 
     assert response.file_type == "json"
-    assert response.title == "朝阳区百子湾职工住宅项目"
+    assert response.title == "用户输入标题"
     assert contract is not None
     assert contract.file_type == "json"
     assert contract.file_path.endswith("original.json")
@@ -68,6 +68,50 @@ async def test_handle_upload_accepts_mineru_json(tmp_path, monkeypatch):
     assert job.status == "queued"
     assert job.provider == "mineru_json"
     assert job.source_file_type == "json"
+
+
+@pytest.mark.asyncio
+async def test_handle_upload_reuses_existing_non_aborted_same_pdf(tmp_path, monkeypatch):
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    monkeypatch.setattr(upload_service.settings, "storage_path", str(tmp_path / "storage"))
+    monkeypatch.setattr(upload_service, "_check_pdf_integrity", lambda path: (True, False))
+    monkeypatch.setattr(upload_service, "_is_scanned_pdf", lambda path: False)
+
+    pdf_bytes = b"%PDF- fake same content"
+    db = TestingSessionLocal()
+    try:
+        first = await upload_service.handle_upload(
+            UploadFile(filename="方案.pdf", file=io.BytesIO(pdf_bytes)),
+            db,
+            user_id="tester",
+        )
+        session = db.query(ReviewSession).filter(ReviewSession.id == first.session_id).first()
+        session.state = "report_ready"
+        contract = db.query(Contract).filter(Contract.id == first.contract_id).first()
+        contract.contract_status = "completed"
+        db.add(session)
+        db.add(contract)
+        db.commit()
+
+        second = await upload_service.handle_upload(
+            UploadFile(filename="方案副本.pdf", file=io.BytesIO(pdf_bytes)),
+            db,
+            user_id="tester",
+        )
+
+        assert second.contract_id == first.contract_id
+        assert second.session_id == first.session_id
+        assert second.state == "report_ready"
+        assert db.query(Contract).count() == 1
+        assert db.query(DocumentParseJob).count() == 1
+    finally:
+        db.close()
 
 
 @pytest.mark.asyncio

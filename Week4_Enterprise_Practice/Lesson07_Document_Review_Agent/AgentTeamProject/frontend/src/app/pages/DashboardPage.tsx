@@ -5,6 +5,8 @@ import { GlobalNav } from '../components/GlobalNav';
 import { StateBadge } from '../components/StateBadge';
 import { listContracts, type ContractItem } from '../api/contracts';
 import { useAuth } from '../contexts/AuthContext';
+import { contractRoute, contractState, isContractNavigable } from '../utils/contracts';
+import { formatApiDate, isSameLocalDay, isSameLocalMonth, parseApiDate } from '../utils/datetime';
 
 /**
  * DashboardPage — P02 工作台首页
@@ -32,36 +34,20 @@ export function DashboardPage() {
     c.session_state === 'hitl_pending' || c.session_state === 'hitl_high_risk' || c.session_state === 'hitl_medium_confirm'
   );
   const recentContracts = [...contracts]
-    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    .sort((a, b) => parseApiDate(b.updated_at || b.uploaded_at || b.created_at).getTime() - parseApiDate(a.updated_at || a.uploaded_at || a.created_at).getTime())
     .slice(0, 6);
   const completedContracts = contracts.filter((c) => {
-    const state = c.session_state || c.contract_status;
-    return state === 'report_ready' || state === 'completed';
+    const state = contractState(c);
+    return state === 'report_ready' && isSameLocalMonth(c.updated_at || c.uploaded_at || c.created_at);
   });
-  const todayContracts = contracts.filter((c) => {
-    const created = new Date(c.created_at);
-    const now = new Date();
-    return created.getFullYear() === now.getFullYear()
-      && created.getMonth() === now.getMonth()
-      && created.getDate() === now.getDate();
-  });
+  const todayContracts = contracts.filter((c) => isSameLocalDay(c.uploaded_at || c.created_at));
 
   const routeToContract = (contract: ContractItem) => {
-    const state = contract.session_state || contract.contract_status;
-    const sid = contract.session_id;
-    if (!sid) return;
-    if (state === 'parsing') navigate(`/contracts/${sid}/parsing`);
-    else if (state === 'scanning' || state === 'hitl_field_verify') navigate(`/contracts/${sid}/fields`);
-    else if (state === 'hitl_medium_confirm') navigate(`/contracts/${sid}/batch`);
-    else if (state === 'report_ready' || state === 'completed') navigate(`/contracts/${sid}/report`);
-    else if (state !== 'aborted') navigate(`/contracts/${sid}/review`);
+    const route = contractRoute(contract);
+    if (route) navigate(route);
   };
 
-  const formatDate = (iso: string) => {
-    return new Date(iso).toLocaleDateString('zh-CN', {
-      month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
-    });
-  };
+  const formatDate = (iso: string) => formatApiDate(iso, { year: undefined });
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -106,7 +92,7 @@ export function DashboardPage() {
               icon={<FileText className="w-5 h-5 text-blue-500" />}
               label="今日新增"
               value={String(todayContracts.length)}
-              note="按创建时间统计"
+              note="按上传时间统计"
               color="blue"
             />
           </div>
@@ -167,13 +153,14 @@ export function DashboardPage() {
                     key={contract.id}
                     type="button"
                     onClick={() => routeToContract(contract)}
-                    className="w-full px-5 py-3 flex items-center justify-between hover:bg-gray-50 text-left"
+                    disabled={!isContractNavigable(contract)}
+                    className="w-full px-5 py-3 flex items-center justify-between text-left transition-colors enabled:hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-70"
                   >
                     <div>
                       <p className="text-sm text-gray-800">{contract.title}</p>
-                      <span className="text-xs text-gray-400">{formatDate(contract.created_at)}</span>
+                      <span className="text-xs text-gray-400">{formatDate(contract.uploaded_at || contract.created_at)}</span>
                     </div>
-                    <StateBadge state={(contract.session_state || contract.contract_status) as any} />
+                    <StateBadge state={contractState(contract)} />
                   </button>
                 ))}
                 {!isLoading && recentContracts.length === 0 && (
