@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import copy
 import io
 import json
+import shutil
 import time
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +19,9 @@ from app.config import settings
 MAX_ZIP_BYTES = 250 * 1024 * 1024
 MAX_ZIP_MEMBERS = 5000
 MAX_ZIP_MEMBER_BYTES = 100 * 1024 * 1024
+MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES = 500 * 1024 * 1024
+MAX_MINERU_PAGES_PER_TASK = 200
+ASSET_PATH_KEYS = {"image_path", "img_path", "table_image_path"}
 
 
 class MinerUAPIError(RuntimeError):
@@ -36,10 +41,62 @@ class MinerUParseArtifacts:
     batch_id: str = ""
     task_id: str = ""
     zip_url: str = ""
+    segment_manifest_path: Path | None = None
+    segment_summary: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def best_parse_path(self) -> Path | None:
         return self.json_path or self.markdown_path
+
+
+@dataclass(frozen=True)
+class MinerUSegment:
+    segment_index: int
+    segment_count: int
+    page_start: int
+    page_end_requested: int
+    page_offset: int
+    page_ranges: str | None
+
+    @property
+    def part_name(self) -> str:
+        return f"part-{self.segment_index:03d}"
+
+
+def _plan_pdf_segments(page_count: int) -> list[MinerUSegment]:
+    if page_count <= 0:
+        raise MinerUAPIError("PDF page count must be greater than zero", "MINERU_PDF_PAGE_COUNT_INVALID")
+    if page_count <= MAX_MINERU_PAGES_PER_TASK:
+        return [
+            MinerUSegment(
+                segment_index=1,
+                segment_count=1,
+                page_start=1,
+                page_end_requested=page_count,
+                page_offset=0,
+                page_ranges=None,
+            )
+        ]
+
+    ranges: list[tuple[int, int]] = []
+    start = 1
+    while start <= page_count:
+        end_requested = min(page_count, start + MAX_MINERU_PAGES_PER_TASK - 1)
+        ranges.append((start, end_requested))
+        start = end_requested + 1
+
+    segment_count = len(ranges)
+    return [
+        MinerUSegment(
+            segment_index=index,
+            segment_count=segment_count,
+            page_start=start_page,
+            page_end_requested=end_requested,
+            page_offset=start_page - 1,
+            page_ranges=f"{start_page}-{end_requested}",
+        )
+        for index, (start_page, end_requested) in enumerate(ranges, start=1)
+    ]
 
 
 def parse_file_to_artifacts(
@@ -58,21 +115,42 @@ def parse_file_to_artifacts(
     output_dir.mkdir(parents=True, exist_ok=True)
     base_url = settings.mineru_base_url.rstrip("/")
     headers = _headers(token)
+    source_page_count = _pdf_page_count(source) if source.suffix.lower() == ".pdf" else 1
+    segments = _plan_pdf_segments(source_page_count)
     with httpx.Client(timeout=settings.mineru_request_timeout) as client:
-        batch_id = _submit_local_file(client, base_url, headers, source)
+        if len(segments) == 1 and segments[0].page_ranges is None:
+            return _parse_single_mineru_task(client, base_url, headers, source, output_dir, progress_callback)
+
         if progress_callback:
-            progress_callback("uploaded", {"batch_id": batch_id})
-        task = _wait_batch_result(client, base_url, headers, batch_id, progress_callback=progress_callback)
-        zip_url = str(task.get("full_zip_url") or "").strip()
-        if not zip_url:
-            raise MinerUAPIError("MinerU result did not include full_zip_url", "MINERU_RESULT_INVALID")
-        if progress_callback:
-            progress_callback(
-                "downloading",
-                {"batch_id": batch_id, "task_id": str(task.get("task_id") or "")},
-            )
-        response = client.get(zip_url, headers=headers)
-        _raise_for_status(response)
+            progress_callback("segmenting", {"segment_count": len(segments), "source_page_count": source_page_count})
+        return _parse_segmented_pdf(client, base_url, headers, source, output_dir, source_page_count, segments, progress_callback)
+
+
+def _parse_single_mineru_task(
+    client: httpx.Client,
+    base_url: str,
+    headers: dict[str, str],
+    source: Path,
+    output_dir: Path,
+    progress_callback: Any | None = None,
+    *,
+    segment: MinerUSegment | None = None,
+) -> MinerUParseArtifacts:
+    batch_id = _submit_local_file(client, base_url, headers, source, segment=segment)
+    if progress_callback:
+        progress_callback("uploaded", {"batch_id": batch_id, **_segment_progress(segment)})
+    task = _wait_batch_result(client, base_url, headers, batch_id, progress_callback=progress_callback, segment=segment)
+    zip_url = str(task.get("full_zip_url") or "").strip()
+    if not zip_url:
+        code = "MINERU_SEGMENT_ZIP_MISSING" if segment else "MINERU_RESULT_INVALID"
+        raise MinerUAPIError("MinerU result did not include full_zip_url", code)
+    if progress_callback:
+        progress_callback(
+            "downloading",
+            {"batch_id": batch_id, "task_id": str(task.get("task_id") or ""), **_segment_progress(segment)},
+        )
+    response = client.get(zip_url, headers=headers)
+    _raise_for_status(response)
 
     artifacts = extract_zip_artifacts(response.content, output_dir)
     artifacts.batch_id = batch_id
@@ -81,6 +159,99 @@ def parse_file_to_artifacts(
     if artifacts.best_parse_path is None:
         raise MinerUAPIError("MinerU zip did not contain usable Markdown or structured JSON", "MINERU_RESULT_INVALID")
     return artifacts
+
+
+def _parse_segmented_pdf(
+    client: httpx.Client,
+    base_url: str,
+    headers: dict[str, str],
+    source: Path,
+    output_dir: Path,
+    source_page_count: int,
+    segments: list[MinerUSegment],
+    progress_callback: Any | None = None,
+) -> MinerUParseArtifacts:
+    segment_results: list[dict[str, Any]] = []
+    for segment in segments:
+        segment_dir = output_dir / "segments" / segment.part_name
+        if progress_callback:
+            progress_callback("polling", {"message": "MinerU segment started", **_segment_progress(segment)})
+        started = time.monotonic()
+        try:
+            artifacts = _parse_single_mineru_task(
+                client,
+                base_url,
+                headers,
+                source,
+                segment_dir,
+                progress_callback,
+                segment=segment,
+            )
+        except MinerUAPIError as exc:
+            raise _segment_error(exc, segment) from exc
+        if not artifacts.json_path:
+            raise MinerUAPIError(f"MinerU segment {segment.part_name} did not produce JSON", "MINERU_SEGMENT_JSON_MISSING")
+        segment_results.append(
+            {
+                "segment": segment,
+                "json_path": artifacts.json_path,
+                "markdown_path": artifacts.markdown_path,
+                "zip_path": artifacts.zip_path,
+                "batch_id": artifacts.batch_id,
+                "task_id": artifacts.task_id,
+                "duration_ms": int((time.monotonic() - started) * 1000),
+            }
+        )
+
+    return _merge_segment_artifacts(
+        source_file_path=str(source),
+        source_page_count=source_page_count,
+        output_dir=output_dir,
+        segments=segments,
+        segment_results=segment_results,
+    )
+
+
+def _segment_progress(segment: MinerUSegment | None) -> dict[str, Any]:
+    if not segment:
+        return {}
+    return {
+        "segment_index": segment.segment_index,
+        "segment_count": segment.segment_count,
+        "page_ranges": segment.page_ranges,
+        "page_start": segment.page_start,
+        "page_end_requested": segment.page_end_requested,
+    }
+
+
+def _segment_error(exc: MinerUAPIError, segment: MinerUSegment | None = None) -> MinerUAPIError:
+    message = str(exc)
+    if segment:
+        message = f"MinerU segment {segment.part_name} pages {segment.page_ranges or segment.page_start} failed: {message}"
+    if exc.error_code == "MINERU_TIMEOUT":
+        return MinerUAPIError(message, "MINERU_SEGMENT_TIMEOUT", timeout=True)
+    if exc.error_code in {
+        "MINERU_AUTH_FAILED",
+        "MINERU_RATE_LIMITED",
+        "MINERU_TOKEN_MISSING",
+        "MINERU_ZIP_TOO_LARGE",
+        "MINERU_ZIP_UNSAFE",
+        "MINERU_RESULT_INVALID",
+    }:
+        return MinerUAPIError(message, exc.error_code, timeout=exc.timeout)
+    if exc.error_code.startswith("MINERU_SEGMENT_"):
+        return MinerUAPIError(message, exc.error_code, timeout=exc.timeout)
+    return MinerUAPIError(message, "MINERU_SEGMENT_FAILED", timeout=exc.timeout)
+
+
+def _pdf_page_count(source: Path) -> int:
+    try:
+        import fitz
+
+        with fitz.open(source) as doc:
+            return int(doc.page_count)
+    except Exception as exc:
+        raise MinerUAPIError(f"Unable to read PDF page count: {source}", "MINERU_PDF_PAGE_COUNT_INVALID") from exc
 
 
 def extract_zip_artifacts(zip_bytes: bytes, output_dir: Path) -> MinerUParseArtifacts:
@@ -97,20 +268,35 @@ def extract_zip_artifacts(zip_bytes: bytes, output_dir: Path) -> MinerUParseArti
             members = zf.infolist()
             if len(members) > MAX_ZIP_MEMBERS:
                 raise MinerUAPIError("MinerU zip has too many files", "MINERU_ZIP_TOO_LARGE")
+            total_uncompressed = sum(member.file_size for member in members if not member.is_dir())
+            if total_uncompressed > MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES:
+                raise MinerUAPIError("MinerU zip uncompressed content exceeds size limit", "MINERU_ZIP_TOO_LARGE")
             for member in members:
                 if member.is_dir():
                     continue
                 if member.file_size > MAX_ZIP_MEMBER_BYTES:
                     raise MinerUAPIError("MinerU zip member exceeds size limit", "MINERU_ZIP_TOO_LARGE")
-                _safe_zip_member(output_dir, member.filename)
+                target = _safe_zip_member(output_dir, member.filename)
                 name = member.filename
                 lower = name.lower()
                 if lower.endswith(".json"):
-                    candidate = _load_json_member(zf, name)
+                    member_bytes = zf.read(name)
+                    if target != zip_path:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_bytes(member_bytes)
+                    candidate = _load_json_bytes(member_bytes)
                     if _is_structured_mineru_json(candidate):
                         structured_jsons.append(candidate)
                 elif lower.endswith(".md") and (not markdown_text or Path(name).name == "full.md"):
-                    markdown_text = zf.read(name).decode("utf-8", errors="replace")
+                    member_bytes = zf.read(name)
+                    if target != zip_path:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_bytes(member_bytes)
+                    markdown_text = member_bytes.decode("utf-8", errors="replace")
+                elif target != zip_path:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with zf.open(member, "r") as source_file, target.open("wb") as target_file:
+                        shutil.copyfileobj(source_file, target_file)
     except zipfile.BadZipFile as exc:
         raise MinerUAPIError("MinerU result is not a valid zip", "MINERU_RESULT_INVALID") from exc
 
@@ -126,6 +312,136 @@ def extract_zip_artifacts(zip_bytes: bytes, output_dir: Path) -> MinerUParseArti
         markdown_path.write_text(markdown_text, encoding="utf-8")
 
     return MinerUParseArtifacts(json_path=json_path, markdown_path=markdown_path, zip_path=zip_path)
+
+
+def _merge_segment_artifacts(
+    *,
+    source_file_path: str,
+    source_page_count: int,
+    output_dir: Path,
+    segments: list[MinerUSegment],
+    segment_results: list[dict[str, Any]],
+) -> MinerUParseArtifacts:
+    merged: dict[str, Any] = {"pdf_info": []}
+    merged_pages: list[dict[str, Any]] = []
+    markdown_parts: list[str] = []
+    manifest_segments: list[dict[str, Any]] = []
+
+    for result in segment_results:
+        segment = result["segment"]
+        json_path = result.get("json_path")
+        if not json_path:
+            raise MinerUAPIError(f"MinerU segment {segment.part_name} did not produce JSON", "MINERU_SEGMENT_JSON_MISSING")
+        try:
+            raw = json.loads(Path(json_path).read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise MinerUAPIError(f"MinerU segment {segment.part_name} JSON is invalid", "MINERU_MERGE_INVALID_JSON") from exc
+        pages = raw.get("pdf_info") if isinstance(raw, dict) else None
+        if not isinstance(pages, list) or not pages:
+            raise MinerUAPIError(f"MinerU segment {segment.part_name} JSON missing pdf_info", "MINERU_SEGMENT_JSON_MISSING")
+        if not merged_pages:
+            merged = copy.deepcopy(raw)
+            merged["pdf_info"] = []
+        for local_order, page in enumerate(pages):
+            if not isinstance(page, dict):
+                raise MinerUAPIError(f"MinerU segment {segment.part_name} contains invalid page", "MINERU_MERGE_INVALID_JSON")
+            page_copy = copy.deepcopy(page)
+            page_copy["page_idx"] = segment.page_offset + local_order
+            _rewrite_asset_paths(page_copy, f"segments/{segment.part_name}")
+            merged_pages.append(page_copy)
+
+        markdown_path = result.get("markdown_path")
+        if markdown_path and Path(markdown_path).exists():
+            markdown_parts.append(
+                f"<!-- MinerU segment {segment.segment_index}/{segment.segment_count} pages "
+                f"{segment.page_start}-{segment.page_end_requested} -->\n"
+                + Path(markdown_path).read_text(encoding="utf-8")
+            )
+        manifest_segments.append(
+            {
+                "segment_index": segment.segment_index,
+                "segment_count": segment.segment_count,
+                "page_start": segment.page_start,
+                "page_end_requested": segment.page_end_requested,
+                "page_offset": segment.page_offset,
+                "page_ranges": segment.page_ranges,
+                "batch_id": result.get("batch_id") or "",
+                "task_id": result.get("task_id") or "",
+                "status": "succeeded",
+                "page_count_returned": len(pages),
+                "duration_ms": int(result.get("duration_ms") or 0),
+                "zip_path": _relative_to_output(result.get("zip_path"), output_dir),
+                "json_path": _relative_to_output(result.get("json_path"), output_dir),
+                "markdown_path": _relative_to_output(result.get("markdown_path"), output_dir),
+            }
+        )
+
+    merged_pages.sort(key=lambda page: int(page.get("page_idx", -1)))
+    _validate_merged_pages(merged_pages, source_page_count)
+    merged["pdf_info"] = merged_pages
+
+    json_path = output_dir / "parsed.json"
+    json_path.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+    markdown_path = output_dir / "full.md"
+    markdown_path.write_text("\n\n".join(markdown_parts), encoding="utf-8")
+    manifest_path = output_dir / "segment_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "source_file_path": source_file_path,
+                "source_page_count": source_page_count,
+                "segment_size": MAX_MINERU_PAGES_PER_TASK,
+                "segments": manifest_segments,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    last_segment = segment_results[-1] if segment_results else {}
+    return MinerUParseArtifacts(
+        json_path=json_path,
+        markdown_path=markdown_path,
+        batch_id=str(last_segment.get("batch_id") or ""),
+        task_id=str(last_segment.get("task_id") or ""),
+        segment_manifest_path=manifest_path,
+        segment_summary=manifest_segments,
+    )
+
+
+def _rewrite_asset_paths(value: Any, prefix: str) -> None:
+    if isinstance(value, dict):
+        for key, item in list(value.items()):
+            if key in ASSET_PATH_KEYS and isinstance(item, str) and item and not item.startswith(("http://", "https://", "/")):
+                original_key = f"original_{key}"
+                value.setdefault(original_key, item)
+                value[key] = f"{prefix}/{item}"
+            else:
+                _rewrite_asset_paths(item, prefix)
+    elif isinstance(value, list):
+        for item in value:
+            _rewrite_asset_paths(item, prefix)
+
+
+def _validate_merged_pages(pages: list[dict[str, Any]], source_page_count: int) -> None:
+    page_indexes = [page.get("page_idx") for page in pages]
+    expected = list(range(source_page_count))
+    if page_indexes != expected:
+        raise MinerUAPIError(
+            f"Merged MinerU pages are not continuous: expected 0..{source_page_count - 1}, "
+            f"got {page_indexes[:5]}...{page_indexes[-5:]}",
+            "MINERU_MERGE_PAGE_MISMATCH",
+        )
+
+
+def _relative_to_output(path_value: Any, output_dir: Path) -> str | None:
+    if not path_value:
+        return None
+    path = Path(path_value)
+    try:
+        return str(path.relative_to(output_dir))
+    except ValueError:
+        return str(path)
 
 
 def _auth_token() -> str:
@@ -145,9 +461,14 @@ def _submit_local_file(
     base_url: str,
     headers: dict[str, str],
     source: Path,
+    *,
+    segment: MinerUSegment | None = None,
 ) -> str:
+    file_payload = {"name": source.name, "data_id": _mineru_data_id(source, segment)}
+    if segment and segment.page_ranges:
+        file_payload["page_ranges"] = segment.page_ranges
     payload = {
-        "files": [{"name": source.name, "data_id": source.stem[:128]}],
+        "files": [file_payload],
         "model_version": settings.mineru_model_version,
         "enable_formula": settings.mineru_enable_formula,
         "enable_table": settings.mineru_enable_table,
@@ -168,12 +489,21 @@ def _submit_local_file(
     return batch_id
 
 
+def _mineru_data_id(source: Path, segment: MinerUSegment | None = None) -> str:
+    if not segment or not segment.page_ranges:
+        return source.stem[:128]
+    suffix = f"-part-{segment.segment_index:03d}"
+    return f"{source.stem[:128 - len(suffix)]}{suffix}"
+
+
 def _wait_batch_result(
     client: httpx.Client,
     base_url: str,
     headers: dict[str, str],
     batch_id: str,
     progress_callback: Any | None = None,
+    *,
+    segment: MinerUSegment | None = None,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + settings.mineru_poll_timeout_seconds
     interval = max(1, settings.mineru_poll_interval_seconds)
@@ -189,7 +519,10 @@ def _wait_batch_result(
             task = results[0]
             last_state = str(task.get("state") or last_state)
             if progress_callback:
-                progress_callback("polling", {"batch_id": batch_id, "task_id": str(task.get("task_id") or "")})
+                progress_callback(
+                    "polling",
+                    {"batch_id": batch_id, "task_id": str(task.get("task_id") or ""), **_segment_progress(segment)},
+                )
             if last_state == "done":
                 if progress_callback:
                     progress_callback(
@@ -198,6 +531,7 @@ def _wait_batch_result(
                             "batch_id": batch_id,
                             "task_id": str(task.get("task_id") or ""),
                             "mineru_poll_duration_ms": int((time.monotonic() - poll_started) * 1000),
+                            **_segment_progress(segment),
                         },
                     )
                 return task
@@ -225,9 +559,9 @@ def _ensure_success(body: dict[str, Any]) -> None:
         raise MinerUAPIError(str(body.get("msg") or "MinerU API returned an error"), "MINERU_REMOTE_FAILED")
 
 
-def _load_json_member(zf: zipfile.ZipFile, name: str) -> Any:
+def _load_json_bytes(payload: bytes) -> Any:
     try:
-        return json.loads(zf.read(name).decode("utf-8"))
+        return json.loads(payload.decode("utf-8"))
     except Exception:
         return None
 
@@ -244,11 +578,12 @@ def _mineru_block_count(candidate: dict[str, Any]) -> int:
     return sum(len(page.get("para_blocks") or []) for page in pages if isinstance(page, dict))
 
 
-def _safe_zip_member(output_dir: Path, member_name: str) -> None:
+def _safe_zip_member(output_dir: Path, member_name: str) -> Path:
     target = (output_dir / member_name).resolve()
     root = output_dir.resolve()
     if target != root and root not in target.parents:
         raise MinerUAPIError(f"Unsafe zip member path: {member_name}", "MINERU_ZIP_UNSAFE")
+    return target
 
 
 def _raise_for_status(response: httpx.Response) -> None:

@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -10,6 +11,7 @@ from app.database import Base
 from app.models.contract import Contract
 from app.models.document_parse_job import DocumentParseJob
 from app.models.session import ReviewSession
+from app.services import water_review_service
 
 
 def _session_factory():
@@ -95,6 +97,116 @@ def test_document_content_can_read_mineru_artifact_before_review_pipeline(tmp_pa
         db.close()
 
 
+def test_document_content_maps_segment_asset_paths_to_session_asset_urls(tmp_path):
+    SessionLocal = _session_factory()
+    source = tmp_path / "original.pdf"
+    source.write_bytes(b"%PDF- fake")
+    asset = tmp_path / "mineru" / "segments" / "part-001" / "images" / "table.jpg"
+    asset.parent.mkdir(parents=True)
+    asset.write_bytes(b"image")
+    parsed_json = tmp_path / "mineru" / "parsed.json"
+    parsed_json.write_text(
+        json.dumps(
+            {
+                "pdf_info": [
+                    {
+                        "page_idx": 0,
+                        "para_blocks": [
+                            {
+                                "type": "image",
+                                "index": 1,
+                                "image_path": "segments/part-001/images/table.jpg",
+                            }
+                        ],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    db = SessionLocal()
+    try:
+        contract = Contract(
+            title="测试方案",
+            original_filename=source.name,
+            file_type="pdf",
+            file_path=str(source),
+            uploaded_by="tester",
+        )
+        db.add(contract)
+        db.flush()
+        session = ReviewSession(contract_id=contract.id, state="parsed", created_by="tester")
+        db.add(session)
+        db.flush()
+        db.add(
+            DocumentParseJob(
+                session_id=session.id,
+                contract_id=contract.id,
+                source_file_path=str(source),
+                source_file_type="pdf",
+                provider="mineru",
+                status="succeeded",
+                stage="completed",
+                result_json_path=str(parsed_json),
+            )
+        )
+        db.commit()
+
+        result = sessions_api.get_review_document_content(session.id, db)
+        image_path = result["pages"][0]["blocks"][0]["image_path"]
+
+        assert image_path == f"/api/v1/sessions/{session.id}/assets/segments/part-001/images/table.jpg"
+        response = sessions_api.get_session_asset(session.id, "segments/part-001/images/table.jpg", db)
+        assert str(response.path).endswith("segments/part-001/images/table.jpg")
+    finally:
+        db.close()
+
+
+def test_session_asset_rejects_path_traversal(tmp_path):
+    SessionLocal = _session_factory()
+    source = tmp_path / "original.pdf"
+    source.write_bytes(b"%PDF- fake")
+    parsed_json = tmp_path / "mineru" / "parsed.json"
+    parsed_json.parent.mkdir(parents=True)
+    parsed_json.write_text(json.dumps({"pdf_info": []}), encoding="utf-8")
+
+    db = SessionLocal()
+    try:
+        contract = Contract(
+            title="测试方案",
+            original_filename=source.name,
+            file_type="pdf",
+            file_path=str(source),
+            uploaded_by="tester",
+        )
+        db.add(contract)
+        db.flush()
+        session = ReviewSession(contract_id=contract.id, state="parsed", created_by="tester")
+        db.add(session)
+        db.flush()
+        db.add(
+            DocumentParseJob(
+                session_id=session.id,
+                contract_id=contract.id,
+                source_file_path=str(source),
+                source_file_type="pdf",
+                provider="mineru",
+                status="succeeded",
+                stage="completed",
+                result_json_path=str(parsed_json),
+            )
+        )
+        db.commit()
+
+        with pytest.raises(HTTPException) as exc_info:
+            sessions_api.get_session_asset(session.id, "../secret.jpg", db)
+        assert exc_info.value.status_code == 404
+    finally:
+        db.close()
+
+
 @pytest.mark.asyncio
 async def test_start_review_runs_pipeline_from_mineru_artifact_after_parse(tmp_path, monkeypatch):
     SessionLocal = _session_factory()
@@ -152,5 +264,61 @@ async def test_start_review_runs_pipeline_from_mineru_artifact_after_parse(tmp_p
 
         assert called == {"session_id": session.id, "file_path": str(parsed_json)}
         assert result["state"] == "scanning"
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_start_review_error_includes_pipeline_failure_reason(tmp_path, monkeypatch):
+    SessionLocal = _session_factory()
+    source = tmp_path / "original.pdf"
+    source.write_bytes(b"%PDF- fake")
+    parsed_json = tmp_path / "mineru" / "parsed.json"
+    parsed_json.parent.mkdir(parents=True)
+    parsed_json.write_text(
+        json.dumps({"pdf_info": [{"page_idx": 0, "para_blocks": []}]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    db = SessionLocal()
+    try:
+        contract = Contract(
+            title="测试方案",
+            original_filename=source.name,
+            file_type="pdf",
+            file_path=str(source),
+            uploaded_by="tester",
+        )
+        db.add(contract)
+        db.flush()
+        session = ReviewSession(contract_id=contract.id, state="parsed", created_by="tester")
+        db.add(session)
+        db.flush()
+        db.add(
+            DocumentParseJob(
+                session_id=session.id,
+                contract_id=contract.id,
+                source_file_path=str(source),
+                source_file_type="pdf",
+                provider="mineru",
+                status="succeeded",
+                stage="completed",
+                result_json_path=str(parsed_json),
+            )
+        )
+        db.commit()
+
+        def fake_run_pipeline(file_path, artifact_dir, session_id):
+            raise RuntimeError("LangExtract completed but produced no grounded facts")
+
+        monkeypatch.setattr(water_review_service, "run_pipeline", fake_run_pipeline)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await sessions_api.start_review(session.id, db=db)
+
+        assert exc_info.value.status_code == 500
+        assert "证据不足" in exc_info.value.detail["message"]
+        assert "当前解析结果未抽取到可用于字段核验和规则审查的原文证据" in exc_info.value.detail["message"]
+        assert "MinerU 解析结果已保留" in exc_info.value.detail["message"]
     finally:
         db.close()

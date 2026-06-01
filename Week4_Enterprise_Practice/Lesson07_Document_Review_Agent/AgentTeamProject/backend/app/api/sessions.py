@@ -1,10 +1,13 @@
 import json
+import logging
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -28,6 +31,9 @@ from app.services.document_parse_worker import DocumentParseError, cancel_parse_
 from app.services.water_review_parsers import parse_document
 
 router = APIRouter()
+ASSET_URL_PREFIX = "/api/v1/sessions"
+ASSET_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
+logger = logging.getLogger(__name__)
 
 
 class RetrievalDebugRequest(BaseModel):
@@ -119,18 +125,20 @@ def get_review_document_content(session_id: str, db: Session = Depends(get_db)) 
     artifact_dir = Path(contract.file_path).parent / "water_review"
     parsed_blocks_path = artifact_dir / "parsed_blocks.json"
     source = "parsed_blocks"
+    parse_job = _latest_successful_parse_job(session_id, db)
     if parsed_blocks_path.exists():
         try:
             blocks = json.loads(parsed_blocks_path.read_text(encoding="utf-8"))
         except Exception:
             raise APIError.internal("解析文档内容读取失败")
     else:
-        blocks, source = _load_mineru_document_blocks(session_id, db)
+        blocks, source = _load_mineru_document_blocks(session_id, db, parse_job)
 
     if not isinstance(blocks, list):
         raise APIError.internal("解析文档内容格式错误")
 
     normalized_blocks = [_normalize_document_block(block, index) for index, block in enumerate(blocks)]
+    _map_document_asset_urls(normalized_blocks, session_id, parse_job)
     pages: dict[int, list[dict[str, Any]]] = {}
     for block in normalized_blocks:
         pages.setdefault(block["page"], []).append(block)
@@ -150,6 +158,17 @@ def get_review_document_content(session_id: str, db: Session = Depends(get_db)) 
         "outline": _build_document_outline(normalized_blocks),
         "pages": ordered_pages,
     }
+
+
+@router.get("/{session_id}/assets/{asset_path:path}")
+def get_session_asset(session_id: str, asset_path: str, db: Session = Depends(get_db)) -> FileResponse:
+    session = db.query(ReviewSession).filter(ReviewSession.id == session_id).first()
+    if not session:
+        raise APIError.not_found("ReviewSession")
+    job = _latest_successful_parse_job(session_id, db)
+    root = _parse_artifact_root(job)
+    target = _resolve_session_asset(root, asset_path)
+    return FileResponse(target)
 
 
 @router.post("/{session_id}/retrieval-debug")
@@ -187,11 +206,37 @@ async def start_review(session_id: str, db: Session = Depends(get_db)) -> dict[s
     if not artifact_path:
         raise APIError.not_found("ParsedDocument")
 
+    logger.info(
+        "start_review_requested session_id=%s contract_id=%s job_id=%s artifact_path=%s",
+        session_id,
+        session.contract_id,
+        job.id if job else "",
+        artifact_path,
+    )
     pipeline = await ocr_service.extract_fields(session_id, "", db, file_path=str(artifact_path))
     db.refresh(session)
     if pipeline is None:
-        raise APIError.internal("数据清洗与向量审查失败，MinerU 解析结果已保留")
+        reason = _latest_system_failure_reason(session_id, db)
+        logger.error(
+            "start_review_failed session_id=%s contract_id=%s job_id=%s artifact_path=%s reason=%s",
+            session_id,
+            session.contract_id,
+            job.id if job else "",
+            artifact_path,
+            reason or "",
+        )
+        message = "数据清洗与向量审查失败"
+        if reason:
+            message = f"{message}：{reason}"
+        raise APIError.internal(f"{message}，MinerU 解析结果已保留")
 
+    logger.info(
+        "start_review_succeeded session_id=%s contract_id=%s job_id=%s state=%s",
+        session_id,
+        session.contract_id,
+        job.id if job else "",
+        session.state,
+    )
     return {
         "session_id": session_id,
         "state": session.state,
@@ -218,8 +263,12 @@ def _normalize_document_block(block: Any, index: int) -> dict[str, Any]:
     }
 
 
-def _load_mineru_document_blocks(session_id: str, db: Session) -> tuple[list[dict[str, Any]], str]:
-    job = _latest_successful_parse_job(session_id, db)
+def _load_mineru_document_blocks(
+    session_id: str,
+    db: Session,
+    job: DocumentParseJob | None = None,
+) -> tuple[list[dict[str, Any]], str]:
+    job = job or _latest_successful_parse_job(session_id, db)
     for path, source in _parse_artifact_candidates(job):
         try:
             blocks = parse_document(str(path))
@@ -228,6 +277,58 @@ def _load_mineru_document_blocks(session_id: str, db: Session) -> tuple[list[dic
         return [asdict(block) for block in blocks], source
 
     raise APIError.not_found("ParsedDocument")
+
+
+def _map_document_asset_urls(blocks: list[dict[str, Any]], session_id: str, job: DocumentParseJob | None) -> None:
+    root = _parse_artifact_root(job)
+    if not root:
+        return
+    for block in blocks:
+        image_path = str(block.get("image_path") or "").strip()
+        if not image_path:
+            continue
+        block["image_path"] = _asset_url_for_image_path(session_id, root, image_path)
+
+
+def _asset_url_for_image_path(session_id: str, root: Path, image_path: str) -> str:
+    if image_path.startswith(("http://", "https://", f"{ASSET_URL_PREFIX}/")):
+        return image_path
+    try:
+        if Path(image_path).is_absolute():
+            relative = Path(image_path).resolve().relative_to(root.resolve()).as_posix()
+            _resolve_session_asset(root, relative)
+        else:
+            relative = image_path.lstrip("/")
+            _resolve_session_asset(root, relative)
+    except Exception:
+        return image_path
+    return f"{ASSET_URL_PREFIX}/{session_id}/assets/{quote(relative, safe='/')}"
+
+
+def _parse_artifact_root(job: DocumentParseJob | None) -> Path | None:
+    if not job:
+        return None
+    for raw_path in (job.result_json_path, job.result_markdown_path):
+        if raw_path:
+            path = Path(raw_path)
+            if path.exists():
+                return path.parent.resolve()
+    return None
+
+
+def _resolve_session_asset(root: Path | None, asset_path: str) -> Path:
+    if not root:
+        raise APIError.not_found("ParsedDocumentAsset")
+    clean_path = asset_path.lstrip("/")
+    if not clean_path:
+        raise APIError.not_found("ParsedDocumentAsset")
+    if Path(clean_path).suffix.lower() not in ASSET_SUFFIXES:
+        raise APIError.not_found("ParsedDocumentAsset")
+    root_resolved = root.resolve()
+    target = (root_resolved / clean_path).resolve()
+    if target == root_resolved or root_resolved not in target.parents or not target.is_file():
+        raise APIError.not_found("ParsedDocumentAsset")
+    return target
 
 
 def _latest_successful_parse_job(session_id: str, db: Session) -> DocumentParseJob | None:
@@ -266,6 +367,23 @@ def _parse_artifact_candidates(job: DocumentParseJob | None) -> list[tuple[Path,
         if path.exists():
             candidates.append((path, source))
     return candidates
+
+
+def _latest_system_failure_reason(session_id: str, db: Session) -> str:
+    audit = (
+        db.query(AuditLog)
+        .filter(AuditLog.session_id == session_id, AuditLog.event_type == "system_failure")
+        .order_by(AuditLog.occurred_at.desc())
+        .first()
+    )
+    if not audit or not audit.metadata_json:
+        return ""
+    try:
+        metadata = json.loads(audit.metadata_json)
+    except Exception:
+        return ""
+    reason = str(metadata.get("user_message") or metadata.get("error") or "").strip()
+    return reason[:500]
 
 
 def _build_document_outline(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
