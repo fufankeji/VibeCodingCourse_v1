@@ -13,7 +13,7 @@ const STATE_OPTIONS: { value: '' | SessionState; label: string }[] = [
   { value: 'parsing', label: '解析中' },
   { value: 'parsed', label: '已解析' },
   { value: 'scanning', label: '规则审查中' },
-  { value: 'hitl_field_verify', label: '字段核对' },
+  { value: 'hitl_field_verify', label: '关键信息确认' },
   { value: 'hitl_pending', label: '待人工审核' },
   { value: 'hitl_medium_confirm', label: '中风险复核' },
   { value: 'report_ready', label: '已完成' },

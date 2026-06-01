@@ -2,7 +2,7 @@ import json
 import logging
 from collections import Counter
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote
@@ -35,6 +35,7 @@ router = APIRouter()
 ASSET_URL_PREFIX = "/api/v1/sessions"
 ASSET_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
 logger = logging.getLogger(__name__)
+STALE_REVIEW_SCAN_AFTER = timedelta(minutes=3)
 
 
 class RetrievalDebugRequest(BaseModel):
@@ -155,6 +156,7 @@ def get_review_document_content(session_id: str, db: Session = Depends(get_db)) 
         "title": contract.title,
         "file_type": contract.file_type,
         "source": source,
+        "source_pdf_url": _source_pdf_url(session_id, contract),
         "page_count": max(pages) if pages else 0,
         "outline": _build_document_outline(normalized_blocks),
         "pages": ordered_pages,
@@ -220,7 +222,16 @@ def get_review_pipeline_status(session_id: str, db: Session = Depends(get_db)) -
         elif contract.file_path:
             artifact_dir = Path(contract.file_path).parent / "water_review"
     review_item_count = db.query(ReviewItem).filter(ReviewItem.session_id == session_id).count()
-    return water_review_service.build_pipeline_status(session_id, artifact_dir, review_item_count=review_item_count)
+    status = water_review_service.build_pipeline_status(session_id, artifact_dir, review_item_count=review_item_count)
+    if session.state == "scanning" and review_item_count == 0 and not _pipeline_status_is_recent(status):
+        for stage in status.get("stages", []):
+            if isinstance(stage, dict) and stage.get("status") == "running":
+                stage["status"] = "failed"
+                stage["message"] = "该阶段超过 3 分钟没有更新，后端任务可能已中断；可以重新启动清洗与审查。"
+    latest_failure = _latest_system_failure_payload(session_id, db)
+    if latest_failure:
+        status["last_failure"] = latest_failure
+    return status
 
 
 @router.get("/{session_id}/assets/{asset_path:path}")
@@ -232,6 +243,23 @@ def get_session_asset(session_id: str, asset_path: str, db: Session = Depends(ge
     root = _parse_artifact_root(job)
     target = _resolve_session_asset(root, asset_path)
     return FileResponse(target)
+
+
+@router.get("/{session_id}/source-file")
+def get_session_source_file(session_id: str, db: Session = Depends(get_db)) -> FileResponse:
+    session = db.query(ReviewSession).filter(ReviewSession.id == session_id).first()
+    if not session:
+        raise APIError.not_found("ReviewSession")
+    contract = db.query(Contract).filter(Contract.id == session.contract_id).first()
+    if not contract:
+        raise APIError.not_found("Contract")
+    target = _resolve_source_pdf(contract)
+    return FileResponse(
+        target,
+        media_type="application/pdf",
+        filename=contract.original_filename or target.name,
+        headers={"Content-Disposition": f'inline; filename="{quote(contract.original_filename or target.name)}"'},
+    )
 
 
 @router.post("/{session_id}/retrieval-debug")
@@ -261,13 +289,24 @@ async def start_review(session_id: str, db: Session = Depends(get_db)) -> dict[s
     session = db.query(ReviewSession).filter(ReviewSession.id == session_id).first()
     if not session:
         raise APIError.not_found("ReviewSession")
-    if session.state != "parsed":
-        raise APIError.session_state_invalid(session.state, "parsed")
 
     job = _latest_successful_parse_job(session_id, db)
     artifact_path, _ = _best_parse_artifact(job)
     if not artifact_path:
         raise APIError.not_found("ParsedDocument")
+    if session.state != "parsed":
+        if not _is_restartable_stale_review_session(session, artifact_path, db):
+            raise APIError.session_state_invalid(session.state, "parsed")
+        logger.warning(
+            "start_review_recovering_stale_scanning session_id=%s contract_id=%s previous_updated_at=%s",
+            session_id,
+            session.contract_id,
+            session.updated_at,
+        )
+        session.state = "parsed"
+        session.hitl_subtype = None
+        db.commit()
+        db.refresh(session)
 
     logger.info(
         "start_review_requested session_id=%s contract_id=%s job_id=%s artifact_path=%s",
@@ -366,6 +405,23 @@ def _asset_url_for_image_path(session_id: str, root: Path, image_path: str) -> s
     except Exception:
         return image_path
     return f"{ASSET_URL_PREFIX}/{session_id}/assets/{quote(relative, safe='/')}"
+
+
+def _source_pdf_url(session_id: str, contract: Contract) -> str:
+    try:
+        _resolve_source_pdf(contract)
+    except Exception:
+        return ""
+    return f"{ASSET_URL_PREFIX}/{session_id}/source-file"
+
+
+def _resolve_source_pdf(contract: Contract) -> Path:
+    if str(contract.file_type or "").lower() != "pdf":
+        raise APIError.not_found("SourcePdf")
+    path = Path(contract.file_path or "")
+    if not path.exists() or not path.is_file() or path.suffix.lower() != ".pdf":
+        raise APIError.not_found("SourcePdf")
+    return path.resolve()
 
 
 def _parse_artifact_root(job: DocumentParseJob | None) -> Path | None:
@@ -489,6 +545,14 @@ def _load_json_object(path: Path) -> dict[str, Any]:
 
 
 def _latest_system_failure_reason(session_id: str, db: Session) -> str:
+    metadata = _latest_system_failure_payload(session_id, db)
+    if not metadata:
+        return ""
+    reason = str(metadata.get("user_message") or metadata.get("error") or "").strip()
+    return reason[:500]
+
+
+def _latest_system_failure_payload(session_id: str, db: Session) -> dict[str, Any]:
     audit = (
         db.query(AuditLog)
         .filter(AuditLog.session_id == session_id, AuditLog.event_type == "system_failure")
@@ -496,13 +560,51 @@ def _latest_system_failure_reason(session_id: str, db: Session) -> str:
         .first()
     )
     if not audit or not audit.metadata_json:
-        return ""
+        return {}
     try:
         metadata = json.loads(audit.metadata_json)
     except Exception:
-        return ""
-    reason = str(metadata.get("user_message") or metadata.get("error") or "").strip()
-    return reason[:500]
+        return {}
+    if not isinstance(metadata, dict):
+        return {}
+    payload = {key: value for key, value in metadata.items() if isinstance(key, str)}
+    payload["occurred_at"] = audit.occurred_at.isoformat() if audit.occurred_at else ""
+    if "message" not in payload:
+        payload["message"] = str(payload.get("user_message") or payload.get("error") or "").strip()[:500]
+    return payload
+
+
+def _is_restartable_stale_review_session(session: ReviewSession, artifact_path: Path, db: Session) -> bool:
+    if session.state != "scanning":
+        return False
+    if session.updated_at and datetime.utcnow() - session.updated_at < STALE_REVIEW_SCAN_AFTER:
+        return False
+    review_item_count = db.query(ReviewItem).filter(ReviewItem.session_id == session.id).count()
+    if review_item_count > 0:
+        return False
+    status = water_review_service.build_pipeline_status(
+        session.id,
+        artifact_path.parent / "water_review",
+        review_item_count=review_item_count,
+    )
+    stages = status.get("stages") if isinstance(status, dict) else []
+    has_running_stage = any(isinstance(stage, dict) and stage.get("status") == "running" for stage in stages)
+    if has_running_stage and _pipeline_status_is_recent(status):
+        return False
+    return True
+
+
+def _pipeline_status_is_recent(status: dict[str, Any]) -> bool:
+    updated_at = str(status.get("updated_at") or "")
+    if not updated_at:
+        return False
+    try:
+        parsed = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if parsed.tzinfo is not None:
+        return datetime.now(parsed.tzinfo) - parsed < STALE_REVIEW_SCAN_AFTER
+    return datetime.utcnow() - parsed < STALE_REVIEW_SCAN_AFTER
 
 
 def _build_document_outline(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:

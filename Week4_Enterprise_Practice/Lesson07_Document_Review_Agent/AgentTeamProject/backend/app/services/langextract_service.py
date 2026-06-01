@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import queue
 import re
+import threading
+import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -263,10 +266,32 @@ def run_langextract(chunks: list[Any]) -> list[dict[str, Any]]:
 
     annotated_docs: list[Any] = []
     failed_documents: list[dict[str, str]] = []
+    started_at = time.monotonic()
+    deadline = started_at + max(settings.langextract_stage_timeout_seconds, 1)
     for document in documents:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            failed_documents.append({"document_id": _document_id(document), "error": "LangExtract stage timeout"})
+            logger.warning(
+                "langextract_stage_timeout selected_document_count=%s failed_document_count=%s timeout_seconds=%s",
+                len(documents),
+                len(failed_documents),
+                settings.langextract_stage_timeout_seconds,
+            )
+            break
         try:
-            result = _extract_one_document(lx, prompt_validation, model, document)
+            result = _extract_one_document_with_timeout(
+                lx,
+                prompt_validation,
+                model,
+                document,
+                timeout_seconds=min(max(settings.langextract_request_timeout, 1), remaining),
+            )
             annotated_docs.extend(result if isinstance(result, list) else [result])
+        except TimeoutError as exc:
+            failed_documents.append({"document_id": _document_id(document), "error": str(exc)[:500]})
+            logger.warning("langextract_document_timeout document_id=%s error=%s", _document_id(document), exc)
+            break
         except Exception as exc:
             failed_documents.append({"document_id": _document_id(document), "error": str(exc)[:500]})
             logger.warning("langextract_document_failed document_id=%s error=%s", _document_id(document), exc)
@@ -297,6 +322,33 @@ def run_langextract(chunks: list[Any]) -> list[dict[str, Any]]:
         )
         raise LangExtractReviewError("LangExtract completed but produced no grounded facts")
     return [asdict(fact) for fact in deduped]
+
+
+def _extract_one_document_with_timeout(
+    lx: Any,
+    prompt_validation: Any,
+    model: Any,
+    document: Any,
+    *,
+    timeout_seconds: float,
+) -> list[Any]:
+    result_queue: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
+
+    def worker() -> None:
+        try:
+            result_queue.put(("ok", _extract_one_document(lx, prompt_validation, model, document)))
+        except BaseException as exc:
+            result_queue.put(("error", exc))
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    thread.join(timeout=max(timeout_seconds, 1))
+    if thread.is_alive():
+        raise TimeoutError(f"LangExtract document timed out after {int(timeout_seconds)} seconds")
+    status, payload = result_queue.get_nowait()
+    if status == "error":
+        raise payload
+    return payload
 
 
 def _extract_one_document(lx: Any, prompt_validation: Any, model: Any, document: Any) -> list[Any]:

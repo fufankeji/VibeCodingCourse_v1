@@ -164,6 +164,66 @@ def test_run_pipeline_persists_mineru_table_facts_before_prose_fallback(tmp_path
     assert by_field["excavation_volume"]["fact_id"].startswith("mineru-table-")
 
 
+def test_run_pipeline_skips_external_langextract_in_main_pipeline_by_default(tmp_path, monkeypatch):
+    source = tmp_path / "mineru.json"
+    artifact_dir = tmp_path / "artifacts"
+    source.write_text(
+        json.dumps(
+            {
+                "pdf_info": [
+                    {
+                        "page_idx": 0,
+                        "para_blocks": [
+                            {
+                                "bbox": [69, 550, 525, 698],
+                                "type": "table",
+                                "index": 1,
+                                "html": (
+                                    "<table>"
+                                    "<tr><th>项目</th><th>挖方</th><th>填方</th><th>借方</th><th>弃方</th></tr>"
+                                    "<tr><td>合计</td><td>10.00万m3</td><td>8.00万m3</td><td>2.00万m3</td><td>4.00万m3</td></tr>"
+                                    "</table>"
+                                ),
+                            }
+                        ],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(settings, "langextract_enabled", True)
+    monkeypatch.setattr(
+        langextract_service,
+        "run_langextract",
+        lambda *_args, **_kwargs: pytest.fail("LangExtract must not block the main review pipeline by default"),
+    )
+    monkeypatch.setattr(
+        rag_service,
+        "run_rag_review",
+        lambda session_id, chunks, rules, artifact_path, facts=None, findings=None: {
+            "issues": [],
+            "retrievals": [],
+            "index_manifest": {"fact_count": len(facts or [])},
+        },
+    )
+    monkeypatch.setattr(water_review_service, "load_rule_set", lambda: [])
+    monkeypatch.setattr(review_config_service, "list_check_item_specs", lambda: [])
+
+    result = water_review_service.run_pipeline(str(source), str(artifact_dir), "main-pipeline-skip-langextract")
+
+    facts = json.loads((artifact_dir / "langextract_facts.json").read_text(encoding="utf-8"))
+    status = json.loads((artifact_dir / "pipeline_status.json").read_text(encoding="utf-8"))
+    stages = {stage["id"]: stage for stage in status["stages"]}
+    assert result["facts"] == facts
+    assert len(facts) > 0
+    assert stages["langextract_facts"]["status"] == "skipped"
+    assert "同步 LangExtract" in stages["langextract_facts"]["message"]
+    assert stages["rag_index"]["status"] == "completed"
+
+
 def test_run_pipeline_persists_langextract_facts_before_rag_failure(tmp_path, monkeypatch):
     source = tmp_path / "mineru.json"
     artifact_dir = tmp_path / "artifacts"
@@ -206,6 +266,7 @@ def test_run_pipeline_persists_langextract_facts_before_rag_failure(tmp_path, mo
     }
 
     monkeypatch.setattr(settings, "langextract_enabled", True)
+    monkeypatch.setattr(settings, "langextract_main_pipeline_enabled", True)
     monkeypatch.setattr(langextract_service, "run_langextract", lambda chunks: [fact])
     monkeypatch.setattr(water_review_service, "load_rule_set", lambda: [])
 
@@ -224,6 +285,66 @@ def test_run_pipeline_persists_langextract_facts_before_rag_failure(tmp_path, mo
     assert facts[0]["fact_id"] == "fact-project-001"
     assert fact_index["fact_count"] == 1
     assert next(field for field in fields if field["field_name"] == "project_name")["fact_id"] == "fact-project-001"
+
+
+def test_run_pipeline_degrades_when_langextract_fails(tmp_path, monkeypatch):
+    source = tmp_path / "mineru.json"
+    artifact_dir = tmp_path / "artifacts"
+    source.write_text(
+        json.dumps(
+            {
+                "pdf_info": [
+                    {
+                        "page_idx": 0,
+                        "para_blocks": [
+                            {
+                                "bbox": [69, 550, 525, 698],
+                                "type": "table",
+                                "index": 1,
+                                "html": (
+                                    "<table>"
+                                    "<tr><th>项目</th><th>挖方</th><th>填方</th><th>借方</th><th>弃方</th></tr>"
+                                    "<tr><td>合计</td><td>10.00万m3</td><td>8.00万m3</td><td>2.00万m3</td><td>4.00万m3</td></tr>"
+                                    "</table>"
+                                ),
+                            }
+                        ],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    def fail_langextract(_chunks):
+        raise langextract_service.LangExtractReviewError("LangExtract document timed out after 45 seconds")
+
+    monkeypatch.setattr(settings, "langextract_enabled", True)
+    monkeypatch.setattr(settings, "langextract_main_pipeline_enabled", True)
+    monkeypatch.setattr(langextract_service, "run_langextract", fail_langextract)
+    monkeypatch.setattr(
+        rag_service,
+        "run_rag_review",
+        lambda session_id, chunks, rules, artifact_path, facts=None, findings=None: {
+            "issues": [],
+            "retrievals": [],
+            "index_manifest": {"fact_count": len(facts or [])},
+        },
+    )
+    monkeypatch.setattr(water_review_service, "load_rule_set", lambda: [])
+    monkeypatch.setattr(review_config_service, "list_check_item_specs", lambda: [])
+
+    result = water_review_service.run_pipeline(str(source), str(artifact_dir), "langextract-degraded-session")
+
+    facts = json.loads((artifact_dir / "langextract_facts.json").read_text(encoding="utf-8"))
+    status = json.loads((artifact_dir / "pipeline_status.json").read_text(encoding="utf-8"))
+    stages = {stage["id"]: stage for stage in status["stages"]}
+    assert result["facts"] == facts
+    assert len(facts) > 0
+    assert stages["langextract_facts"]["status"] == "degraded"
+    assert "timed out" in stages["langextract_facts"]["message"]
+    assert stages["rag_index"]["status"] == "completed"
 
 
 def test_run_pipeline_reuses_cached_prerag_artifacts(tmp_path, monkeypatch):

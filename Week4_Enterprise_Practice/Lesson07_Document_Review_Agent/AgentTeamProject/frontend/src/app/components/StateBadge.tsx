@@ -8,7 +8,7 @@ const STATE_CONFIG: Record<string, { label: string; className: string }> = {
   parsing: { label: '解析中', className: 'bg-gray-100 text-gray-600 border border-gray-300' },
   parsed: { label: '已解析', className: 'bg-emerald-100 text-emerald-700 border border-emerald-300' },
   scanning: { label: '规则审查中', className: 'bg-blue-100 text-blue-700 border border-blue-300' },
-  hitl_field_verify: { label: '字段核对', className: 'bg-sky-100 text-sky-700 border border-sky-300' },
+  hitl_field_verify: { label: '关键信息确认', className: 'bg-sky-100 text-sky-700 border border-sky-300' },
   hitl_pending: { label: '待人工审核', className: 'bg-orange-100 text-orange-700 border border-orange-300' },
   hitl_high_risk: { label: '高风险待审', className: 'bg-red-100 text-red-700 border border-red-300' },
   hitl_medium_confirm: { label: '中风险复核', className: 'bg-amber-100 text-amber-700 border border-amber-300' },

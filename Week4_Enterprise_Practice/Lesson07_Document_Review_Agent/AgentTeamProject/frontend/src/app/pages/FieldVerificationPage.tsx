@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router';
-import { CheckCircle, Edit2, SkipForward, ChevronDown, ChevronUp, Zap, ArrowLeft, Loader2 } from 'lucide-react';
+import { CheckCircle, Edit2, SkipForward, ChevronDown, ChevronUp, Zap, ArrowLeft, Loader2, FileText } from 'lucide-react';
 import { GlobalNav } from '../components/GlobalNav';
 import { WorkflowStatusBar } from '../components/WorkflowStatusBar';
 import { ConfidenceBadge } from '../components/ConfidenceBadge';
@@ -43,7 +43,7 @@ const FIELD_LABEL: Record<string, string> = {
 };
 
 /**
- * FieldVerificationPage — P06 字段核对页
+ * FieldVerificationPage — P06 关键信息确认页
  * GET /sessions/{session_id}/fields — 已开发
  * PATCH /sessions/{session_id}/fields/{field_id} — 已开发（action: confirm/modify/skip）
  * R08: 置信度颜色严格来自 confidence_score 字段
@@ -120,12 +120,22 @@ export function FieldVerificationPage() {
       <div style={{ paddingTop: 78 }}>
         <div className="max-w-3xl mx-auto px-6 py-6">
           {/* Header */}
-          <div className="mb-5">
-            <p className="text-xs text-gray-400 mb-1">session_id: {sessionId}</p>
-            <h1 className="text-gray-900" style={{ fontSize: 20, fontWeight: 700 }}>字段核对</h1>
-            <p className="text-sm text-gray-500 mt-1">
-              请核对 AI 提取的水保方案结构化字段，确认无误后可启动规则审查
-            </p>
+          <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-xs text-gray-400 mb-1">session_id: {sessionId}</p>
+              <h1 className="text-gray-900" style={{ fontSize: 20, fontWeight: 700 }}>关键信息确认</h1>
+              <p className="text-sm text-gray-500 mt-1">
+                请确认系统从文档中抽取的项目名称、面积、土石方、投资等关键信息，确认后可启动规则审查
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => sessionId && navigate(`/contracts/${sessionId}/document?stage=fields`)}
+              className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            >
+              <FileText className="h-4 w-4" />
+              查看解析文档
+            </button>
           </div>
 
           {/* Loading State */}

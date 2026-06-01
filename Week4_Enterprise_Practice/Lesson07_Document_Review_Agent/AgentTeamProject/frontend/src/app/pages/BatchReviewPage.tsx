@@ -6,6 +6,7 @@ import { WorkflowStatusBar } from '../components/WorkflowStatusBar';
 import { RiskLevelBadge } from '../components/RiskLevelBadge';
 import { SourceBadge } from '../components/SourceBadge';
 import { ConfidenceBadge } from '../components/ConfidenceBadge';
+import { ExtractedFieldsSummary } from '../components/ExtractedFieldsSummary';
 import { listItems, batchConfirm } from '../api/items';
 import { getSession } from '../api/sessions';
 import type { ReviewItem } from '../types';
@@ -120,6 +121,8 @@ export function BatchReviewPage() {
               当前会话已中止，本页仅用于查看中风险复核记录，不能选择条款或提交批量确认。
             </div>
           )}
+
+          <ExtractedFieldsSummary sessionId={sessionId} className="mb-5" />
 
           {/* Select All */}
           <div className="flex items-center gap-3 mb-3 px-1">

@@ -89,11 +89,13 @@ def run_pipeline(file_path: str, artifact_dir: str, session_id: str) -> dict[str
     }
     _write_pipeline_status(artifact_path, session_id, stage_statuses, timings, cache_hits, source_signature)
     logger.info(
-        "water_review_run_pipeline_start session_id=%s file_path=%s artifact_dir=%s langextract_enabled=%s",
+        "water_review_run_pipeline_start session_id=%s file_path=%s artifact_dir=%s "
+        "langextract_enabled=%s langextract_main_pipeline_enabled=%s",
         session_id,
         file_path,
         artifact_dir,
         settings.langextract_enabled,
+        settings.langextract_main_pipeline_enabled,
     )
     started = time.perf_counter()
     cached_blocks = _load_cached_dataclass_list(artifact_path / "parsed_blocks.json", ParsedBlock) if cache_source_matches else None
@@ -196,11 +198,14 @@ def run_pipeline(file_path: str, artifact_dir: str, session_id: str) -> dict[str
         table_facts = extract_table_facts(blocks, chunks)
         timings["pipeline_table_fact_duration_ms"] = int((time.perf_counter() - started) * 1000)
         langextract_facts: list[dict[str, Any]] = list(table_facts)
+        langextract_failed = ""
         cross_chapter_findings: list[dict[str, Any]] = []
         _set_stage(stage_statuses, "langextract_facts", "running", item_count=len(table_facts))
         _write_pipeline_status(artifact_path, session_id, stage_statuses, timings, cache_hits, source_signature)
-        if settings.langextract_enabled:
+        run_sync_langextract = settings.langextract_enabled and settings.langextract_main_pipeline_enabled
+        if run_sync_langextract:
             from app.services.langextract_service import (
+                LangExtractReviewError,
                 build_cross_chapter_findings,
                 build_fact_index,
                 facts_to_extracted_fields,
@@ -208,7 +213,18 @@ def run_pipeline(file_path: str, artifact_dir: str, session_id: str) -> dict[str
             )
 
             started = time.perf_counter()
-            langextract_facts = [*table_facts, *run_langextract(core_chunks)]
+            try:
+                langextract_facts = [*table_facts, *run_langextract(core_chunks)]
+                langextract_failed = ""
+            except LangExtractReviewError as exc:
+                langextract_failed = str(exc)
+                langextract_facts = list(table_facts)
+                logger.warning(
+                    "water_review_langextract_degraded session_id=%s table_fact_count=%s error=%s",
+                    session_id,
+                    len(table_facts),
+                    exc,
+                )
             timings["pipeline_langextract_duration_ms"] = int((time.perf_counter() - started) * 1000)
             logger.info(
                 "water_review_langextract_done session_id=%s table_fact_count=%s total_fact_count=%s duration_ms=%s",
@@ -221,6 +237,7 @@ def run_pipeline(file_path: str, artifact_dir: str, session_id: str) -> dict[str
             fact_index = build_fact_index(langextract_facts)
             cross_chapter_findings = build_cross_chapter_findings(langextract_facts)
         else:
+            langextract_failed = "已跳过同步 LangExtract 证据增强，主流程使用 MinerU 表格事实和规则字段继续审查。"
             if table_facts:
                 from app.services.langextract_service import build_fact_index, facts_to_extracted_fields
 
@@ -236,12 +253,19 @@ def run_pipeline(file_path: str, artifact_dir: str, session_id: str) -> dict[str
         _write_json(artifact_path / "cross_chapter_findings.json", cross_chapter_findings)
         timings["pipeline_prerag_artifact_write_duration_ms"] = int((time.perf_counter() - started) * 1000)
         _set_stage(stage_statuses, "extracted_fields", "completed", item_count=len(fields))
+        if run_sync_langextract and langextract_failed:
+            langextract_status = "degraded"
+        elif run_sync_langextract:
+            langextract_status = "completed"
+        else:
+            langextract_status = "skipped"
         _set_stage(
             stage_statuses,
             "langextract_facts",
-            "completed",
+            langextract_status,
             item_count=len(langextract_facts),
             duration_ms=timings.get("pipeline_langextract_duration_ms", 0),
+            message=langextract_failed,
         )
         _write_pipeline_status(artifact_path, session_id, stage_statuses, timings, cache_hits, source_signature)
 

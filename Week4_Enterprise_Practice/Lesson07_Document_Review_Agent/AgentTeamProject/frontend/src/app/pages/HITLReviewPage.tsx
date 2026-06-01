@@ -4,6 +4,7 @@ import { AlertTriangle, CheckCircle, XCircle, Edit, RotateCcw, History, Info, Lo
 import { RiskLevelBadge } from '../components/RiskLevelBadge';
 import { SourceBadge } from '../components/SourceBadge';
 import { ConfidenceBadge } from '../components/ConfidenceBadge';
+import { ExtractedFieldsSummary } from '../components/ExtractedFieldsSummary';
 import { API_BASE_URL } from '../api/client';
 import { listItems, submitDecision, revokeDecision } from '../api/items';
 import {
@@ -518,6 +519,8 @@ export function HITLReviewPage() {
         </div>
       )}
 
+      <ExtractedFieldsSummary sessionId={sessionId} dense className="shrink-0 rounded-none border-x-0 border-t-0 shadow-none" />
+
       <main className="grid min-h-0 flex-1 grid-cols-[232px_minmax(560px,1fr)_414px] overflow-hidden">
         <DocumentOutlinePanel
           documentContent={documentContent}
@@ -742,19 +745,43 @@ function PdfWorkbenchPanel({
   onSelectPage: (page: number) => void;
   isLoading: boolean;
 }) {
+  const [viewerMode, setViewerMode] = useState<'pdf' | 'parsed'>('pdf');
   const page = documentContent?.pages.find((candidate) => candidate.page_number === activePage);
   const pageCount = documentContent?.page_count ?? 0;
   const title = documentContent?.title || '审查对象';
   const evidencePage = item?.clause_location?.page_number;
+  const sourcePdfUrl = documentContent?.source_pdf_url || '';
+  const activeViewerMode = sourcePdfUrl ? viewerMode : 'parsed';
+  const pdfUrl = sourcePdfUrl ? pdfFrameUrl(sourcePdfUrl, activePage) : '';
 
   return (
     <section className="flex min-h-0 flex-col bg-slate-100">
       <div className="flex h-11 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-3">
         <div className="min-w-0">
           <p className="truncate text-xs font-semibold text-slate-800">{title}</p>
-          <p className="mt-0.5 truncate text-[11px] text-slate-400">当前位置：第 {activePage} 页 / 解析来源：{documentContent?.source || 'parsed_blocks'}</p>
+          <p className="mt-0.5 truncate text-[11px] text-slate-400">
+            当前位置：第 {activePage} 页 / {activeViewerMode === 'pdf' ? '原始 PDF' : `解析来源：${documentContent?.source || 'parsed_blocks'}`}
+          </p>
         </div>
         <div className="ml-3 flex shrink-0 items-center gap-1.5 text-[11px]">
+          {sourcePdfUrl ? (
+            <div className="mr-1 flex rounded border border-slate-200 bg-slate-50 p-0.5">
+              <button
+                type="button"
+                onClick={() => setViewerMode('pdf')}
+                className={`rounded px-2 py-0.5 ${activeViewerMode === 'pdf' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-white'}`}
+              >
+                原始PDF
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewerMode('parsed')}
+                className={`rounded px-2 py-0.5 ${activeViewerMode === 'parsed' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-white'}`}
+              >
+                解析证据
+              </button>
+            </div>
+          ) : null}
           <button type="button" onClick={() => onSelectPage(Math.max(1, activePage - 1))} className="rounded border border-slate-200 px-2 py-1 text-slate-600 hover:bg-slate-50">上一页</button>
           <button type="button" onClick={() => onSelectPage(pageCount ? Math.min(pageCount, activePage + 1) : activePage + 1)} className="rounded border border-slate-200 px-2 py-1 text-slate-600 hover:bg-slate-50">下一页</button>
           <button
@@ -765,29 +792,62 @@ function PdfWorkbenchPanel({
           >
             跳转证据
           </button>
-          <span className="rounded border border-slate-200 px-2 py-1 text-slate-500">92%</span>
           <span className="rounded bg-slate-900 px-2 py-1 text-white">p.{activePage} / {pageCount || '-'}</span>
         </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto bg-[#e5e7eb] px-8 py-5">
-        <div
-          ref={evidenceRef}
-          className="relative mx-auto min-h-[920px] w-[680px] bg-white px-16 py-12 text-slate-800 shadow-sm ring-1 ring-slate-300"
-        >
-          {isLoading ? (
-            <div className="flex h-[720px] items-center justify-center gap-2 text-xs text-slate-400">
-              <Loader2 className="h-4 w-4 animate-spin" /> 加载审查对象解析内容...
-            </div>
-          ) : page ? (
-            <DocumentPageView page={page} activeItem={item} activeEvidenceAnchors={activeEvidenceAnchors} title={title} />
-          ) : (
-            <div className="flex h-[720px] items-center justify-center text-xs text-slate-400">当前页暂无解析内容</div>
-          )}
-        </div>
+        {activeViewerMode === 'pdf' && pdfUrl ? (
+          <div className="mx-auto h-full min-h-[760px] max-w-[980px] bg-white shadow-sm ring-1 ring-slate-300">
+            <iframe
+              key={pdfUrl}
+              title={`${title} 原始PDF`}
+              src={pdfUrl}
+              className="h-[calc(100vh-190px)] min-h-[760px] w-full border-0 bg-white"
+            />
+          </div>
+        ) : (
+          <div
+            ref={evidenceRef}
+            className="relative mx-auto min-h-[920px] w-[680px] bg-white px-16 py-12 text-slate-800 shadow-sm ring-1 ring-slate-300"
+          >
+            {isLoading ? (
+              <div className="flex h-[720px] items-center justify-center gap-2 text-xs text-slate-400">
+                <Loader2 className="h-4 w-4 animate-spin" /> 加载审查对象解析内容...
+              </div>
+            ) : page ? (
+              <DocumentPageView page={page} activeItem={item} activeEvidenceAnchors={activeEvidenceAnchors} title={title} />
+            ) : (
+              <div className="flex h-[720px] items-center justify-center text-xs text-slate-400">当前页暂无解析内容</div>
+            )}
+            {sourcePdfUrl ? (
+              <div className="mt-6 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-800">
+                当前为 MinerU 解析证据视图，用于 chunk、表格、图片和 bbox 定位；原始 PDF 视觉内容请切回“原始PDF”。
+              </div>
+            ) : null}
+          </div>
+        )}
       </div>
     </section>
   );
+}
+
+function pdfFrameUrl(path: string, page: number) {
+  const url = resolveSessionFileUrl(path);
+  if (!url) return '';
+  const [base] = url.split('#');
+  return `${base}#page=${Math.max(1, page)}&zoom=page-width`;
+}
+
+function resolveSessionFileUrl(path?: string) {
+  const value = path?.trim();
+  if (!value) return '';
+  if (/^https?:\/\//i.test(value)) return value;
+  try {
+    return new URL(value, API_BASE_URL).toString();
+  } catch {
+    return value;
+  }
 }
 
 function DocumentPageView({

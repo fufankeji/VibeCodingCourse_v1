@@ -408,6 +408,11 @@ class HITLService:
                     ReviewSession.id == session_id
                 ).first()
                 if session and session.state not in ("report_ready", "aborted"):
+                    failure_state = "parsed" if session.state == "scanning" else session.state
+                    if session.state == "scanning":
+                        session.state = failure_state
+                        session.hitl_subtype = None
+                        session.updated_at = datetime.utcnow()
                     log = AuditLog(
                         session_id=session_id,
                         event_type="system_failure",
@@ -415,7 +420,10 @@ class HITLService:
                         actor_type="system",
                         metadata_json=json.dumps({
                             "error": str(e),
+                            "error_code": "WORKFLOW_ERROR",
                             "node_name": "_run_workflow_thread",
+                            "user_message": "规则审查工作流执行失败，请返回清洗与向量审查后重新启动。",
+                            "failure_state": failure_state,
                         }),
                     )
                     db.add(log)
@@ -424,7 +432,15 @@ class HITLService:
                     self._push_sse_event(session_id, "system_failure", {
                         "error_code": "WORKFLOW_ERROR",
                         "node_name": "scanning",
+                        "state": failure_state,
+                        "message": "规则审查工作流执行失败，请返回清洗与向量审查后重新启动。",
+                        "technical_message": str(e),
                     })
+                    if failure_state == "parsed":
+                        self._push_sse_event(session_id, "state_changed", {
+                            "state": "parsed",
+                            "session_id": session_id,
+                        })
             except Exception:
                 pass  # 错误处理本身不应再抛出异常
         finally:

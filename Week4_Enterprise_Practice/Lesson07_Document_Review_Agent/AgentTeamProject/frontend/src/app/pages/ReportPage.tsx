@@ -6,6 +6,7 @@ import { WorkflowStatusBar } from '../components/WorkflowStatusBar';
 import { RiskLevelBadge } from '../components/RiskLevelBadge';
 import { SourceBadge } from '../components/SourceBadge';
 import { ConfidenceBadge } from '../components/ConfidenceBadge';
+import { ExtractedFieldsSummary } from '../components/ExtractedFieldsSummary';
 import { getReport, getReportDownloadUrl } from '../api/reports';
 import { listItems } from '../api/items';
 import { subscribeSSE } from '../api/sse';
@@ -149,6 +150,8 @@ export function ReportPage() {
                   </button>
                 </div>
               </div>
+
+              <ExtractedFieldsSummary sessionId={sessionId} className="mb-4" />
 
               {/* Summary Card */}
               <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 mb-4">

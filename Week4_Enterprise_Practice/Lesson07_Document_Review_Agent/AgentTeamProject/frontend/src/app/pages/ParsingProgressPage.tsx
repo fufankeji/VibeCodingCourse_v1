@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Clock3,
+  FileText,
   FileSearch,
   Loader2,
   RotateCcw,
@@ -87,6 +88,8 @@ function errorHint(status: ParseStatus, errorCode: string) {
 function stageLabel(stage: ReviewPipelineStage) {
   if (stage.status === 'cached') return '已复用缓存';
   if (stage.status === 'completed') return '已完成';
+  if (stage.status === 'degraded') return '已降级';
+  if (stage.status === 'skipped') return '已跳过';
   if (stage.status === 'running') return '正在执行';
   if (stage.status === 'failed') return '失败';
   return '未开始';
@@ -95,6 +98,8 @@ function stageLabel(stage: ReviewPipelineStage) {
 function stageTone(stage: ReviewPipelineStage) {
   if (stage.status === 'cached') return 'border-emerald-200 bg-emerald-50 text-emerald-700';
   if (stage.status === 'completed') return 'border-blue-200 bg-blue-50 text-blue-700';
+  if (stage.status === 'degraded') return 'border-amber-200 bg-amber-50 text-amber-700';
+  if (stage.status === 'skipped') return 'border-slate-200 bg-slate-50 text-slate-600';
   if (stage.status === 'running') return 'border-amber-200 bg-amber-50 text-amber-700';
   if (stage.status === 'failed') return 'border-red-200 bg-red-50 text-red-700';
   return 'border-slate-200 bg-slate-50 text-slate-500';
@@ -153,6 +158,7 @@ function ReviewPipelineStatusPanel({
                     {stage.artifact ? stage.artifact : '数据库写入'}
                     {stage.artifact_exists ? ' · 已落盘' : ''}
                   </p>
+                  {stage.message ? <p className="mt-1 text-xs text-slate-600">{stage.message}</p> : null}
                 </div>
                 <div className="flex shrink-0 items-center gap-3 text-xs text-slate-500">
                   {stage.item_count !== null && stage.item_count !== undefined ? <span>{stage.item_count} 条</span> : null}
@@ -534,7 +540,7 @@ export function ParsingProgressPage() {
                         <div>
                           <p className="font-medium">扫描件精度提示</p>
                           <p className="mt-0.5 text-amber-700">
-                            OCR 结果可能受扫描质量影响，后续字段核对阶段需要重点检查项目名称、面积、投资和土石方数据。
+                            OCR 结果可能受扫描质量影响，后续关键信息确认阶段需要重点检查项目名称、面积、投资和土石方数据。
                           </p>
                         </div>
                       </div>
@@ -569,6 +575,17 @@ export function ParsingProgressPage() {
                       <p className="text-xs text-slate-500">来源</p>
                       <p className="mt-1 text-sm font-medium text-slate-950">{documentContent?.source || 'MinerU'}</p>
                     </div>
+                  </div>
+
+                  <div className="mt-5 flex flex-col gap-3 sm:flex-row">
+                    <button
+                      type="button"
+                      onClick={() => sessionId && navigate(`/contracts/${sessionId}/document?stage=pipeline`)}
+                      className="inline-flex h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                    >
+                      <FileText className="h-4 w-4" />
+                      查看解析文档
+                    </button>
                   </div>
 
                   <ReviewPipelineStatusPanel

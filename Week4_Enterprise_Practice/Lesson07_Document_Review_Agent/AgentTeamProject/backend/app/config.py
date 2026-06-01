@@ -18,11 +18,13 @@ class Settings(BaseSettings):
     rag_rerank_top_n: int = 10
     rag_max_issues: int = 20
     langextract_enabled: bool = True
-    langextract_extraction_passes: int = 2
-    langextract_max_workers: int = 6
+    langextract_main_pipeline_enabled: bool = False
+    langextract_extraction_passes: int = 1
+    langextract_max_workers: int = 4
     langextract_max_char_buffer: int = 3000
-    langextract_max_chunks: int = 24
-    langextract_request_timeout: int = 120
+    langextract_max_chunks: int = 8
+    langextract_request_timeout: int = 45
+    langextract_stage_timeout_seconds: int = 180
     mineru_token: str = ""
     mineru_base_url: str = "https://mineru.net/api/v4"
     mineru_model_version: str = "vlm"

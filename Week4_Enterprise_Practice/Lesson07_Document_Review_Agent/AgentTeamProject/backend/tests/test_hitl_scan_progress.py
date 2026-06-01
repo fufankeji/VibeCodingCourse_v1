@@ -3,6 +3,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.database import Base
+from app.models.audit_log import AuditLog
 from app.models.review_item import ReviewItem
 from app.models.session import ReviewSession
 from app.services.hitl_service import HITLService
@@ -62,3 +63,54 @@ def test_persist_review_items_pushes_real_scan_progress_summary(monkeypatch):
             },
         )
     ]
+
+
+def test_workflow_thread_failure_reverts_scanning_session_to_parsed(monkeypatch):
+    SessionLocal = _session_factory()
+    db = SessionLocal()
+    session = ReviewSession(contract_id="contract-1", state="scanning", created_by="tester")
+    db.add(session)
+    db.commit()
+    session_id = session.id
+    db.close()
+
+    def fail_workflow(**_kwargs):
+        raise RuntimeError("workflow exploded")
+
+    monkeypatch.setattr("app.workflow.graph.run_workflow_sync", fail_workflow)
+    monkeypatch.setattr("app.services.hitl_service.SessionLocal", SessionLocal)
+    service = HITLService()
+    pushed: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        service,
+        "_push_sse_event",
+        lambda session_id, event_type, data: pushed.append((session_id, event_type, data)),
+    )
+
+    service._run_workflow_thread(
+        session_id=session_id,
+        contract_id=session_id,
+        thread_id="thread-1",
+        full_text="text",
+        precomputed_review_items=[],
+    )
+
+    db = SessionLocal()
+    try:
+        updated = db.query(ReviewSession).filter(ReviewSession.id == session_id).first()
+        audit = (
+            db.query(AuditLog)
+            .filter(AuditLog.session_id == session_id, AuditLog.event_type == "system_failure")
+            .first()
+        )
+        assert updated.state == "parsed"
+        assert audit is not None
+        assert "workflow exploded" in audit.metadata_json
+        assert ("system_failure", "WORKFLOW_ERROR") in [
+            (event_type, data.get("error_code")) for _, event_type, data in pushed
+        ]
+        assert ("state_changed", "parsed") in [
+            (event_type, data.get("state")) for _, event_type, data in pushed
+        ]
+    finally:
+        db.close()

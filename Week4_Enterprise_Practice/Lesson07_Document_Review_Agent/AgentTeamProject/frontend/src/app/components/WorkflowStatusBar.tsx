@@ -4,49 +4,57 @@ import type { SessionState } from '../types';
 interface WorkflowStatusBarProps {
   sessionState: SessionState;
   hitlSubtype?: string | null;
-  /** 当用户已点击「开始 AI 扫描」时，scanning 状态进入扫描阶段而非字段核对阶段 */
+  /** scanning 是后端复用状态：确认页代表关键信息确认，扫描页代表规则审查路由。 */
   scanningStarted?: boolean;
 }
 
 const NODES = [
-  { id: 'upload', label: '上传解析' },
-  { id: 'fields', label: '字段核对' },
-  { id: 'scanning', label: 'AI 扫描' },
-  { id: 'routing', label: '分级路由' },
-  { id: 'review', label: '人工审核' },
+  { id: 'parse', label: '文件解析' },
+  { id: 'pipeline', label: '清洗与向量审查' },
+  { id: 'fields', label: '关键信息确认' },
+  { id: 'routing', label: '规则审查路由' },
+  { id: 'review', label: '人工复核' },
   { id: 'report', label: '报告生成' },
 ];
 
 /**
  * WorkflowStatusBar — 工作流状态进度条
- * 高度固定 64px，挂载于 GlobalNav 正下方
- * 来源：frontend_arch-spec 第 3.1 节、frontend_design_spec 第 4.2 节
+ * 高度固定 64px，挂载于 GlobalNav 正下方。
+ * 节点按当前实现链路展示，不再沿用旧 PRD 的“AI 扫描/分级路由”固定拆法。
  */
 export function WorkflowStatusBar({ sessionState, hitlSubtype, scanningStarted }: WorkflowStatusBarProps) {
-  /** 计算各节点状态 */
   const getNodeStatus = (nodeId: string): 'completed' | 'active' | 'interrupted' | 'loading' | 'pending' => {
     switch (sessionState) {
       case 'parsing':
-        if (nodeId === 'upload') return 'active';
+        if (nodeId === 'parse') return 'active';
         return 'pending';
       case 'parsed':
-        if (nodeId === 'upload') return 'completed';
-        if (nodeId === 'fields') return 'active';
+        if (nodeId === 'parse') return 'completed';
+        if (nodeId === 'pipeline') return 'active';
         return 'pending';
       case 'aborted':
-        if (nodeId === 'upload') return 'interrupted';
+        if (nodeId === 'parse') return 'interrupted';
         return 'pending';
       case 'scanning':
-        if (nodeId === 'upload') return 'completed';
+        if (['parse', 'pipeline'].includes(nodeId)) return 'completed';
         if (nodeId === 'fields') return scanningStarted ? 'completed' : 'active';
-        if (nodeId === 'scanning') return scanningStarted ? 'active' : 'pending';
+        if (nodeId === 'routing') return scanningStarted ? 'active' : 'pending';
+        return 'pending';
+      case 'hitl_field_verify':
+        if (['parse', 'pipeline'].includes(nodeId)) return 'completed';
+        if (nodeId === 'fields') return 'active';
+        return 'pending';
+      case 'hitl_high_risk':
+      case 'hitl_medium_confirm':
+        if (['parse', 'pipeline', 'fields', 'routing'].includes(nodeId)) return 'completed';
+        if (nodeId === 'review') return 'interrupted';
         return 'pending';
       case 'hitl_pending':
-        if (['upload', 'fields', 'scanning', 'routing'].includes(nodeId)) return 'completed';
+        if (['parse', 'pipeline', 'fields', 'routing'].includes(nodeId)) return 'completed';
         if (nodeId === 'review') return 'interrupted';
         return 'pending';
       case 'completed':
-        if (['upload', 'fields', 'scanning', 'routing', 'review'].includes(nodeId)) return 'completed';
+        if (['parse', 'pipeline', 'fields', 'routing', 'review'].includes(nodeId)) return 'completed';
         if (nodeId === 'report') return 'loading';
         return 'pending';
       case 'report_ready':

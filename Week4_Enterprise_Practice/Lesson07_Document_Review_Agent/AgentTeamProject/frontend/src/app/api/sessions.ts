@@ -73,6 +73,7 @@ export interface ReviewDocumentContentResponse {
   title: string;
   file_type: string;
   source: string;
+  source_pdf_url?: string;
   page_count: number;
   outline: ReviewDocumentOutlineItem[];
   pages: ReviewDocumentPage[];
@@ -125,7 +126,7 @@ export interface ReviewPipelineStage {
   id: string;
   title: string;
   artifact: string;
-  status: 'pending' | 'running' | 'completed' | 'cached' | 'failed' | string;
+  status: 'pending' | 'running' | 'completed' | 'cached' | 'degraded' | 'skipped' | 'failed' | string;
   cache_reusable: boolean;
   artifact_exists: boolean;
   item_count: number | null;
@@ -141,6 +142,17 @@ export interface ReviewPipelineStatusResponse {
   stages: ReviewPipelineStage[];
   timings: Record<string, number>;
   cache_hits: Record<string, boolean>;
+  last_failure?: {
+    error?: string;
+    error_code?: string;
+    user_message?: string;
+    message?: string;
+    technical_message?: string;
+    failure_category?: string;
+    node_name?: string;
+    occurred_at?: string;
+    [key: string]: unknown;
+  };
 }
 
 export interface ReviewLogicType {
