@@ -19,8 +19,9 @@ import { GlobalNav } from '../components/GlobalNav';
 import { WorkflowStatusBar } from '../components/WorkflowStatusBar';
 import { subscribeSSE } from '../api/sse';
 import { abortSession, getSession, retryParse } from '../api/sessions';
+import type { SessionState } from '../types';
 
-type ParseStatus = 'parsing' | 'failed' | 'timeout' | 'system_failure' | 'completed';
+type ParseStatus = 'parsing' | 'failed' | 'timeout' | 'system_failure' | 'aborted' | 'completed';
 type ParseStage =
   | 'queued'
   | 'upload_url_requested'
@@ -60,12 +61,14 @@ function formatElapsed(seconds: number) {
 }
 
 function errorTitle(status: ParseStatus) {
+  if (status === 'aborted') return '解析已中止';
   if (status === 'timeout') return '解析超时';
   if (status === 'system_failure') return '后处理失败';
   return '解析失败';
 }
 
 function errorHint(status: ParseStatus, errorCode: string) {
+  if (status === 'aborted') return '本次解析流程已经终止。可以在本页重新入队解析，不需要再次上传同一个文件。';
   if (status === 'timeout') return '远端解析等待超时。可以重试，或改为上传已解析的 MinerU JSON。';
   if (status === 'system_failure') return '文件解析已返回，但字段抽取、审查流水线或向量检索阶段失败。';
   if (errorCode === 'MINERU_TOKEN_MISSING') return '后端缺少 MINERU_TOKEN，重试不会生效，需要先补齐配置。';
@@ -84,6 +87,7 @@ function errorHint(status: ParseStatus, errorCode: string) {
 export function ParsingProgressPage() {
   const { id: sessionId } = useParams();
   const navigate = useNavigate();
+  const [sessionState, setSessionState] = useState<SessionState>('parsing');
   const [parseStatus, setParseStatus] = useState<ParseStatus>('parsing');
   const [stage, setStage] = useState<ParseStage>('queued');
   const [retryCount, setRetryCount] = useState(0);
@@ -106,7 +110,14 @@ export function ParsingProgressPage() {
     if (!sessionId) return;
     getSession(sessionId)
       .then((session) => {
+        setSessionState(session.state);
         setIsScannedDocument(session.is_scanned_document);
+        if (session.state === 'aborted') {
+          setParseStatus('aborted');
+          setErrorCode('USER_ABORTED');
+          setErrorMessage('本次解析已中止');
+          return;
+        }
         if (session.state === 'scanning' || session.state === 'hitl_pending') {
           navigate(`/contracts/${sessionId}/fields`);
         }
@@ -124,6 +135,7 @@ export function ParsingProgressPage() {
       }
 
       if (event === 'parse_started' || event === 'parse_progress') {
+        setSessionState('parsing');
         setStage(normalizeStage(data.stage));
         if (typeof data.retry_count === 'number') setRetryCount(data.retry_count);
         if (typeof data.max_retries === 'number') setMaxRetries(data.max_retries);
@@ -132,6 +144,13 @@ export function ParsingProgressPage() {
 
       if (event === 'state_changed') {
         const newState = (data as any).state || (data as any).new_state;
+        if (newState) setSessionState(newState);
+        if (newState === 'aborted') {
+          setParseStatus('aborted');
+          setErrorCode('USER_ABORTED');
+          setErrorMessage('本次解析已中止');
+          return;
+        }
         if (newState === 'scanning' || newState === 'hitl_pending') {
           navigate(`/contracts/${sessionId}/fields`);
         }
@@ -161,6 +180,7 @@ export function ParsingProgressPage() {
     setIsRetrying(true);
     try {
       const result = await retryParse(sessionId);
+      setSessionState('parsing');
       setRetryCount(result.retry_count);
       setMaxRetries(result.max_retries);
       setParseStatus('parsing');
@@ -198,7 +218,7 @@ export function ParsingProgressPage() {
   return (
     <div className="min-h-screen bg-slate-50">
       <GlobalNav />
-      <WorkflowStatusBar sessionState="parsing" />
+      <WorkflowStatusBar sessionState={sessionState} />
       <main className="pt-[118px]">
         <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 lg:px-8">
           <div className="mb-5 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
@@ -298,7 +318,7 @@ export function ParsingProgressPage() {
                 <div role="alert" aria-live="assertive">
                   <div className="flex items-start gap-4">
                     <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-red-100 text-red-700">
-                      {parseStatus === 'system_failure' ? <ShieldAlert className="h-6 w-6" /> : <AlertTriangle className="h-6 w-6" />}
+                      {parseStatus === 'system_failure' ? <ShieldAlert className="h-6 w-6" /> : parseStatus === 'aborted' ? <XCircle className="h-6 w-6" /> : <AlertTriangle className="h-6 w-6" />}
                     </div>
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-medium text-red-700">{errorTitle(parseStatus)}</p>
@@ -382,15 +402,25 @@ export function ParsingProgressPage() {
                   <Clock3 className="mr-1 inline h-3.5 w-3.5 align-[-2px]" />
                   正常情况下无需停留在本页，解析完成会自动进入字段核对。
                 </div>
-                <button
-                  type="button"
-                  onClick={handleAbort}
-                  disabled={isAborting}
-                  className="mt-3 inline-flex h-11 w-full items-center justify-center gap-2 rounded-md border border-red-200 bg-white px-4 text-sm font-medium text-red-700 transition-colors hover:bg-red-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <XCircle className="h-4 w-4" />
-                  {isAborting ? '正在放弃' : '放弃并返回列表'}
-                </button>
+                {parseStatus === 'aborted' ? (
+                  <button
+                    type="button"
+                    onClick={() => navigate('/contracts')}
+                    className="mt-3 inline-flex h-11 w-full items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                  >
+                    返回方案列表
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleAbort}
+                    disabled={isAborting}
+                    className="mt-3 inline-flex h-11 w-full items-center justify-center gap-2 rounded-md border border-red-200 bg-white px-4 text-sm font-medium text-red-700 transition-colors hover:bg-red-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <XCircle className="h-4 w-4" />
+                    {isAborting ? '正在放弃' : '放弃并返回列表'}
+                  </button>
+                )}
               </section>
             </aside>
           </div>

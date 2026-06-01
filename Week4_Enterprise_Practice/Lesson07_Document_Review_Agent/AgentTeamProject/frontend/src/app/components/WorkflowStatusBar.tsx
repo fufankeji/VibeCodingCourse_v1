@@ -29,6 +29,9 @@ export function WorkflowStatusBar({ sessionState, hitlSubtype, scanningStarted }
       case 'parsing':
         if (nodeId === 'upload') return 'active';
         return 'pending';
+      case 'aborted':
+        if (nodeId === 'upload') return 'interrupted';
+        return 'pending';
       case 'scanning':
         if (nodeId === 'upload') return 'completed';
         if (nodeId === 'fields') return scanningStarted ? 'completed' : 'active';

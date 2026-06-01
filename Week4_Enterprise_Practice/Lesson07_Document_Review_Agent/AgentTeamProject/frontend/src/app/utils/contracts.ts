@@ -8,7 +8,7 @@ export function contractRoute(contract: ContractItem): string | null {
   const state = contractState(contract);
   const sid = contract.session_id;
   if (!sid) return null;
-  if (state === 'aborted') return null;
+  if (state === 'aborted') return `/contracts/${sid}/parsing`;
   if (state === 'parsing') return `/contracts/${sid}/parsing`;
   if (state === 'scanning' || state === 'hitl_field_verify') return `/contracts/${sid}/fields`;
   if (state === 'hitl_medium_confirm') return `/contracts/${sid}/batch`;
