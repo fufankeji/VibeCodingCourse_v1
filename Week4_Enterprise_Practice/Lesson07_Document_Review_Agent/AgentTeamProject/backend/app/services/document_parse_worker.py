@@ -231,6 +231,7 @@ def _prepare_parse_artifact(db: Session, job: DocumentParseJob) -> str:
         job.stage = "extracted"
         db.add(job)
         db.commit()
+        _publish_progress_nowait(job)
         return job.source_file_path
     if job.source_file_type not in PDF_DOCX_TYPES:
         raise DocumentParseError("UNSUPPORTED_FILE_TYPE", f"不支持的解析文件类型: {job.source_file_type}")
@@ -240,6 +241,7 @@ def _prepare_parse_artifact(db: Session, job: DocumentParseJob) -> str:
     job.stage = "upload_url_requested"
     db.add(job)
     db.commit()
+    _publish_progress_nowait(job)
     artifacts = mineru_service.parse_file_to_artifacts(
         job.source_file_path,
         Path(job.source_file_path).parent / "mineru",
@@ -254,6 +256,7 @@ def _prepare_parse_artifact(db: Session, job: DocumentParseJob) -> str:
     job.result_markdown_path = str(artifacts.markdown_path) if artifacts.markdown_path else None
     db.add(job)
     db.commit()
+    _publish_progress_nowait(job)
     parse_path = artifacts.best_parse_path
     if parse_path is None:
         raise DocumentParseError("MINERU_RESULT_INVALID", "MinerU did not produce a parse artifact")
@@ -272,6 +275,7 @@ def _update_mineru_progress(db: Session, job_id: str, stage: str, values: dict[s
     job.updated_at = datetime.utcnow()
     db.add(job)
     db.commit()
+    _publish_progress_nowait(job)
 
 
 def _mark_job_succeeded(db: Session, job: DocumentParseJob) -> None:
@@ -374,3 +378,18 @@ async def _publish(job: DocumentParseJob, event_type: str, data: dict) -> None:
     }
     payload.update(data)
     await sse_manager.publish(job.session_id, event_type, payload)
+
+
+def _publish_progress_nowait(job: DocumentParseJob) -> None:
+    sse_manager.publish_nowait(
+        job.session_id,
+        "parse_progress",
+        {
+            "session_id": job.session_id,
+            "job_id": job.id,
+            "provider": job.provider,
+            "stage": job.stage,
+            "retry_count": job.attempt_count,
+            "max_retries": job.max_attempts,
+        },
+    )

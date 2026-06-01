@@ -1,3 +1,5 @@
+import asyncio
+import json
 from datetime import datetime, timedelta
 
 import pytest
@@ -196,6 +198,38 @@ def test_cancel_parse_jobs_for_session_marks_job_canceled_and_unclaimable(tmp_pa
     assert updated_job.locked_by is None
     assert updated_job.next_run_at is None
     db.close()
+
+
+def test_update_mineru_progress_publishes_sse_event(tmp_path):
+    SessionLocal = _session_factory()
+    db = SessionLocal()
+    _, session, job = _make_contract_session_job(db, tmp_path, file_type="pdf", status="running", attempts=1)
+    queue = asyncio.Queue()
+    document_parse_worker.sse_manager._queues[session.id] = [queue]
+
+    try:
+        document_parse_worker._update_mineru_progress(
+            db,
+            job.id,
+            "polling",
+            {"batch_id": "batch-1", "task_id": "task-1"},
+        )
+
+        updated_job = db.query(DocumentParseJob).filter(DocumentParseJob.id == job.id).first()
+        event = queue.get_nowait()
+        payload = json.loads(event["data"])
+        assert updated_job.stage == "polling"
+        assert updated_job.mineru_batch_id == "batch-1"
+        assert updated_job.mineru_task_id == "task-1"
+        assert event["event"] == "parse_progress"
+        assert payload["session_id"] == session.id
+        assert payload["job_id"] == job.id
+        assert payload["stage"] == "polling"
+        assert payload["retry_count"] == 1
+        assert payload["max_retries"] == 3
+    finally:
+        document_parse_worker.sse_manager._queues.pop(session.id, None)
+        db.close()
 
 
 def test_mark_job_succeeded_does_not_overwrite_canceled_job(tmp_path):
