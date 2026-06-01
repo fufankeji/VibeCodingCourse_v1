@@ -120,3 +120,49 @@ def test_auth_token_requires_mineru_token_only(monkeypatch):
     monkeypatch.setattr(mineru_service.settings, "mineru_token", "", raising=False)
 
     assert mineru_service._auth_token() == ""
+
+
+def test_plan_pdf_segments_keeps_small_pdf_single_segment():
+    from app.services.mineru_service import _plan_pdf_segments
+
+    segments = _plan_pdf_segments(200)
+
+    assert len(segments) == 1
+    assert segments[0].segment_index == 1
+    assert segments[0].segment_count == 1
+    assert segments[0].page_start == 1
+    assert segments[0].page_end_requested == 200
+    assert segments[0].page_offset == 0
+    assert segments[0].page_ranges is None
+
+
+def test_plan_pdf_segments_splits_pages_over_mineru_limit():
+    from app.services.mineru_service import _plan_pdf_segments
+
+    segments = _plan_pdf_segments(278)
+
+    assert [segment.page_ranges for segment in segments] == ["1-200", "201-400"]
+    assert [segment.page_offset for segment in segments] == [0, 200]
+    assert [segment.page_start for segment in segments] == [1, 201]
+    assert [segment.page_end_requested for segment in segments] == [200, 400]
+    assert [segment.segment_count for segment in segments] == [2, 2]
+
+
+def test_plan_pdf_segments_splits_401_pages_into_three_ranges():
+    from app.services.mineru_service import _plan_pdf_segments
+
+    segments = _plan_pdf_segments(401)
+
+    assert [segment.page_ranges for segment in segments] == ["1-200", "201-400", "401-600"]
+    assert [segment.page_offset for segment in segments] == [0, 200, 400]
+
+
+def test_plan_pdf_segments_rejects_empty_pdf():
+    from app.services.mineru_service import MinerUAPIError, _plan_pdf_segments
+
+    try:
+        _plan_pdf_segments(0)
+    except MinerUAPIError as exc:
+        assert exc.error_code == "MINERU_PDF_PAGE_COUNT_INVALID"
+    else:
+        raise AssertionError("empty PDF page count should fail")

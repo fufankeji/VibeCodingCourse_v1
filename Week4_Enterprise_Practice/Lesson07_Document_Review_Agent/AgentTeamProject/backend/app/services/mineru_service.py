@@ -17,6 +17,7 @@ from app.config import settings
 MAX_ZIP_BYTES = 250 * 1024 * 1024
 MAX_ZIP_MEMBERS = 5000
 MAX_ZIP_MEMBER_BYTES = 100 * 1024 * 1024
+MAX_MINERU_PAGES_PER_TASK = 200
 
 
 class MinerUAPIError(RuntimeError):
@@ -40,6 +41,56 @@ class MinerUParseArtifacts:
     @property
     def best_parse_path(self) -> Path | None:
         return self.json_path or self.markdown_path
+
+
+@dataclass(frozen=True)
+class MinerUSegment:
+    segment_index: int
+    segment_count: int
+    page_start: int
+    page_end_requested: int
+    page_offset: int
+    page_ranges: str | None
+
+    @property
+    def part_name(self) -> str:
+        return f"part-{self.segment_index:03d}"
+
+
+def _plan_pdf_segments(page_count: int) -> list[MinerUSegment]:
+    if page_count <= 0:
+        raise MinerUAPIError("PDF page count must be greater than zero", "MINERU_PDF_PAGE_COUNT_INVALID")
+    if page_count <= MAX_MINERU_PAGES_PER_TASK:
+        return [
+            MinerUSegment(
+                segment_index=1,
+                segment_count=1,
+                page_start=1,
+                page_end_requested=page_count,
+                page_offset=0,
+                page_ranges=None,
+            )
+        ]
+
+    ranges: list[tuple[int, int]] = []
+    start = 1
+    while start <= page_count:
+        end_requested = start + MAX_MINERU_PAGES_PER_TASK - 1
+        ranges.append((start, end_requested))
+        start = end_requested + 1
+
+    segment_count = len(ranges)
+    return [
+        MinerUSegment(
+            segment_index=index,
+            segment_count=segment_count,
+            page_start=start_page,
+            page_end_requested=end_requested,
+            page_offset=start_page - 1,
+            page_ranges=f"{start_page}-{end_requested}",
+        )
+        for index, (start_page, end_requested) in enumerate(ranges, start=1)
+    ]
 
 
 def parse_file_to_artifacts(
