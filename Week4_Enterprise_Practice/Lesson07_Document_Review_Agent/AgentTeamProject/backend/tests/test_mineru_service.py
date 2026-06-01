@@ -82,6 +82,19 @@ def test_extract_zip_artifacts_selects_largest_structured_json(tmp_path):
     assert len(json.loads(result.json_path.read_text(encoding="utf-8"))["pdf_info"]) == 2
 
 
+def test_extract_zip_artifacts_extracts_asset_files(tmp_path):
+    from app.services.mineru_service import extract_zip_artifacts
+
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w") as zf:
+        zf.writestr("layout.json", json.dumps({"pdf_info": [{"page_idx": 0, "para_blocks": []}]}))
+        zf.writestr("images/page-1.jpg", b"image-bytes")
+
+    extract_zip_artifacts(payload.getvalue(), tmp_path)
+
+    assert (tmp_path / "images" / "page-1.jpg").read_bytes() == b"image-bytes"
+
+
 def test_extract_zip_artifacts_rejects_invalid_zip(tmp_path):
     from app.services.mineru_service import MinerUAPIError, extract_zip_artifacts
 
@@ -120,6 +133,14 @@ def test_auth_token_requires_mineru_token_only(monkeypatch):
     monkeypatch.setattr(mineru_service.settings, "mineru_token", "", raising=False)
 
     assert mineru_service._auth_token() == ""
+
+
+def test_segment_error_preserves_non_retryable_mineru_codes():
+    from app.services.mineru_service import MinerUAPIError, _segment_error
+
+    for code in ["MINERU_AUTH_FAILED", "MINERU_RATE_LIMITED", "MINERU_ZIP_UNSAFE", "MINERU_RESULT_INVALID"]:
+        mapped = _segment_error(MinerUAPIError("boom", code))
+        assert mapped.error_code == code
 
 
 def test_plan_pdf_segments_keeps_small_pdf_single_segment():

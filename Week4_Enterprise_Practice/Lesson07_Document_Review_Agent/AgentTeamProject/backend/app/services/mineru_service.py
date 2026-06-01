@@ -223,7 +223,14 @@ def _segment_progress(segment: MinerUSegment | None) -> dict[str, Any]:
 def _segment_error(exc: MinerUAPIError) -> MinerUAPIError:
     if exc.error_code == "MINERU_TIMEOUT":
         return MinerUAPIError(str(exc), "MINERU_SEGMENT_TIMEOUT", timeout=True)
-    if exc.error_code in {"MINERU_AUTH_FAILED", "MINERU_RATE_LIMITED", "MINERU_TOKEN_MISSING"}:
+    if exc.error_code in {
+        "MINERU_AUTH_FAILED",
+        "MINERU_RATE_LIMITED",
+        "MINERU_TOKEN_MISSING",
+        "MINERU_ZIP_TOO_LARGE",
+        "MINERU_ZIP_UNSAFE",
+        "MINERU_RESULT_INVALID",
+    }:
         return MinerUAPIError(str(exc), exc.error_code, timeout=exc.timeout)
     if exc.error_code.startswith("MINERU_SEGMENT_"):
         return exc
@@ -259,15 +266,19 @@ def extract_zip_artifacts(zip_bytes: bytes, output_dir: Path) -> MinerUParseArti
                     continue
                 if member.file_size > MAX_ZIP_MEMBER_BYTES:
                     raise MinerUAPIError("MinerU zip member exceeds size limit", "MINERU_ZIP_TOO_LARGE")
-                _safe_zip_member(output_dir, member.filename)
+                target = _safe_zip_member(output_dir, member.filename)
                 name = member.filename
                 lower = name.lower()
+                member_bytes = zf.read(name)
+                if target != zip_path:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(member_bytes)
                 if lower.endswith(".json"):
-                    candidate = _load_json_member(zf, name)
+                    candidate = _load_json_bytes(member_bytes)
                     if _is_structured_mineru_json(candidate):
                         structured_jsons.append(candidate)
                 elif lower.endswith(".md") and (not markdown_text or Path(name).name == "full.md"):
-                    markdown_text = zf.read(name).decode("utf-8", errors="replace")
+                    markdown_text = member_bytes.decode("utf-8", errors="replace")
     except zipfile.BadZipFile as exc:
         raise MinerUAPIError("MinerU result is not a valid zip", "MINERU_RESULT_INVALID") from exc
 
@@ -515,9 +526,9 @@ def _ensure_success(body: dict[str, Any]) -> None:
         raise MinerUAPIError(str(body.get("msg") or "MinerU API returned an error"), "MINERU_REMOTE_FAILED")
 
 
-def _load_json_member(zf: zipfile.ZipFile, name: str) -> Any:
+def _load_json_bytes(payload: bytes) -> Any:
     try:
-        return json.loads(zf.read(name).decode("utf-8"))
+        return json.loads(payload.decode("utf-8"))
     except Exception:
         return None
 
@@ -534,11 +545,12 @@ def _mineru_block_count(candidate: dict[str, Any]) -> int:
     return sum(len(page.get("para_blocks") or []) for page in pages if isinstance(page, dict))
 
 
-def _safe_zip_member(output_dir: Path, member_name: str) -> None:
+def _safe_zip_member(output_dir: Path, member_name: str) -> Path:
     target = (output_dir / member_name).resolve()
     root = output_dir.resolve()
     if target != root and root not in target.parents:
         raise MinerUAPIError(f"Unsafe zip member path: {member_name}", "MINERU_ZIP_UNSAFE")
+    return target
 
 
 def _raise_for_status(response: httpx.Response) -> None:
