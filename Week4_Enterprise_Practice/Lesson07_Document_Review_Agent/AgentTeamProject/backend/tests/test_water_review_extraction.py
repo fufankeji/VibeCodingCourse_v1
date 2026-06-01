@@ -2,7 +2,7 @@ from app.services.water_review_extraction import extract_fields
 from app.services.water_review_models import ReviewChunk, WATER_FIELDS
 
 
-def _chunk(chunk_id: str, text: str, section: str = "项目概况") -> ReviewChunk:
+def _chunk(chunk_id: str, text: str, section: str = "项目概况", char_start: int = 0) -> ReviewChunk:
     return ReviewChunk(
         chunk_id=chunk_id,
         text=text,
@@ -11,8 +11,8 @@ def _chunk(chunk_id: str, text: str, section: str = "项目概况") -> ReviewChu
         bbox_list=[],
         table_refs=[],
         metadata={},
-        char_start=0,
-        char_end=len(text),
+        char_start=char_start,
+        char_end=char_start + len(text),
     )
 
 
@@ -70,3 +70,34 @@ def test_extract_fields_populates_core_earthwork_fields():
     assert fields["fill_volume"]["value"] == "8.25万m3"
     assert fields["borrow_volume"]["value"] == "1.00万m3"
     assert fields["spoil_volume"]["value"] == "3.25万m3"
+
+
+def test_extract_fields_uses_global_offsets_for_non_contiguous_core_chunks():
+    project_chunk = _chunk("chunk-0001", "项目名称：测试项目。", "项目概况", char_start=100)
+    earthwork_text = "土石方平衡：挖方10.50万m3，填方8.25万m3。"
+    earthwork_chunk = _chunk("chunk-0009", earthwork_text, "土石方平衡", char_start=900)
+
+    fields = _by_name(extract_fields([project_chunk, earthwork_chunk]))
+
+    excavation = fields["excavation_volume"]
+    assert excavation["section"] == "土石方平衡"
+    assert excavation["source_span"] == {
+        "char_start": 900 + earthwork_text.index("10.50"),
+        "char_end": 900 + earthwork_text.index("10.50") + len("10.50万m3"),
+    }
+
+
+def test_extract_fields_uses_global_offsets_for_keyword_in_second_chunk():
+    project_chunk = _chunk("chunk-0001", "项目名称：测试项目。", "项目概况", char_start=100)
+    spoil_text = "弃方去向为外运至合规消纳场。"
+    spoil_chunk = _chunk("chunk-0008", spoil_text, "土石方平衡", char_start=800)
+
+    fields = _by_name(extract_fields([project_chunk, spoil_chunk]))
+
+    spoil_destination = fields["spoil_destination"]
+    assert spoil_destination["value"] == "外运"
+    assert spoil_destination["section"] == "土石方平衡"
+    assert spoil_destination["source_span"] == {
+        "char_start": 800 + spoil_text.index("外运"),
+        "char_end": 800 + spoil_text.index("外运") + len("外运"),
+    }

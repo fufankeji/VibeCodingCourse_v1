@@ -91,11 +91,12 @@ def build_core_extraction_chunks(
 
     mode = "vector"
     store = None
-    try:
-        store = store_factory() if store_factory is not None else _default_store(chunks, session_id)
-    except Exception as exc:
-        errors.append(f"vector_unavailable: {exc}")
-        logger.info("core_extraction_vector_unavailable session_id=%s error=%s", session_id, exc)
+    if store_factory is not None:
+        try:
+            store = store_factory()
+        except Exception as exc:
+            errors.append(f"vector_unavailable: {exc}")
+            logger.info("core_extraction_vector_unavailable session_id=%s error=%s", session_id, exc)
 
     selected_ids: list[str] = []
     try:

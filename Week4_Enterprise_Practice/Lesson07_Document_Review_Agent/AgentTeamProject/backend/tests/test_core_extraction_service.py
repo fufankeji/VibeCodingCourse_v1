@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 
 from app.services import rag_service, review_config_service, water_review_service
+from app.services import core_extraction_service
 from app.services.core_extraction_service import build_core_extraction_chunks
 from app.services.water_review_models import ReviewChunk
 
@@ -48,6 +49,57 @@ def test_build_core_extraction_chunks_returns_all_chunks_when_no_core_match(tmp_
     assert [chunk.chunk_id for chunk in result.chunks] == ["chunk-0001", "chunk-0002"]
     assert result.mode == "all_chunks_fallback"
     assert result.trace["selected_count"] == 2
+
+
+def test_build_core_extraction_chunks_does_not_build_vector_store_by_default(tmp_path, monkeypatch):
+    chunks = [
+        _chunk("chunk-0001", "项目名称：测试项目。建设单位：测试公司。", "项目概况"),
+        _chunk("chunk-0002", "土石方平衡：挖方10.00万m3，填方10.00万m3。", "土石方平衡"),
+    ]
+
+    def fail_default_store(*_args, **_kwargs):
+        raise AssertionError("default core extraction should not rebuild vector store")
+
+    monkeypatch.setattr(core_extraction_service, "_default_store", fail_default_store)
+
+    result = build_core_extraction_chunks(chunks, "session-no-vector", tmp_path)
+
+    assert [chunk.chunk_id for chunk in result.chunks] == ["chunk-0001", "chunk-0002"]
+    assert result.mode in {"bm25", "keyword"}
+    assert result.trace["fallback_used"] is True
+
+
+def test_build_core_extraction_chunks_uses_injected_store_without_rebuild(tmp_path):
+    chunks = [
+        _chunk("chunk-0001", "无关章节。", "附件"),
+        _chunk("chunk-0002", "项目名称：向量命中项目。", "项目概况"),
+    ]
+
+    class FakeStore:
+        def __init__(self) -> None:
+            self.query_count = 0
+
+        def query(self, _query: str, top_k: int) -> list[dict]:
+            self.query_count += 1
+            return [
+                {
+                    "chunk_id": "chunk-0002",
+                    "document": "项目名称：向量命中项目。",
+                    "metadata": {"chunk_id": "chunk-0002", "chunk_index": 1},
+                    "score": 0.1,
+                    "retrieval_sources": ["vector"],
+                    "source_ranks": {"vector": 1},
+                }
+            ]
+
+    fake_store = FakeStore()
+
+    result = build_core_extraction_chunks(chunks, "session-injected-vector", tmp_path, store_factory=lambda: fake_store)
+
+    assert [chunk.chunk_id for chunk in result.chunks] == ["chunk-0002"]
+    assert result.mode == "vector"
+    assert result.trace["fallback_used"] is False
+    assert fake_store.query_count == 2
 
 
 def test_core_extraction_trace_records_mode_and_selected_chunks(tmp_path):
